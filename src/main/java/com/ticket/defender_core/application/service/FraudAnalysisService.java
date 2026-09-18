@@ -7,12 +7,15 @@ import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
 import com.ticket.defender_core.domain.TicketAudit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -30,17 +33,23 @@ public class FraudAnalysisService {
             return;
         }
 
-        saveFraudClusters(response.data());
+        saveFraudClusters(response.data(), request);
     }
 
     @Transactional
-    protected void saveFraudClusters(List<FastApiClusterResponse.ClusterData> clusters) {
+    protected void saveFraudClusters(List<FastApiClusterResponse.ClusterData> clusters, AgentAnalysisRequest request) {
+        Map<String, String> addressMap = request.tickets().stream()
+                .collect(Collectors.toMap(
+                        AgentAnalysisRequest.TicketHashData::accountId,
+                        AgentAnalysisRequest.TicketHashData::addressHash,
+                        (existing, replacement) -> existing
+                ));
+
         List<String> receivedHashes = clusters.stream()
                 .map(FastApiClusterResponse.ClusterData::payment_hash)
                 .toList();
 
         Set<String> existingHashes = ticketAuditRepository.findExistingPaymentHashes(receivedHashes);
-
         List<TicketAudit> newAudits = new ArrayList<>();
 
         for (FastApiClusterResponse.ClusterData cluster : clusters) {
@@ -49,7 +58,9 @@ public class FraudAnalysisService {
 
             if (!existingHashes.contains(cluster.payment_hash())) {
                 for (String accountId : cluster.accounts()) {
-                    TicketAudit audit = new TicketAudit(accountId, cluster.payment_hash(), "TEMP_ADDR_HASH");
+                    String actualAddressHash = addressMap.getOrDefault(accountId, "UNKNOWN_ADDR");
+
+                    TicketAudit audit = new TicketAudit(accountId, cluster.payment_hash(), actualAddressHash);
                     audit.markAsFraud();
                     newAudits.add(audit);
                 }
@@ -57,8 +68,12 @@ public class FraudAnalysisService {
         }
 
         if (!newAudits.isEmpty()) {
-            ticketAuditRepository.saveAll(newAudits);
-            log.info("총 {}건의 암표 의심 계정이 DB에 성공적으로 적재되었습니다.", newAudits.size());
+            try {
+                ticketAuditRepository.saveAll(newAudits);
+                log.info("총 {}건의 암표 의심 계정이 DB에 성공적으로 적재되었습니다.", newAudits.size());
+            } catch (DataIntegrityViolationException e) {
+                log.warn("DB 고유 제약 조건 위반 (동시성 요청에 의한 중복). 처리를 무시하고 넘어갑니다.");
+            }
         }
     }
 }

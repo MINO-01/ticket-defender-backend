@@ -9,6 +9,16 @@ import java.time.LocalDateTime;
 @Entity
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
+@Table(
+        name = "ticket_audit",
+        uniqueConstraints = {
+
+                @UniqueConstraint(
+                        name = "uk_payment_account",
+                        columnNames = {"payment_hash", "account_id"}
+                )
+        }
+)
 public class TicketAudit {
 
     @Id

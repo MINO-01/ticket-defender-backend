@@ -11,6 +11,5 @@ import java.util.Set;
 public interface TicketAuditRepository extends JpaRepository<TicketAudit, Long> {
     List<TicketAudit> findAllByPaymentHash(String paymentHash);
 
-    @Query("SELECT t.paymentHash FROM TicketAudit t WHERE t.paymentHash IN :paymentHashes")
-    Set<String> findExistingPaymentHashes(@Param("paymentHashes") List<String> paymentHashes);
+    List<TicketAudit> findByPaymentHashIn(List<String> paymentHashes);
 }

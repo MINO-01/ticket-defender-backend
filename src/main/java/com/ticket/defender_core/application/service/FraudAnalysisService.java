@@ -60,16 +60,16 @@ public class FraudAnalysisService {
             log.info("의심 군집 적발 - 결제수단 해시: {}, 연결된 계정 수: {}",
                     cluster.getMaskedPaymentHash(), cluster.account_count());
 
-            // 🚀 수정: 클러스터 통째로 스킵하지 않고, 계정(account) 단위로 쪼개서 검사
             for (String accountId : cluster.accounts()) {
                 String pairKey = cluster.payment_hash() + ":" + accountId;
 
-                // 해당 결제수단+계정 조합이 DB에 없을 때만 저장!
                 if (!existingPairs.contains(pairKey)) {
                     String actualAddressHash = addressMap.getOrDefault(accountId, "UNKNOWN_ADDR");
                     TicketAudit audit = new TicketAudit(accountId, cluster.payment_hash(), actualAddressHash);
                     audit.markAsFraud();
                     newAudits.add(audit);
+
+                    existingPairs.add(pairKey);
                 }
             }
         }

@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
         name = "ticket_audit",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_payment_account", columnNames = {"payment_hash", "account_id"}),
-                @UniqueConstraint(name = "uk_reservation_audit", columnNames = {"reservation_no"})
+                @UniqueConstraint(name = "uk_reservation_reporter", columnNames = {"reservation_no", "reporter_id"})
         }
 )
 public class TicketAudit {
@@ -48,7 +48,9 @@ public class TicketAudit {
 
     public void markAsFraud() {
         this.status = AuditStatus.FRAUD_DETECTED;
-        this.evidenceType = EvidenceType.MACRO_GRAPH;
+        if (this.evidenceType == null) {
+            this.evidenceType = EvidenceType.MACRO_GRAPH;
+        }
         this.detectedAt = LocalDateTime.now();
     }
 
@@ -60,7 +62,7 @@ public class TicketAudit {
         return audit;
     }
 
-    public static TicketAudit createVlmAudit(String reservationNo, String accountId, Double mappingScore) {
+    public static TicketAudit createVlmAudit(String reservationNo, String accountId, Double mappingScore, String reporterId) {
         TicketAudit audit = new TicketAudit();
         audit.reservationNo = reservationNo;
         audit.accountId = accountId;

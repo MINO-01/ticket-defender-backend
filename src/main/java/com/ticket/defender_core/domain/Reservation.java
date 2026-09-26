@@ -6,6 +6,7 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import java.util.Objects;
 
 @Entity
 @Getter
@@ -22,6 +23,9 @@ public class Reservation {
     private Long originalPrice;
 
     public Reservation(String reservationNo, String accountId, String zone, String rowNum, String seatNum, Long originalPrice) {
+
+        Objects.requireNonNull(originalPrice, "originalPrice(정가)는 null일 수 없습니다.");
+
         this.reservationNo = reservationNo;
         this.accountId = accountId;
         this.zone = zone;
@@ -40,6 +44,9 @@ public class Reservation {
 
     //예상 최대 과징금 산출
     public Long calculateExpectedMaxPenalty(Long blackMarketPrice) {
-        return calculateDefendedIllicitProfit(blackMarketPrice) * 50;
+        if (blackMarketPrice == null || blackMarketPrice <= 0) {
+            return 0L;
+        }
+        return blackMarketPrice * 50;
     }
 }

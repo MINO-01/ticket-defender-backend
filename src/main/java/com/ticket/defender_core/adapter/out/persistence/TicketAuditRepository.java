@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -16,6 +17,7 @@ public interface TicketAuditRepository extends JpaRepository<TicketAudit, Long> 
 
     List<TicketAudit> findByPaymentHashIn(List<String> paymentHashes);
 
+    @Transactional
     @Modifying(clearAutomatically = true)
     @Query("UPDATE TicketAudit t SET t.status = :newStatus WHERE t.paymentHash = :paymentHash AND t.status = :oldStatus")
     int updateStatusByPaymentHash(
@@ -26,6 +28,7 @@ public interface TicketAuditRepository extends JpaRepository<TicketAudit, Long> 
 
     List<TicketAudit> findAllByEvidenceTypeAndStatus(EvidenceType type, AuditStatus status);
 
+    @Transactional
     @Modifying(clearAutomatically = true)
     @Query("UPDATE TicketAudit t SET t.status = :newStatus WHERE t.reservationNo IN :reservationNos")
     int bulkUpdateStatusToReportIssued(

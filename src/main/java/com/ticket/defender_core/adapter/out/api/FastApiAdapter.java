@@ -6,10 +6,12 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 
@@ -23,7 +25,10 @@ public class FastApiAdapter {
     private String fastApiUrl;
 
     public FastApiAdapter(RestClient.Builder restClientBuilder) {
-        this.restClient = restClientBuilder.build();
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(3));
+        factory.setReadTimeout(Duration.ofSeconds(5));
+        this.restClient = restClientBuilder.requestFactory(factory).build();
     }
 
     /**
@@ -44,7 +49,7 @@ public class FastApiAdapter {
      * FastAPI 서버가 죽었거나 타임아웃이 발생하면 이 메서드를 실행.
      */
     public List<FastApiClusterResponse> analyzeFallback(MacroAnalysisRequest request, Throwable t) {
-        log.error("[CircuitBreaker OPEN] FastAPI 분석 서버 장애 또는 지연 발생. 원인: {}", t.getMessage());
+        log.error("[FastApiAdapter.requestMacroAnalysis] FastAPI fallback 실행. 원인={}", t.getClass().getSimpleName(), t);
         return Collections.emptyList();
     }
 }

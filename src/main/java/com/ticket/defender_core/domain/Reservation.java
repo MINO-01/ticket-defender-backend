@@ -1,8 +1,6 @@
 package com.ticket.defender_core.domain;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -11,15 +9,34 @@ import java.util.Objects;
 @Entity
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-@Table(name = "reservation")
+@Table(
+        name = "reservation",
+        indexes = {
+                @Index(name = "idx_seat_location", columnList = "zone, row_num, seat_num")
+        }
+)
 public class Reservation {
 
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
     private String reservationNo;
+
+    @Column(nullable = false)
     private String accountId;
+
+    @Column(nullable = false)
     private String zone;
+
+    @Column(name = "row_num", nullable = false)
     private String rowNum;
+
+    @Column(name = "seat_num", nullable = false)
     private String seatNum;
+
+    @Column(nullable = false)
     private Long originalPrice;
 
     public Reservation(String reservationNo, String accountId, String zone, String rowNum, String seatNum, Long originalPrice) {

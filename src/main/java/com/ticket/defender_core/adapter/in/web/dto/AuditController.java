@@ -15,7 +15,7 @@ public class AuditController {
 
     @PostMapping("/analyze")
     public ResponseEntity<String> receiveAndAnalyze(@RequestBody AgentAnalysisRequest request) {
-        if (request.tickets() == null || request.tickets().isEmpty()) {
+        if (request.tickets() == null || request.tickets().isEmpty() || request.tickets().contains(null)) {
             return ResponseEntity.badRequest().body("요청 데이터가 비어있습니다.");
         }
 

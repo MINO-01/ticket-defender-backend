@@ -25,6 +25,8 @@ public class FraudAnalysisService {
     private final FastApiAdapter fastApiAdapter;
     private final TicketAuditRepository ticketAuditRepository;
 
+    private record AuditPairKey(String paymentHash, String accountId) {}
+
     public void processAgentData(AgentAnalysisRequest request) {
 
         List<String> paymentHashes = new ArrayList<>();
@@ -61,17 +63,17 @@ public class FraudAnalysisService {
 
         List<TicketAudit> existingAudits = ticketAuditRepository.findByPaymentHashIn(new ArrayList<>(fraudulentPaymentHashes));
 
-        Set<String> existingPairs = new HashSet<>();
+        Set<AuditPairKey> existingPairs = new HashSet<>();
         for (TicketAudit audit : existingAudits) {
-            existingPairs.add(audit.getPaymentHash() + ":" + audit.getAccountId());
+            existingPairs.add(new AuditPairKey(audit.getPaymentHash(), audit.getAccountId()));
         }
 
         List<TicketAudit> newAudits = new ArrayList<>();
 
         for (AgentAnalysisRequest.TicketHashData ticket : request.tickets()) {
-
             if (fraudulentPaymentHashes.contains(ticket.paymentHash())) {
-                String pairKey = ticket.paymentHash() + ":" + ticket.accountId();
+
+                AuditPairKey pairKey = new AuditPairKey(ticket.paymentHash(), ticket.accountId());
 
                 if (!existingPairs.contains(pairKey)) {
                     TicketAudit audit = TicketAudit.createMacroAudit(

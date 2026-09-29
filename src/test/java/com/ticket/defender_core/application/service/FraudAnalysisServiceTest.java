@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.FastApiAdapter;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
+import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
 import com.ticket.defender_core.domain.AuditStatus;
 import com.ticket.defender_core.domain.TicketAudit;
@@ -43,23 +44,28 @@ class FraudAnalysisServiceTest {
     @Test
     @DisplayName("FastAPI 분석 결과가 정상일 때, 중복이 없다면 실제 주소와 함께 DB에 적재되어야 한다.")
     void processAgentData_Success() {
+        // given
         AgentAnalysisRequest request = new AgentAnalysisRequest(List.of(
                 new AgentAnalysisRequest.TicketHashData("userA", "hash1234", "addrA"),
                 new AgentAnalysisRequest.TicketHashData("userB", "hash1234", "addrB")
         ));
 
-        FastApiClusterResponse.ClusterData fakeCluster = new FastApiClusterResponse.ClusterData(
-                "hash1234", 2, List.of("userA", "userB")
-        );
         FastApiClusterResponse fakeResponse = new FastApiClusterResponse(
-                "success", "완료", List.of(fakeCluster)
+                "cluster_1",
+                List.of("hash1234"),         // 불량 결제수단 해시 목록
+                List.of("addrA", "addrB"),   // 불량 주소 해시 목록
+                0.99                         // 매크로 확률
         );
 
-        given(fastApiAdapter.requestFraudAnalysis(request)).willReturn(fakeResponse);
+        given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
+                .willReturn(List.of(fakeResponse));
+
         given(ticketAuditRepository.findByPaymentHashIn(anyList())).willReturn(Collections.emptyList());
 
+        // when
         fraudAnalysisService.processAgentData(request);
 
+        // then
         verify(ticketAuditRepository, times(1)).saveAll(auditListCaptor.capture());
 
         List<TicketAudit> savedAudits = auditListCaptor.getValue();
@@ -69,17 +75,18 @@ class FraudAnalysisServiceTest {
     }
 
     @Test
-    @DisplayName("FastAPI 서버가 다운되어 Fallback(빈 결과)이 오면, DB에 아무것도 저장하지 않는다.")
+    @DisplayName("FastAPI 서버가 다운되어 빈 리스트이 오면, DB에 아무것도 저장하지 않는다.")
     void processAgentData_Fallback_NoSave() {
+        // given
         AgentAnalysisRequest request = new AgentAnalysisRequest(List.of());
-        FastApiClusterResponse fallbackResponse = new FastApiClusterResponse(
-                "fallback", "장애", Collections.emptyList()
-        );
 
-        given(fastApiAdapter.requestFraudAnalysis(request)).willReturn(fallbackResponse);
+        given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
+                .willReturn(Collections.emptyList());
 
+        // when
         fraudAnalysisService.processAgentData(request);
 
+        // then
         verify(ticketAuditRepository, times(0)).saveAll(any());
     }
 }

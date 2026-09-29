@@ -13,9 +13,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -27,16 +27,17 @@ public class FraudAnalysisService {
 
     public void processAgentData(AgentAnalysisRequest request) {
 
-        List<String> paymentHashes = request.tickets().stream()
-                .map(AgentAnalysisRequest.TicketHashData::paymentHash)
-                .toList();
+        List<String> paymentHashes = new ArrayList<>();
+        List<String> addressHashes = new ArrayList<>();
 
-        List<String> addressHashes = request.tickets().stream()
-                .map(AgentAnalysisRequest.TicketHashData::addressHash)
-                .toList();
+        if (request.tickets() != null) {
+            for (AgentAnalysisRequest.TicketHashData ticket : request.tickets()) {
+                paymentHashes.add(ticket.paymentHash());
+                addressHashes.add(ticket.addressHash());
+            }
+        }
 
         MacroAnalysisRequest macroRequest = new MacroAnalysisRequest(paymentHashes, addressHashes);
-
         List<FastApiClusterResponse> clusters = fastApiAdapter.requestMacroAnalysis(macroRequest);
 
         if (clusters == null || clusters.isEmpty()) {
@@ -49,14 +50,21 @@ public class FraudAnalysisService {
 
     @Transactional
     protected void saveFraudClusters(List<FastApiClusterResponse> clusters, AgentAnalysisRequest request) {
-        Set<String> fraudulentPaymentHashes = clusters.stream()
-                .flatMap(cluster -> cluster.fraudulentPaymentHashes().stream())
-                .collect(Collectors.toSet());
 
-        Set<String> existingPairs = ticketAuditRepository.findByPaymentHashIn(new ArrayList<>(fraudulentPaymentHashes))
-                .stream()
-                .map(audit -> audit.getPaymentHash() + ":" + audit.getAccountId())
-                .collect(Collectors.toSet());
+        Set<String> fraudulentPaymentHashes = new HashSet<>();
+
+        for (FastApiClusterResponse cluster : clusters) {
+            if (cluster != null && cluster.fraudulentPaymentHashes() != null) {
+                fraudulentPaymentHashes.addAll(cluster.fraudulentPaymentHashes());
+            }
+        }
+
+        List<TicketAudit> existingAudits = ticketAuditRepository.findByPaymentHashIn(new ArrayList<>(fraudulentPaymentHashes));
+
+        Set<String> existingPairs = new HashSet<>();
+        for (TicketAudit audit : existingAudits) {
+            existingPairs.add(audit.getPaymentHash() + ":" + audit.getAccountId());
+        }
 
         List<TicketAudit> newAudits = new ArrayList<>();
 

@@ -1,17 +1,17 @@
 package com.ticket.defender_core.adapter.out.api;
 
-import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
+import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
-import java.net.http.HttpClient;
-import java.time.Duration;
 import java.util.Collections;
+import java.util.List;
 
 @Slf4j
 @Component
@@ -19,34 +19,32 @@ public class FastApiAdapter {
 
     private final RestClient restClient;
 
-    public FastApiAdapter(@Value("${fastapi.url:http://localhost:8000}") String fastApiUrl) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(3))
-                .build();
+    @Value("${FASTAPI_URL:http://localhost:8000}")
+    private String fastApiUrl;
 
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
-        factory.setReadTimeout(Duration.ofSeconds(5));
-
-        this.restClient = RestClient.builder()
-                .baseUrl(fastApiUrl)
-                .requestFactory(factory)
-                .build();
+    public FastApiAdapter(RestClient.Builder restClientBuilder) {
+        this.restClient = restClientBuilder.build();
     }
 
+    /**
+     * [Track 1] 그래프 기반 매크로 군집 분석 요청
+     * 서킷 브레이커 발동 시 analyzeFallback 메서드로 흐름이 넘어감
+     */
     @CircuitBreaker(name = "fastApi", fallbackMethod = "analyzeFallback")
-    public FastApiClusterResponse requestFraudAnalysis(AgentAnalysisRequest request) {
-        log.info("FastAPI 분석 서버로 {} 건의 해시 데이터 분석을 요청합니다.", request.tickets().size());
-
+    public List<FastApiClusterResponse> requestMacroAnalysis(MacroAnalysisRequest request) {
         return restClient.post()
-                .uri("/api/v1/clusters/payment")
+                .uri(fastApiUrl + "/api/v1/clusters/analyze")
                 .body(request)
                 .retrieve()
-                .body(FastApiClusterResponse.class);
+                .body(new ParameterizedTypeReference<List<FastApiClusterResponse>>() {});
     }
 
-    public FastApiClusterResponse analyzeFallback(AgentAnalysisRequest request, Throwable t) {
-        log.error("[장애 발생] FastAPI 서버 통신 실패. 서킷 브레이커가 작동하여 빈 결과를 반환합니다. 원인: {}", t.getMessage());
-        // 장애 시 시스템을 다운시키지 않고, 안전하게 빈 리스트 응답
-        return new FastApiClusterResponse("fallback", "분석 서버 지연으로 임시 중단됨", Collections.emptyList());
+    /**
+     * 서킷 브레이커 Fallback 메서드 (장애 격리용)
+     * FastAPI 서버가 죽었거나 타임아웃이 발생하면 이 메서드를 실행.
+     */
+    public List<FastApiClusterResponse> analyzeFallback(MacroAnalysisRequest request, Throwable t) {
+        log.error("[CircuitBreaker OPEN] FastAPI 분석 서버 장애 또는 지연 발생. 원인: {}", t.getMessage());
+        return Collections.emptyList();
     }
 }

@@ -5,6 +5,8 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
+import java.util.List;
+import com.ticket.defender_core.global.converter.StringListConverter;
 
 @Entity
 @Getter
@@ -39,6 +41,10 @@ public class TicketAudit {
 
     private LocalDateTime detectedAt;
 
+    @Convert(converter = StringListConverter.class)
+    @Column(name = "evidence_image_urls", columnDefinition = "TEXT")
+    private List<String> evidenceImageUrls;
+
     public TicketAudit(String accountId, String paymentHash, String addressHash) {
         this.accountId = accountId;
         this.paymentHash = paymentHash;
@@ -62,12 +68,13 @@ public class TicketAudit {
         return audit;
     }
 
-    public static TicketAudit createVlmAudit(String reservationNo, String accountId, Double mappingScore, String reporterId) {
+    public static TicketAudit createVlmAudit(String reservationNo, String accountId, Double mappingScore, String reporterId, List<String> evidenceImageUrls) {
         TicketAudit audit = new TicketAudit();
         audit.reservationNo = reservationNo;
         audit.accountId = accountId;
         audit.mappingScore = mappingScore;
         audit.reporterId = reporterId;
+        audit.evidenceImageUrls = evidenceImageUrls;
         audit.evidenceType = EvidenceType.FAN_REPORT;
         audit.status = AuditStatus.FRAUD_DETECTED;
         audit.detectedAt = LocalDateTime.now();

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="ko">
+<head>
+    <meta charset="UTF-8"/>
+    <title>공식 암표 적발 소명 보고서</title>
+    <style>
+        body { font-family: 'NanumGothic', sans-serif; padding: 40px; color: #333; }
+        .header { text-align: center; border-bottom: 2px solid #e74c3c; padding-bottom: 20px; margin-bottom: 30px; }
+        .title { font-size: 28px; font-weight: bold; color: #c0392b; }
+        .info-table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+        .info-table th, .info-table td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        .info-table th { background-color: #f8f9fa; width: 30%; }
+        .evidence-section { margin-top: 40px; }
+        .evidence-img { max-width: 100%; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <div class="title">공식 암표 적발 소명 보고서</div>
+    <p>본 문서는 Ticket Defender 시스템에 의해 분석 및 확정된 공식 증명서입니다.</p>
+</div>
+
+<h3>적발 예매 정보</h3>
+<table class="info-table">
+    <tr><th>예약 번호 (Reservation No)</th><td th:text="${reservationNo}">RES-1234</td></tr>
+    <tr><th>적발 계정 (Account ID)</th><td th:text="${accountId}">hacker_01</td></tr>
+    <tr><th>제보자 식별자 (Reporter ID)</th><td th:text="${reporterId}">hero_fan</td></tr>
+    <tr><th>AI 분석 신뢰도 (Score)</th><td th:text="${mappingScore + '%'}">99.9%</td></tr>
+    <tr><th>적발 일시 (Detected At)</th><td th:text="${detectedAt}">2026-10-01 12:00:00</td></tr>
+</table>
+
+<div class="evidence-section">
+    <h3>채증된 증거 자료</h3>
+    <div th:each="url : ${evidenceImageUrls}">
+        <img class="evidence-img" th:src="${url}" alt="Evidence Image"/>
+    </div>
+    <p th:if="${#lists.isEmpty(evidenceImageUrls)}">첨부된 증거 이미지가 없습니다.</p>
+</div>
+
+</body>
+</html>

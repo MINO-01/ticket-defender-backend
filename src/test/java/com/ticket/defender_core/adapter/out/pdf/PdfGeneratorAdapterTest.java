@@ -34,8 +34,7 @@ class PdfGeneratorAdapterTest {
 
     private TicketAudit createDummyAudit() {
         List<String> dummyImages = List.of(
-                "https://via.placeholder.com/600x200.png?text=Evidence+Image+1",
-                "https://via.placeholder.com/600x200.png?text=Evidence+Image+2"
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         );
         return TicketAudit.createVlmAudit("RES-TEST-001", "hacker_999", 0.995, "hero_fan_01", dummyImages);
     }

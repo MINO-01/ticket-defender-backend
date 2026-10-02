@@ -45,13 +45,23 @@ class AuditReportServiceTest {
         when(ticketAuditRepository.findById(auditId)).thenReturn(Optional.of(dummyAudit));
         when(pdfGeneratorAdapter.generateVlmReportPdf(dummyAudit)).thenReturn(new byte[]{1, 2, 3});
 
+        when(ticketAuditRepository.bulkUpdateStatusToReportIssued(
+                List.of("RES-1234"),
+                AuditStatus.REPORT_ISSUED,
+                AuditStatus.FRAUD_DETECTED
+        )).thenReturn(1);
+
         // when
         byte[] result = auditReportService.issueAuditReport(auditId);
 
         // then
         assertThat(result).isNotEmpty();
 
-        verify(ticketAuditRepository).bulkUpdateStatusToReportIssued(List.of("RES-1234"), AuditStatus.REPORT_ISSUED);
+        verify(ticketAuditRepository).bulkUpdateStatusToReportIssued(
+                List.of("RES-1234"),
+                AuditStatus.REPORT_ISSUED,
+                AuditStatus.FRAUD_DETECTED
+        );
 
         ArgumentCaptor<FraudVerifiedEvent> eventCaptor = ArgumentCaptor.forClass(FraudVerifiedEvent.class);
         verify(eventPublisher).publishEvent(eventCaptor.capture());

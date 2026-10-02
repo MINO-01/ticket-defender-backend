@@ -14,7 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -43,7 +43,7 @@ class AuditReportControllerTest {
         when(auditReportService.issueAuditReport(auditId)).thenReturn(mockPdfBytes);
 
         // when & then
-        mockMvc.perform(get("/api/v1/audits/{auditId}/report", auditId))
+        mockMvc.perform(post("/api/v1/audits/{auditId}/report", auditId))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_PDF_VALUE))
                 .andExpect(header().exists(HttpHeaders.CONTENT_DISPOSITION))

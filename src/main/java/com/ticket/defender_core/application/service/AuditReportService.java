@@ -33,8 +33,8 @@ public class AuditReportService {
 
         byte[] pdf = pdfGeneratorAdapter.generateVlmReportPdf(audit);
 
-        int updated = ticketAuditRepository.bulkUpdateStatusToReportIssued(
-                List.of(audit.getReservationNo()),
+        int updated = ticketAuditRepository.updateStatusById(
+                auditId,
                 com.ticket.defender_core.domain.AuditStatus.REPORT_ISSUED,
                 com.ticket.defender_core.domain.AuditStatus.FRAUD_DETECTED
         );

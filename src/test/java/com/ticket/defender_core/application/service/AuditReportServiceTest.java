@@ -45,8 +45,8 @@ class AuditReportServiceTest {
         when(ticketAuditRepository.findById(auditId)).thenReturn(Optional.of(dummyAudit));
         when(pdfGeneratorAdapter.generateVlmReportPdf(dummyAudit)).thenReturn(new byte[]{1, 2, 3});
 
-        when(ticketAuditRepository.bulkUpdateStatusToReportIssued(
-                List.of("RES-1234"),
+        when(ticketAuditRepository.updateStatusById(
+                auditId,
                 AuditStatus.REPORT_ISSUED,
                 AuditStatus.FRAUD_DETECTED
         )).thenReturn(1);
@@ -57,8 +57,8 @@ class AuditReportServiceTest {
         // then
         assertThat(result).isNotEmpty();
 
-        verify(ticketAuditRepository).bulkUpdateStatusToReportIssued(
-                List.of("RES-1234"),
+        verify(ticketAuditRepository).updateStatusById(
+                auditId,
                 AuditStatus.REPORT_ISSUED,
                 AuditStatus.FRAUD_DETECTED
         );

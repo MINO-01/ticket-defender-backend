@@ -30,9 +30,9 @@ public interface TicketAuditRepository extends JpaRepository<TicketAudit, Long> 
 
     @Transactional
     @Modifying(clearAutomatically = true)
-    @Query("UPDATE TicketAudit t SET t.status = :newStatus WHERE t.reservationNo IN :reservationNos AND t.status = :oldStatus")
-    int bulkUpdateStatusToReportIssued(
-            @Param("reservationNos") List<String> reservationNos,
+    @Query("UPDATE TicketAudit t SET t.status = :newStatus WHERE t.id = :id AND t.status = :oldStatus")
+    int updateStatusById(
+            @Param("id") Long id,
             @Param("newStatus") com.ticket.defender_core.domain.AuditStatus newStatus,
             @Param("oldStatus") com.ticket.defender_core.domain.AuditStatus oldStatus
     );

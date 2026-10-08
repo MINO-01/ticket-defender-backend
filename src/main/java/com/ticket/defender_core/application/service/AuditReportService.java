@@ -1,13 +1,16 @@
 package com.ticket.defender_core.application.service;
 
 import com.ticket.defender_core.adapter.out.pdf.PdfGeneratorAdapter;
-import com.ticket.defender_core.domain.AuditStatus;
-import com.ticket.defender_core.domain.TicketAudit;
-import com.ticket.defender_core.domain.event.FraudVerifiedEvent;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
+import com.ticket.defender_core.domain.AuditStatus;
+import com.ticket.defender_core.domain.EvidenceType;
+import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.domain.event.DuplicateReportEvent;
+import com.ticket.defender_core.domain.event.FraudVerifiedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,28 +34,98 @@ public class AuditReportService {
         TicketAudit audit = ticketAuditRepository.findById(auditId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 감사 내역입니다. ID: " + auditId));
 
+        validateFirstReporter(audit, auditId);
+
         byte[] pdf = pdfGeneratorAdapter.generateVlmReportPdf(audit);
 
         int updated = ticketAuditRepository.updateStatusById(
                 auditId,
-                com.ticket.defender_core.domain.AuditStatus.REPORT_ISSUED,
-                com.ticket.defender_core.domain.AuditStatus.FRAUD_DETECTED
+                AuditStatus.REPORT_ISSUED,
+                AuditStatus.FRAUD_DETECTED
         );
 
         if (updated == 0) {
-            throw new IllegalStateException("보고서 발급 조건(FRAUD_DETECTED 상태)을 만족하지 않거나 이미 발급된 건입니다.");
+            throw new IllegalStateException("보고서 발급 조건(FRAUD_DETECTED 상태)을 충족하지 않거나 이미 발급된 건입니다.");
         }
 
-        log.info("적발 내역 상태 업데이트 완료 (REPORT_ISSUED) - ReservationNo: {}", audit.getReservationNo());
+        log.info("적발 내역 상태를 REPORT_ISSUED로 변경했습니다. 예매 번호: {}", audit.getReservationNo());
 
-        // 4. 안전하게 디커플링된 알림 이벤트 발행
+        // 메인 제보 승인 후 동일 예매 건의 후순위 제보를 반려합니다.
+        rejectDuplicateReports(audit, auditId);
+
         eventPublisher.publishEvent(new FraudVerifiedEvent(
                 audit.getId(),
                 audit.getReservationNo(),
                 audit.getReporterId()
         ));
-        log.info("FraudVerifiedEvent 이벤트 발행 완료 - ReporterId: {}", audit.getReporterId());
+        log.info("메인 제보 승인 이벤트를 발행했습니다. 감사 내역 ID: {}", audit.getId());
 
         return pdf;
+    }
+
+    private void validateFirstReporter(TicketAudit requestedAudit, Long auditId) {
+        if (requestedAudit.getEvidenceType() != EvidenceType.FAN_REPORT) {
+            return;
+        }
+
+        String reservationNo = requestedAudit.getReservationNo();
+        if (reservationNo == null || reservationNo.isBlank()) {
+            throw new IllegalStateException("예매 번호가 없어 최초 제보 여부를 확인할 수 없습니다.");
+        }
+
+        TicketAudit firstReport = ticketAuditRepository
+                .findEarliestReportByReservationNoAndEvidenceType(
+                        reservationNo,
+                        EvidenceType.FAN_REPORT,
+                        PageRequest.of(0, 1)
+                )
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "예매 건의 제보 내역을 찾을 수 없습니다. 예매 번호: " + reservationNo
+                ));
+
+        if (!auditId.equals(firstReport.getId())) {
+            throw new IllegalStateException(
+                    "가장 먼저 접수된 유효 제보가 아니므로 보고서를 발급할 수 없습니다. 예매 번호: " + reservationNo
+            );
+        }
+    }
+
+    private void rejectDuplicateReports(TicketAudit approvedAudit, Long auditId) {
+        String reservationNo = approvedAudit.getReservationNo();
+        if (reservationNo == null || reservationNo.isBlank()) {
+            return;
+        }
+
+        List<TicketAudit> duplicateAudits = ticketAuditRepository.findByReservationNoAndIdNotAndStatus(
+                reservationNo,
+                auditId,
+                AuditStatus.FRAUD_DETECTED
+        );
+        if (duplicateAudits.isEmpty()) {
+            return;
+        }
+
+        int rejectedCount = ticketAuditRepository.rejectDuplicateAudits(
+                reservationNo,
+                auditId,
+                AuditStatus.DUPLICATED,
+                AuditStatus.FRAUD_DETECTED
+        );
+
+        if (rejectedCount != duplicateAudits.size()) {
+            throw new IllegalStateException(
+                    "중복 제보 상태가 처리 중 변경되었습니다. 예매 번호: " + reservationNo
+            );
+        }
+
+        duplicateAudits.forEach(duplicateAudit -> eventPublisher.publishEvent(new DuplicateReportEvent(
+                duplicateAudit.getId(),
+                reservationNo,
+                duplicateAudit.getReporterId()
+        )));
+
+        log.info("후순위 중복 제보 {}건을 반려했습니다. 예매 번호: {}", rejectedCount, reservationNo);
     }
 }

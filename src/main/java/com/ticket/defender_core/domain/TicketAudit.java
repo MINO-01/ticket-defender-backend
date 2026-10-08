@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import com.ticket.defender_core.global.converter.StringListConverter;
 
 @Entity
@@ -41,6 +42,10 @@ public class TicketAudit {
 
     private LocalDateTime detectedAt;
 
+    /** 제보 접수 API가 기록한 서버 시각. 과거 데이터는 detectedAt을 기준으로 처리합니다. */
+    @Column(name = "report_received_at")
+    private LocalDateTime reportReceivedAt;
+
     @Convert(converter = StringListConverter.class)
     @Column(name = "evidence_image_urls", columnDefinition = "TEXT")
     private List<String> evidenceImageUrls;
@@ -68,7 +73,16 @@ public class TicketAudit {
         return audit;
     }
 
-    public static TicketAudit createVlmAudit(String reservationNo, String accountId, Double mappingScore, String reporterId, List<String> evidenceImageUrls) {
+    public static TicketAudit createVlmAudit(
+            String reservationNo,
+            String accountId,
+            Double mappingScore,
+            String reporterId,
+            List<String> evidenceImageUrls,
+            LocalDateTime reportReceivedAt
+    ) {
+        Objects.requireNonNull(reportReceivedAt, "제보 접수 시각은 필수입니다.");
+
         TicketAudit audit = new TicketAudit();
         audit.reservationNo = reservationNo;
         audit.accountId = accountId;
@@ -78,6 +92,7 @@ public class TicketAudit {
         audit.evidenceType = EvidenceType.FAN_REPORT;
         audit.status = AuditStatus.FRAUD_DETECTED;
         audit.detectedAt = LocalDateTime.now();
+        audit.reportReceivedAt = reportReceivedAt;
         return audit;
     }
 }

@@ -36,7 +36,9 @@ class PdfGeneratorAdapterTest {
         List<String> dummyImages = List.of(
                 "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         );
-        return TicketAudit.createVlmAudit("RES-TEST-001", "hacker_999", 0.995, "hero_fan_01", dummyImages);
+        return TicketAudit.createVlmAudit(
+                "RES-TEST-001", "hacker_999", 0.995, "hero_fan_01", dummyImages, java.time.LocalDateTime.now()
+        );
     }
 
     @Test

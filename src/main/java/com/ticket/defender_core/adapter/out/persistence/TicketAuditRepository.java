@@ -20,6 +20,12 @@ public interface TicketAuditRepository extends JpaRepository<TicketAudit, Long> 
 
     List<TicketAudit> findByPaymentHashIn(List<String> paymentHashes);
 
+    /** 분석 요청에 포함된 공연·예매 조합의 기존 감사 내역을 한 번에 조회합니다. */
+    List<TicketAudit> findAllByEventIdInAndReservationNoIn(
+            List<String> eventIds,
+            List<String> reservationNos
+    );
+
     @Transactional
     @Modifying(clearAutomatically = true)
     @Query("UPDATE TicketAudit t SET t.status = :newStatus WHERE t.paymentHash = :paymentHash AND t.status = :oldStatus")

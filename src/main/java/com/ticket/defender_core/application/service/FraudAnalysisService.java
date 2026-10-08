@@ -2,20 +2,14 @@ package com.ticket.defender_core.application.service;
 
 import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.FastApiAdapter;
-import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
-import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
-import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -23,78 +17,44 @@ import java.util.Set;
 public class FraudAnalysisService {
 
     private final FastApiAdapter fastApiAdapter;
-    private final TicketAuditRepository ticketAuditRepository;
+    private final MacroAuditPersistenceService macroAuditPersistenceService;
 
-    private record AuditPairKey(String paymentHash, String accountId) {}
+    /**
+     * 요청에 포함된 티켓별 연결 관계를 보존해 분석 서버로 전달합니다.
+     * 원격 분석 중에는 DB 트랜잭션을 열지 않고, 완료된 결과만 별도 서비스에서 저장합니다.
+     */
+    public FraudAnalysisStatus processAgentData(AgentAnalysisRequest request) {
+        String requestId = UUID.randomUUID().toString();
+        List<MacroAnalysisRequest.Ticket> tickets = request.tickets().stream()
+                .map(ticket -> new MacroAnalysisRequest.Ticket(
+                        ticket.accountId(),
+                        ticket.reservationNo(),
+                        ticket.eventId(),
+                        ticket.paymentHash(),
+                        ticket.addressHash(),
+                        ticket.deviceIdHash(),
+                        ticket.ipHash()
+                ))
+                .toList();
+        MacroAnalysisRequest analysisRequest = new MacroAnalysisRequest(requestId, tickets);
 
-    public void processAgentData(AgentAnalysisRequest request) {
-
-        List<String> paymentHashes = new ArrayList<>();
-        List<String> addressHashes = new ArrayList<>();
-
-        if (request.tickets() != null) {
-            for (AgentAnalysisRequest.TicketHashData ticket : request.tickets()) {
-                paymentHashes.add(ticket.paymentHash());
-                addressHashes.add(ticket.addressHash());
-            }
+        MacroAnalysisResponse response = fastApiAdapter.requestMacroAnalysis(analysisRequest);
+        if (response == null || response.status() != MacroAnalysisResponse.Status.COMPLETED) {
+            log.warn("그래프 분석을 완료하지 못해 결과를 저장하지 않습니다. 요청 ID: {}", requestId);
+            return FraudAnalysisStatus.UNAVAILABLE;
+        }
+        if (!requestId.equals(response.requestId())) {
+            throw new IllegalStateException("분석 응답의 요청 ID가 현재 요청과 일치하지 않습니다.");
+        }
+        if (response.clusters() == null) {
+            throw new IllegalStateException("완료된 분석 응답에 군집 목록이 없습니다.");
+        }
+        if (response.clusters().isEmpty()) {
+            log.info("그래프 분석이 완료됐으며 조사 대상 군집이 없습니다. 요청 ID: {}", requestId);
+            return FraudAnalysisStatus.COMPLETED;
         }
 
-        MacroAnalysisRequest macroRequest = new MacroAnalysisRequest(paymentHashes, addressHashes);
-        List<FastApiClusterResponse> clusters = fastApiAdapter.requestMacroAnalysis(macroRequest);
-
-        if (clusters == null || clusters.isEmpty()) {
-            log.info("탐지된 암표 의심 군집이 없거나, 분석 서버 Fallback이 작동했습니다.");
-            return;
-        }
-
-        saveFraudClusters(clusters, request);
-    }
-
-    @Transactional
-    protected void saveFraudClusters(List<FastApiClusterResponse> clusters, AgentAnalysisRequest request) {
-
-        Set<String> fraudulentPaymentHashes = new HashSet<>();
-
-        for (FastApiClusterResponse cluster : clusters) {
-            if (cluster != null && cluster.fraudulentPaymentHashes() != null) {
-                fraudulentPaymentHashes.addAll(cluster.fraudulentPaymentHashes());
-            }
-        }
-
-        List<TicketAudit> existingAudits = ticketAuditRepository.findByPaymentHashIn(new ArrayList<>(fraudulentPaymentHashes));
-
-        Set<AuditPairKey> existingPairs = new HashSet<>();
-        for (TicketAudit audit : existingAudits) {
-            existingPairs.add(new AuditPairKey(audit.getPaymentHash(), audit.getAccountId()));
-        }
-
-        List<TicketAudit> newAudits = new ArrayList<>();
-
-        for (AgentAnalysisRequest.TicketHashData ticket : request.tickets()) {
-            if (fraudulentPaymentHashes.contains(ticket.paymentHash())) {
-
-                AuditPairKey pairKey = new AuditPairKey(ticket.paymentHash(), ticket.accountId());
-
-                if (!existingPairs.contains(pairKey)) {
-                    TicketAudit audit = TicketAudit.createMacroAudit(
-                            ticket.accountId(),
-                            ticket.paymentHash(),
-                            ticket.addressHash()
-                    );
-
-                    newAudits.add(audit);
-                    existingPairs.add(pairKey);
-                }
-            }
-        }
-
-        if (!newAudits.isEmpty()) {
-            try {
-                ticketAuditRepository.saveAll(newAudits);
-                log.info("총 {}건의 매크로 의심 계정이 DB에 성공적으로 적재되었습니다.", newAudits.size());
-            } catch (DataIntegrityViolationException e) {
-                log.warn("DB 고유 제약 조건 위반 처리를 무시하고 넘어갑니다.");
-            }
-        }
+        macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest);
+        return FraudAnalysisStatus.COMPLETED;
     }
 }

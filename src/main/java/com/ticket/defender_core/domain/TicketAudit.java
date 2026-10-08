@@ -15,8 +15,10 @@ import com.ticket.defender_core.global.converter.StringListConverter;
 @Table(
         name = "ticket_audit",
         uniqueConstraints = {
-                @UniqueConstraint(name = "uk_payment_account", columnNames = {"payment_hash", "account_id"}),
                 @UniqueConstraint(name = "uk_reservation_reporter", columnNames = {"reservation_no", "reporter_id"})
+        },
+        indexes = {
+                @Index(name = "idx_ticket_audit_event_reservation_evidence", columnList = "event_id,reservation_no,evidence_type")
         }
 )
 public class TicketAudit {
@@ -29,8 +31,35 @@ public class TicketAudit {
     private String paymentHash;
     private String addressHash;
 
+    @Column(name = "event_id")
+    private String eventId;
+
     private String reservationNo;
     private Double mappingScore;
+
+    @Column(name = "device_id_hash")
+    private String deviceIdHash;
+
+    @Column(name = "ip_hash")
+    private String ipHash;
+
+    @Column(name = "cluster_id")
+    private String clusterId;
+
+    @Column(name = "risk_score")
+    private Double riskScore;
+
+    @Column(name = "analysis_algorithm")
+    private String analysisAlgorithm;
+
+    @Column(name = "analysis_algorithm_version")
+    private String analysisAlgorithmVersion;
+
+    @Column(name = "analysis_request_id")
+    private String analysisRequestId;
+
+    @Column(name = "analysis_completed_at")
+    private LocalDateTime analysisCompletedAt;
 
     private String reporterId;
 
@@ -65,8 +94,22 @@ public class TicketAudit {
         this.detectedAt = LocalDateTime.now();
     }
 
-    public static TicketAudit createMacroAudit(String accountId, String paymentHash, String addressHash) {
-        TicketAudit audit = new TicketAudit(accountId, paymentHash, addressHash);
+    public static TicketAudit createMacroAudit(MacroAnalysisEvidence evidence) {
+        TicketAudit audit = new TicketAudit(
+                evidence.accountId(),
+                evidence.paymentHash(),
+                evidence.addressHash()
+        );
+        audit.eventId = evidence.eventId();
+        audit.reservationNo = evidence.reservationNo();
+        audit.deviceIdHash = evidence.deviceIdHash();
+        audit.ipHash = evidence.ipHash();
+        audit.clusterId = evidence.clusterId();
+        audit.riskScore = evidence.riskScore();
+        audit.analysisAlgorithm = evidence.algorithm();
+        audit.analysisAlgorithmVersion = evidence.algorithmVersion();
+        audit.analysisRequestId = evidence.analysisRequestId();
+        audit.analysisCompletedAt = evidence.analyzedAt();
         audit.evidenceType = EvidenceType.MACRO_GRAPH;
         audit.status = AuditStatus.FRAUD_DETECTED;
         audit.detectedAt = LocalDateTime.now();

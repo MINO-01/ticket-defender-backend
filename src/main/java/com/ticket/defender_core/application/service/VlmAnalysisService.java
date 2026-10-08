@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -20,14 +21,22 @@ public class VlmAnalysisService {
     private final ReservationRepository reservationRepository;
     private final TicketAuditRepository ticketAuditRepository;
 
+    /** reportReceivedAt은 VLM 분석 시작 전, 제보를 서버가 처음 접수한 시각이어야 합니다. */
     public record VlmParsedData(
             String zone,
             String rowNum,
             String seatNum,
             Double mappingScore,
             String reporterId,
-            List<String> evidenceImageUrls
-    ) {}
+            List<String> evidenceImageUrls,
+            LocalDateTime reportReceivedAt
+    ) {
+        public VlmParsedData {
+            if (reportReceivedAt == null) {
+                throw new IllegalArgumentException("제보 접수 시각은 필수입니다.");
+            }
+        }
+    }
 
     /**
      * [Track 2] VLM 팬 제보 데이터 대조 및 암표상 적발 로직
@@ -60,7 +69,8 @@ public class VlmAnalysisService {
                 suspect.getAccountId(),
                 parsedData.mappingScore(),
                 parsedData.reporterId() ,
-                parsedData.evidenceImageUrls()
+                parsedData.evidenceImageUrls(),
+                parsedData.reportReceivedAt()
         );
 
         ticketAuditRepository.save(audit);

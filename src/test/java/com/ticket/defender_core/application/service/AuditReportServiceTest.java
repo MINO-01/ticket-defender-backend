@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.out.pdf.PdfGeneratorAdapter;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
 import com.ticket.defender_core.domain.AuditStatus;
+import com.ticket.defender_core.domain.EvidenceType;
 import com.ticket.defender_core.domain.TicketAudit;
 import com.ticket.defender_core.domain.event.DuplicateReportEvent;
 import com.ticket.defender_core.domain.event.FraudVerifiedEvent;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.List;
@@ -50,6 +52,11 @@ class AuditReportServiceTest {
         byte[] expectedPdf = {1, 2, 3};
 
         given(ticketAuditRepository.findById(MAIN_AUDIT_ID)).willReturn(Optional.of(mainAudit));
+        given(ticketAuditRepository.findEarliestReportByReservationNoAndEvidenceType(
+                RESERVATION_NO,
+                EvidenceType.FAN_REPORT,
+                PageRequest.of(0, 1)
+        )).willReturn(List.of(mainAudit));
         given(pdfGeneratorAdapter.generateVlmReportPdf(mainAudit)).willReturn(expectedPdf);
         given(ticketAuditRepository.updateStatusById(
                 MAIN_AUDIT_ID,
@@ -100,6 +107,11 @@ class AuditReportServiceTest {
         byte[] expectedPdf = {4, 5, 6};
 
         given(ticketAuditRepository.findById(MAIN_AUDIT_ID)).willReturn(Optional.of(mainAudit));
+        given(ticketAuditRepository.findEarliestReportByReservationNoAndEvidenceType(
+                RESERVATION_NO,
+                EvidenceType.FAN_REPORT,
+                PageRequest.of(0, 1)
+        )).willReturn(List.of(mainAudit));
         given(pdfGeneratorAdapter.generateVlmReportPdf(mainAudit)).willReturn(expectedPdf);
         given(ticketAuditRepository.updateStatusById(
                 MAIN_AUDIT_ID,
@@ -128,11 +140,54 @@ class AuditReportServiceTest {
     }
 
     @Test
+    @DisplayName("최초 접수 제보가 아니면 PDF를 만들거나 제보 상태를 변경하지 않는다.")
+    void issueAuditReport_RejectsLaterReportBeforeGeneratingPdf() {
+        // given
+        Long laterAuditId = 2L;
+        TicketAudit laterAudit = mock(TicketAudit.class);
+        TicketAudit firstAudit = mock(TicketAudit.class);
+        given(laterAudit.getEvidenceType()).willReturn(EvidenceType.FAN_REPORT);
+        given(laterAudit.getReservationNo()).willReturn(RESERVATION_NO);
+        given(firstAudit.getId()).willReturn(MAIN_AUDIT_ID);
+        given(ticketAuditRepository.findById(laterAuditId)).willReturn(Optional.of(laterAudit));
+        given(ticketAuditRepository.findEarliestReportByReservationNoAndEvidenceType(
+                RESERVATION_NO,
+                EvidenceType.FAN_REPORT,
+                PageRequest.of(0, 1)
+        )).willReturn(List.of(firstAudit));
+
+        // when
+        Throwable thrown = catchThrowable(() -> auditReportService.issueAuditReport(laterAuditId));
+
+        // then
+        assertThat(thrown)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("가장 먼저 접수된 유효 제보가 아니므로");
+        verifyNoInteractions(pdfGeneratorAdapter);
+        verify(ticketAuditRepository, never()).updateStatusById(
+                anyLong(), any(AuditStatus.class), any(AuditStatus.class)
+        );
+        verify(ticketAuditRepository, never()).rejectDuplicateAudits(
+                anyString(), anyLong(), any(AuditStatus.class), any(AuditStatus.class)
+        );
+        verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
     @DisplayName("PDF 생성에 실패하면 상태 변경, 중복 반려, 이벤트 발행을 수행하지 않는다.")
     void issueAuditReport_DoesNotRejectDuplicatesWhenPdfGenerationFails() {
         // given
         TicketAudit mainAudit = mock(TicketAudit.class);
+        TicketAudit firstAudit = mock(TicketAudit.class);
+        given(mainAudit.getEvidenceType()).willReturn(EvidenceType.FAN_REPORT);
+        given(mainAudit.getReservationNo()).willReturn(RESERVATION_NO);
+        given(firstAudit.getId()).willReturn(MAIN_AUDIT_ID);
         given(ticketAuditRepository.findById(MAIN_AUDIT_ID)).willReturn(Optional.of(mainAudit));
+        given(ticketAuditRepository.findEarliestReportByReservationNoAndEvidenceType(
+                RESERVATION_NO,
+                EvidenceType.FAN_REPORT,
+                PageRequest.of(0, 1)
+        )).willReturn(List.of(firstAudit));
         given(pdfGeneratorAdapter.generateVlmReportPdf(mainAudit))
                 .willThrow(new IllegalStateException("PDF 생성 실패"));
 
@@ -160,7 +215,16 @@ class AuditReportServiceTest {
     void issueAuditReport_DoesNotRejectDuplicatesWhenMainStatusUpdateFails() {
         // given
         TicketAudit mainAudit = mock(TicketAudit.class);
+        TicketAudit firstAudit = mock(TicketAudit.class);
+        given(mainAudit.getEvidenceType()).willReturn(EvidenceType.FAN_REPORT);
+        given(mainAudit.getReservationNo()).willReturn(RESERVATION_NO);
+        given(firstAudit.getId()).willReturn(MAIN_AUDIT_ID);
         given(ticketAuditRepository.findById(MAIN_AUDIT_ID)).willReturn(Optional.of(mainAudit));
+        given(ticketAuditRepository.findEarliestReportByReservationNoAndEvidenceType(
+                RESERVATION_NO,
+                EvidenceType.FAN_REPORT,
+                PageRequest.of(0, 1)
+        )).willReturn(List.of(firstAudit));
         given(pdfGeneratorAdapter.generateVlmReportPdf(mainAudit)).willReturn(new byte[]{8});
         given(ticketAuditRepository.updateStatusById(
                 MAIN_AUDIT_ID,
@@ -189,10 +253,18 @@ class AuditReportServiceTest {
     void issueAuditReport_FailsWhenDuplicateCountChangesConcurrently() {
         // given
         TicketAudit mainAudit = mock(TicketAudit.class);
+        TicketAudit firstAudit = mock(TicketAudit.class);
         given(mainAudit.getReservationNo()).willReturn(RESERVATION_NO);
+        given(mainAudit.getEvidenceType()).willReturn(EvidenceType.FAN_REPORT);
+        given(firstAudit.getId()).willReturn(MAIN_AUDIT_ID);
         TicketAudit duplicateAudit = mock(TicketAudit.class);
 
         given(ticketAuditRepository.findById(MAIN_AUDIT_ID)).willReturn(Optional.of(mainAudit));
+        given(ticketAuditRepository.findEarliestReportByReservationNoAndEvidenceType(
+                RESERVATION_NO,
+                EvidenceType.FAN_REPORT,
+                PageRequest.of(0, 1)
+        )).willReturn(List.of(firstAudit));
         given(pdfGeneratorAdapter.generateVlmReportPdf(mainAudit)).willReturn(new byte[]{7});
         given(ticketAuditRepository.updateStatusById(
                 MAIN_AUDIT_ID,
@@ -232,6 +304,7 @@ class AuditReportServiceTest {
         given(audit.getId()).willReturn(MAIN_AUDIT_ID);
         given(audit.getReservationNo()).willReturn(RESERVATION_NO);
         given(audit.getReporterId()).willReturn("main_reporter");
+        given(audit.getEvidenceType()).willReturn(EvidenceType.FAN_REPORT);
         return audit;
     }
 

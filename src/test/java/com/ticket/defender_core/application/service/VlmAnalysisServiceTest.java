@@ -15,6 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 import java.util.Optional;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -36,7 +37,7 @@ class VlmAnalysisServiceTest {
     @DisplayName("[방어 로직] 매핑 스코어가 0.85 미만이면 DB 조회를 아예 수행하지 않고 무시한다")
     void dropWhenScoreIsLow() {
         VlmAnalysisService.VlmParsedData lowScoreData = new VlmAnalysisService.VlmParsedData(
-                "A", "1", "1", 0.84, "reporter123", List.of("url1")
+                "A", "1", "1", 0.84, "reporter123", List.of("url1"), LocalDateTime.now()
         );
 
         // when
@@ -52,7 +53,7 @@ class VlmAnalysisServiceTest {
     void dropWhenNoReservationFound() {
         // given
         VlmAnalysisService.VlmParsedData validData = new VlmAnalysisService.VlmParsedData(
-                "VIP", "10", "5", 0.90, "reporter123", List.of("url1")
+                "VIP", "10", "5", 0.90, "reporter123", List.of("url1"), LocalDateTime.now()
         );
         when(reservationRepository.findByZoneAndRowNumAndSeatNum("VIP", "10", "5"))
                 .thenReturn(Optional.empty());
@@ -71,7 +72,7 @@ class VlmAnalysisServiceTest {
         // given
         List<String> images = List.of("http://s3.../img1.png", "http://s3.../img2.png");
         VlmAnalysisService.VlmParsedData parsedData = new VlmAnalysisService.VlmParsedData(
-                "R", "1", "1", 0.99, "hero_fan", images
+                "R", "1", "1", 0.99, "hero_fan", images, LocalDateTime.now()
         );
 
         Reservation mockReservation = mock(Reservation.class);
@@ -95,6 +96,7 @@ class VlmAnalysisServiceTest {
         assertThat(savedAudit.getReporterId()).isEqualTo("hero_fan");
         assertThat(savedAudit.getMappingScore()).isEqualTo(0.99);
         assertThat(savedAudit.getEvidenceType()).isEqualTo(EvidenceType.FAN_REPORT);
+        assertThat(savedAudit.getReportReceivedAt()).isEqualTo(parsedData.reportReceivedAt());
 
         assertThat(savedAudit.getEvidenceImageUrls()).hasSize(2);
         assertThat(savedAudit.getEvidenceImageUrls()).containsExactly("http://s3.../img1.png", "http://s3.../img2.png");

@@ -3,12 +3,14 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.out.pdf.PdfGeneratorAdapter;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
 import com.ticket.defender_core.domain.AuditStatus;
+import com.ticket.defender_core.domain.EvidenceType;
 import com.ticket.defender_core.domain.TicketAudit;
 import com.ticket.defender_core.domain.event.DuplicateReportEvent;
 import com.ticket.defender_core.domain.event.FraudVerifiedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +33,8 @@ public class AuditReportService {
 
         TicketAudit audit = ticketAuditRepository.findById(auditId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 감사 내역입니다. ID: " + auditId));
+
+        validateFirstReporter(audit, auditId);
 
         byte[] pdf = pdfGeneratorAdapter.generateVlmReportPdf(audit);
 
@@ -57,6 +61,35 @@ public class AuditReportService {
         log.info("메인 제보 승인 이벤트를 발행했습니다. 감사 내역 ID: {}", audit.getId());
 
         return pdf;
+    }
+
+    private void validateFirstReporter(TicketAudit requestedAudit, Long auditId) {
+        if (requestedAudit.getEvidenceType() != EvidenceType.FAN_REPORT) {
+            return;
+        }
+
+        String reservationNo = requestedAudit.getReservationNo();
+        if (reservationNo == null || reservationNo.isBlank()) {
+            throw new IllegalStateException("예매 번호가 없어 최초 제보 여부를 확인할 수 없습니다.");
+        }
+
+        TicketAudit firstReport = ticketAuditRepository
+                .findEarliestReportByReservationNoAndEvidenceType(
+                        reservationNo,
+                        EvidenceType.FAN_REPORT,
+                        PageRequest.of(0, 1)
+                )
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "예매 건의 제보 내역을 찾을 수 없습니다. 예매 번호: " + reservationNo
+                ));
+
+        if (!auditId.equals(firstReport.getId())) {
+            throw new IllegalStateException(
+                    "가장 먼저 접수된 유효 제보가 아니므로 보고서를 발급할 수 없습니다. 예매 번호: " + reservationNo
+            );
+        }
     }
 
     private void rejectDuplicateReports(TicketAudit approvedAudit, Long auditId) {

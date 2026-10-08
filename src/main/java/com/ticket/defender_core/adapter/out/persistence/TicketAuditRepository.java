@@ -4,6 +4,7 @@ import com.ticket.defender_core.domain.AuditStatus;
 import com.ticket.defender_core.domain.EvidenceType;
 import com.ticket.defender_core.domain.TicketAudit;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
@@ -37,6 +38,20 @@ public interface TicketAuditRepository extends JpaRepository<TicketAudit, Long> 
             @Param("id") Long id,
             @Param("newStatus") AuditStatus newStatus,
             @Param("oldStatus") AuditStatus oldStatus
+    );
+
+    /** 접수 시각이 같은 경우 감사 ID가 낮은 제보를 우선하며, 이전 데이터는 detectedAt으로 정렬합니다. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            SELECT t FROM TicketAudit t
+            WHERE t.reservationNo = :reservationNo
+              AND t.evidenceType = :evidenceType
+            ORDER BY COALESCE(t.reportReceivedAt, t.detectedAt) ASC, t.id ASC
+            """)
+    List<TicketAudit> findEarliestReportByReservationNoAndEvidenceType(
+            @Param("reservationNo") String reservationNo,
+            @Param("evidenceType") EvidenceType evidenceType,
+            Pageable pageable
     );
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

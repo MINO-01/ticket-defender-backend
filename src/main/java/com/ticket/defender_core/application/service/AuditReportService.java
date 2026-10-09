@@ -25,9 +25,7 @@ public class AuditReportService {
     private final PdfGeneratorAdapter pdfGeneratorAdapter;
     private final ApplicationEventPublisher eventPublisher;
 
-    /**
-     * 특정 적발 내역(auditId)에 대해 암표 탐지 보고서를 발급하고 상태를 확정합니다.
-     */
+    /** 적발 내역의 소명 보고서를 PDF로 발급합니다. */
     @Transactional
     public byte[] issueAuditReport(Long auditId) {
 
@@ -49,8 +47,7 @@ public class AuditReportService {
         }
 
         log.info("적발 내역 상태를 REPORT_ISSUED로 변경했습니다. 예매 번호: {}", audit.getReservationNo());
-
-        // 메인 제보 승인 후 동일 예매 건의 후순위 제보를 반려합니다.
+        
         rejectDuplicateReports(audit, auditId);
 
         eventPublisher.publishEvent(new FraudVerifiedEvent(
@@ -63,6 +60,7 @@ public class AuditReportService {
         return pdf;
     }
 
+    /** 먼저 접수된 팬 제보만 보고서를 발급할 수 있습니다. */
     private void validateFirstReporter(TicketAudit requestedAudit, Long auditId) {
         if (requestedAudit.getEvidenceType() != EvidenceType.FAN_REPORT) {
             return;
@@ -92,15 +90,17 @@ public class AuditReportService {
         }
     }
 
+    /** 같은 예매 번호의 후순위 팬 제보를 반려합니다. */
     private void rejectDuplicateReports(TicketAudit approvedAudit, Long auditId) {
         String reservationNo = approvedAudit.getReservationNo();
         if (reservationNo == null || reservationNo.isBlank()) {
             return;
         }
 
-        List<TicketAudit> duplicateAudits = ticketAuditRepository.findByReservationNoAndIdNotAndStatus(
+        List<TicketAudit> duplicateAudits = ticketAuditRepository.findByReservationNoAndIdNotAndEvidenceTypeAndStatus(
                 reservationNo,
                 auditId,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.FRAUD_DETECTED
         );
         if (duplicateAudits.isEmpty()) {
@@ -110,6 +110,7 @@ public class AuditReportService {
         int rejectedCount = ticketAuditRepository.rejectDuplicateAudits(
                 reservationNo,
                 auditId,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.DUPLICATED,
                 AuditStatus.FRAUD_DETECTED
         );

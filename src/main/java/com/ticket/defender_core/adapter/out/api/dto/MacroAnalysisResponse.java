@@ -3,7 +3,7 @@ package com.ticket.defender_core.adapter.out.api.dto;
 import java.time.OffsetDateTime;
 import java.util.List;
 
-/** 정상 분석 결과와 Spring 내부의 분석 불가 상태를 함께 표현합니다. */
+/** 분석 완료 결과와 분석 불가 상태를 담습니다. */
 public record MacroAnalysisResponse(
         String requestId,
         Status status,
@@ -17,6 +17,7 @@ public record MacroAnalysisResponse(
         UNAVAILABLE
     }
 
+    /** 분석 결과를 사용할 수 없을 때 반환할 응답을 만듭니다. */
     public static MacroAnalysisResponse unavailable(String requestId) {
         return new MacroAnalysisResponse(
                 requestId,

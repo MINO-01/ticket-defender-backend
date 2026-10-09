@@ -25,6 +25,7 @@ class FastApiAdapterTest {
     private static final String PAYMENT_HASH = "a".repeat(64);
     private static final String DEVICE_HASH = "b".repeat(64);
 
+    /** 분석 요청과 정상 응답이 계약에 맞게 오갑니다. */
     @Test
     @DisplayName("계약된 경로와 티켓별 요청으로 FastAPI 분석을 호출하고 응답을 해석한다")
     void requestMacroAnalysis_sendsContractAndReadsResponse() {
@@ -76,6 +77,7 @@ class FastApiAdapterTest {
         assertThat(response.clusters().get(0).riskScore()).isEqualTo(0.91);
     }
 
+    /** 요청 ID가 다른 응답은 거부됩니다. */
     @Test
     @DisplayName("요청 ID가 다른 응답은 유효한 분석 결과로 처리하지 않는다")
     void requestMacroAnalysis_rejectsMismatchedRequestId() {
@@ -101,6 +103,45 @@ class FastApiAdapterTest {
         server.verify();
     }
 
+    /** 필수 토큰 배열이 null이면 응답을 거부합니다. */
+    @Test
+    @DisplayName("필수 연결 토큰 배열 일부가 null이면 다른 배열에 값이 있어도 계약 위반으로 거부한다")
+    void requestMacroAnalysis_rejectsNullRequiredTokenArray() {
+        // given
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        String responseJson = """
+                {
+                  "requestId": "%s",
+                  "status": "COMPLETED",
+                  "algorithm": "LOUVAIN",
+                  "algorithmVersion": "1.0.0",
+                  "analyzedAt": "2026-10-08T10:15:30Z",
+                  "clusters": [{
+                    "clusterId": "cluster-001",
+                    "members": [
+                      {"accountId":"uid-1","reservationNo":"res-1","eventId":"event-1"},
+                      {"accountId":"uid-2","reservationNo":"res-2","eventId":"event-1"}
+                    ],
+                    "paymentHashes": null,
+                    "addressHashes": ["%s"],
+                    "deviceIdHashes": [],
+                    "ipHashes": [],
+                    "riskScore": 0.91
+                  }]
+                }
+                """.formatted(REQUEST_ID, PAYMENT_HASH);
+        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+                .andRespond(withSuccess(responseJson, MediaType.APPLICATION_JSON));
+
+        // when / then
+        assertThrows(IllegalStateException.class, () -> adapter.requestMacroAnalysis(request()));
+        server.verify();
+    }
+
+    /** 서버 장애는 분석 불가 상태로 처리됩니다. */
     @Test
     @DisplayName("Circuit Breaker Fallback은 분석 불가 상태를 반환한다")
     void analyzeFallback_returnsUnavailable() {
@@ -119,6 +160,7 @@ class FastApiAdapterTest {
         assertThat(response.clusters()).isEmpty();
     }
 
+    /** 테스트용 예매 두 건을 요청에 담습니다. */
     private MacroAnalysisRequest request() {
         return new MacroAnalysisRequest(REQUEST_ID, List.of(
                 new MacroAnalysisRequest.Ticket(

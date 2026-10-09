@@ -2,7 +2,7 @@ package com.ticket.defender_core.adapter.out.api.dto;
 
 import java.util.List;
 
-/** 군집과 그 군집에 포함된 티켓의 연결 관계를 보존하는 응답 DTO입니다. */
+/** FastAPI 군집 분석 결과의 군집 항목입니다. */
 public record FastApiClusterResponse(
         String clusterId,
         List<Member> members,
@@ -13,11 +13,11 @@ public record FastApiClusterResponse(
         Double riskScore
 ) {
     public FastApiClusterResponse {
-        members = members == null ? List.of() : List.copyOf(members);
-        paymentHashes = paymentHashes == null ? List.of() : List.copyOf(paymentHashes);
-        addressHashes = addressHashes == null ? List.of() : List.copyOf(addressHashes);
-        deviceIdHashes = deviceIdHashes == null ? List.of() : List.copyOf(deviceIdHashes);
-        ipHashes = ipHashes == null ? List.of() : List.copyOf(ipHashes);
+        members = members == null ? null : List.copyOf(members);
+        paymentHashes = paymentHashes == null ? null : List.copyOf(paymentHashes);
+        addressHashes = addressHashes == null ? null : List.copyOf(addressHashes);
+        deviceIdHashes = deviceIdHashes == null ? null : List.copyOf(deviceIdHashes);
+        ipHashes = ipHashes == null ? null : List.copyOf(ipHashes);
     }
 
     public record Member(

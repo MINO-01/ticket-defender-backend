@@ -18,6 +18,7 @@ public record AgentAnalysisRequest(
         List<@NotNull @Valid TicketData> tickets
 ) {
 
+    /** 공연·예매·계정 조합이 중복되지 않았는지 확인합니다. */
     @AssertTrue(message = "동일한 공연·예매·계정 조합은 한 번만 전달할 수 있습니다.")
     public boolean isTicketIdentityUnique() {
         if (tickets == null) {
@@ -62,12 +63,14 @@ public record AgentAnalysisRequest(
             @Pattern(regexp = "^[0-9a-f]{64}$", message = "IP 연결 토큰은 소문자 16진수 64자리여야 합니다.")
             String ipHash
     ) {
+        /** 연결 신호가 하나 이상 있는지 확인합니다. */
         @AssertTrue(message = "각 예매 내역에는 하나 이상의 가명 분석 신호가 필요합니다.")
         public boolean isHasAnySignalHash() {
             return hasValue(paymentHash) || hasValue(addressHash)
                     || hasValue(deviceIdHash) || hasValue(ipHash);
         }
 
+        /** 값이 비어 있지 않은지 확인합니다. */
         private static boolean hasValue(String value) {
             return value != null && !value.isBlank();
         }

@@ -26,10 +26,11 @@ class AuditControllerTest {
     @InjectMocks
     private AuditController auditController;
 
+    /** 분석 서버 장애는 HTTP 503으로 응답합니다. */
     @Test
     @DisplayName("분석 서버가 응답하지 않으면 503 상태를 반환한다")
     void receiveAndAnalyze_whenAnalysisUnavailable_returnsServiceUnavailable() {
-        // given: 유효한 티켓 요청과 분석 불가 상태를 준비합니다.
+        // given
         AgentAnalysisRequest request = new AgentAnalysisRequest(List.of(
                 new AgentAnalysisRequest.TicketData(
                         "uid-1", "res-1", "event-1", "a".repeat(64), null, null, null)
@@ -44,6 +45,7 @@ class AuditControllerTest {
         assertThat(response.getBody()).contains("분석 서버가 응답하지 않아");
     }
 
+    /** 분석이 완료되면 HTTP 200으로 응답합니다. */
     @Test
     @DisplayName("분석이 정상 완료되면 200 상태를 반환한다")
     void receiveAndAnalyze_whenCompleted_returnsOk() {

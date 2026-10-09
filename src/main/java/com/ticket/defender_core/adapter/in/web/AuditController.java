@@ -16,6 +16,7 @@ public class AuditController {
 
     private final FraudAnalysisService fraudAnalysisService;
 
+    /** 분석 서버가 응답하지 않으면 재시도할 수 있도록 503을 반환합니다. */
     @PostMapping("/analyze")
     public ResponseEntity<String> receiveAndAnalyze(@Valid @RequestBody AgentAnalysisRequest request) {
         FraudAnalysisStatus status = fraudAnalysisService.processAgentData(request);

@@ -3,7 +3,7 @@ package com.ticket.defender_core.domain;
 import java.time.LocalDateTime;
 import java.util.Objects;
 
-/** 군집 분석 결과에서 한 예매 건에 해당하는 가명 근거와 분석 출처입니다. */
+/** 예매 건의 가명 근거와 군집 분석 출처를 담습니다. */
 public record MacroAnalysisEvidence(
         String accountId,
         String reservationNo,
@@ -19,6 +19,7 @@ public record MacroAnalysisEvidence(
         String analysisRequestId,
         LocalDateTime analyzedAt
 ) {
+    /** 저장에 필요한 식별자와 분석 정보를 확인합니다. */
     public MacroAnalysisEvidence {
         Objects.requireNonNull(accountId, "계정 식별자는 필수입니다.");
         Objects.requireNonNull(reservationNo, "예매 번호는 필수입니다.");
@@ -38,6 +39,7 @@ public record MacroAnalysisEvidence(
         }
     }
 
+    /** 값이 null이나 공백인지 확인합니다. */
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
     }

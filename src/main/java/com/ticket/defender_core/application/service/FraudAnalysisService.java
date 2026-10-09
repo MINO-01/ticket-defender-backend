@@ -4,6 +4,7 @@ import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.FastApiAdapter;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import org.springframework.dao.DataIntegrityViolationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -20,8 +21,8 @@ public class FraudAnalysisService {
     private final MacroAuditPersistenceService macroAuditPersistenceService;
 
     /**
-     * 요청에 포함된 티켓별 연결 관계를 보존해 분석 서버로 전달합니다.
-     * 원격 분석 중에는 DB 트랜잭션을 열지 않고, 완료된 결과만 별도 서비스에서 저장합니다.
+     * 요청 데이터를 분석 서버로 보내고 완료된 결과만 저장합니다.
+     * 저장 중 유니크 키 충돌이 나면 기존 내역을 다시 조회합니다.
      */
     public FraudAnalysisStatus processAgentData(AgentAnalysisRequest request) {
         String requestId = UUID.randomUUID().toString();
@@ -54,7 +55,13 @@ public class FraudAnalysisService {
             return FraudAnalysisStatus.COMPLETED;
         }
 
-        macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest);
+        try {
+            macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest);
+        } catch (DataIntegrityViolationException concurrentInsert) {
+            log.info("동시 분석 요청이 같은 매크로 증거를 저장했습니다. 기존 증거를 다시 확인합니다. 요청 ID: {}",
+                    requestId);
+            macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest);
+        }
         return FraudAnalysisStatus.COMPLETED;
     }
 }

@@ -13,6 +13,7 @@ import org.mockito.Captor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -26,6 +27,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
 
 @ExtendWith(MockitoExtension.class)
 class FraudAnalysisServiceTest {
@@ -50,6 +52,7 @@ class FraudAnalysisServiceTest {
     @Captor
     private ArgumentCaptor<MacroAnalysisResponse> responseCaptor;
 
+    /** 분석 결과의 군집 구성원과 출처를 저장 서비스에 전달합니다. */
     @Test
     @DisplayName("분석 요청에 티켓별 연결 정보를 보존하고 완료된 군집을 저장 서비스에 전달한다")
     void processAgentData_completedAnalysis_persistsResponse() {
@@ -89,6 +92,37 @@ class FraudAnalysisServiceTest {
         assertEquals(FraudAnalysisStatus.COMPLETED, status);
     }
 
+    /** 유니크 충돌 뒤 저장을 다시 시도합니다. */
+    @Test
+    @DisplayName("동시 저장 경쟁으로 유니크 키 충돌이 나면 기존 증거를 다시 조회해 누락분을 저장한다")
+    void processAgentData_retriesPersistenceAfterConcurrentUniqueKeyConflict() {
+        // given
+        AgentAnalysisRequest input = new AgentAnalysisRequest(List.of(
+                new AgentAnalysisRequest.TicketData(
+                        "uid-1", "res-1", "event-1", PAYMENT_HASH, null, DEVICE_HASH, null),
+                new AgentAnalysisRequest.TicketData(
+                        "uid-2", "res-2", "event-1", PAYMENT_HASH, ADDRESS_HASH, null, IP_HASH)
+        ));
+        given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
+                .willAnswer(invocation -> {
+                    MacroAnalysisRequest request = invocation.getArgument(0);
+                    return completedResponse(request.requestId());
+                });
+        doThrow(new DataIntegrityViolationException("동시 요청 유니크 키 충돌"))
+                .doNothing()
+                .when(macroAuditPersistenceService)
+                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class));
+
+        // when
+        FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
+
+        // then
+        assertEquals(FraudAnalysisStatus.COMPLETED, status);
+        verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
+                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class));
+    }
+
+    /** 분석을 완료하지 못하면 결과를 저장하지 않습니다. */
     @Test
     @DisplayName("분석 서버가 사용할 수 없는 상태이면 감사 내역을 저장하지 않는다")
     void processAgentData_unavailable_doesNotPersist() {
@@ -111,6 +145,7 @@ class FraudAnalysisServiceTest {
         assertEquals(FraudAnalysisStatus.UNAVAILABLE, status);
     }
 
+    /** 군집이 없는 완료 결과는 저장 없이 처리합니다. */
     @Test
     @DisplayName("정상 분석에서 의심 군집이 없으면 감사 내역을 저장하지 않는다")
     void processAgentData_completedWithoutClusters_doesNotPersist() {
@@ -135,6 +170,7 @@ class FraudAnalysisServiceTest {
         assertEquals(FraudAnalysisStatus.COMPLETED, status);
     }
 
+    /** 테스트용 완료 응답을 만듭니다. */
     private MacroAnalysisResponse completedResponse(String requestId) {
         FastApiClusterResponse cluster = new FastApiClusterResponse(
                 "cluster-1",

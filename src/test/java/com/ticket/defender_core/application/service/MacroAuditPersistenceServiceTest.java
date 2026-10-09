@@ -3,9 +3,12 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceRepository;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
 import com.ticket.defender_core.domain.AuditStatus;
 import com.ticket.defender_core.domain.EvidenceType;
+import com.ticket.defender_core.domain.MacroAnalysisEvidence;
+import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.TicketAudit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -40,9 +43,13 @@ class MacroAuditPersistenceServiceTest {
     @Mock
     private TicketAuditRepository ticketAuditRepository;
 
+    @Mock
+    private MacroAuditEvidenceRepository macroAuditEvidenceRepository;
+
     @InjectMocks
     private MacroAuditPersistenceService persistenceService;
 
+    /** 군집 구성원과 분석 출처를 매크로 증거로 저장합니다. */
     @Test
     @DisplayName("군집 구성원별 티켓 정보와 분석 출처를 감사 내역으로 저장한다")
     void persistDetectedAudits_mapsClusterMembersAndProvenance() {
@@ -53,8 +60,8 @@ class MacroAuditPersistenceServiceTest {
                 new FastApiClusterResponse.Member("uid-2", "res-2", "event-1")
         );
         AtomicReference<List<TicketAudit>> savedAudits = new AtomicReference<>();
-        given(ticketAuditRepository.findAllByEventIdInAndReservationNoIn(
-                List.of("event-1"), List.of("res-1", "res-2"))).willReturn(List.of());
+        given(macroAuditEvidenceRepository.findAllByEvidenceKeyIn(any()))
+                .willReturn(List.of());
         given(ticketAuditRepository.saveAll(any())).willAnswer(invocation -> {
             Iterable<TicketAudit> values = invocation.getArgument(0);
             List<TicketAudit> copy = new ArrayList<>();
@@ -72,19 +79,22 @@ class MacroAuditPersistenceServiceTest {
         TicketAudit firstAudit = savedAudits.get().get(0);
         assertEquals("uid-1", firstAudit.getAccountId());
         assertEquals("res-1", firstAudit.getReservationNo());
-        assertEquals("event-1", firstAudit.getEventId());
-        assertEquals(DEVICE_HASH, firstAudit.getDeviceIdHash());
-        assertEquals(IP_HASH, savedAudits.get().get(1).getIpHash());
-        assertEquals("cluster-001", firstAudit.getClusterId());
-        assertEquals(0.91, firstAudit.getRiskScore());
-        assertEquals("LOUVAIN", firstAudit.getAnalysisAlgorithm());
-        assertEquals("1.0.0", firstAudit.getAnalysisAlgorithmVersion());
-        assertEquals(REQUEST_ID, firstAudit.getAnalysisRequestId());
-        assertEquals(ANALYZED_AT, firstAudit.getAnalysisCompletedAt());
+        MacroAuditEvidence firstEvidence = firstAudit.getMacroAuditEvidence();
+        assertEquals("event-1", firstEvidence.getEventId());
+        assertEquals(DEVICE_HASH, firstEvidence.getDeviceIdHash());
+        assertEquals(IP_HASH, savedAudits.get().get(1).getMacroAuditEvidence().getIpHash());
+        assertEquals("cluster-001", firstEvidence.getClusterId());
+        assertEquals(0.91, firstEvidence.getRiskScore());
+        assertEquals("LOUVAIN", firstEvidence.getAnalysisAlgorithm());
+        assertEquals("1.0.0", firstEvidence.getAnalysisAlgorithmVersion());
+        assertEquals(REQUEST_ID, firstEvidence.getAnalysisRequestId());
+        assertEquals(ANALYZED_AT, firstEvidence.getAnalysisCompletedAt());
+        assertEquals(64, firstEvidence.getEvidenceKey().length());
         assertEquals(EvidenceType.MACRO_GRAPH, firstAudit.getEvidenceType());
         assertEquals(AuditStatus.FRAUD_DETECTED, firstAudit.getStatus());
     }
 
+    /** 요청에 없는 군집 구성원은 저장하지 않습니다. */
     @Test
     @DisplayName("요청에 포함되지 않은 예매 내역이 응답에 있으면 저장하지 않고 실패한다")
     void persistDetectedAudits_rejectsUnknownMember() {
@@ -101,6 +111,42 @@ class MacroAuditPersistenceServiceTest {
         verify(ticketAuditRepository, never()).saveAll(any());
     }
 
+    /** 이미 저장된 식별 조합은 다시 만들지 않습니다. */
+    @Test
+    @DisplayName("전용 매크로 증거 테이블에 이미 저장된 예매 건은 다시 저장하지 않는다")
+    void persistDetectedAudits_skipsPreviouslyPersistedMacroEvidence() {
+        // given
+        MacroAnalysisRequest request = request();
+        MacroAnalysisResponse response = response(
+                new FastApiClusterResponse.Member("uid-1", "res-1", "event-1"),
+                new FastApiClusterResponse.Member("uid-2", "res-2", "event-1")
+        );
+        MacroAnalysisEvidence existingAnalysis = new MacroAnalysisEvidence(
+                "uid-1", "res-1", "event-1", PAYMENT_HASH, null, DEVICE_HASH, null,
+                "cluster-001", 0.91, "LOUVAIN", "1.0.0", REQUEST_ID, ANALYZED_AT);
+        TicketAudit existingAudit = TicketAudit.createMacroAudit(existingAnalysis);
+        MacroAuditEvidence existingEvidence = existingAudit.getMacroAuditEvidence();
+        given(macroAuditEvidenceRepository.findAllByEvidenceKeyIn(any()))
+                .willReturn(List.of(existingEvidence));
+        AtomicReference<List<TicketAudit>> savedAudits = new AtomicReference<>();
+        given(ticketAuditRepository.saveAll(any())).willAnswer(invocation -> {
+            Iterable<TicketAudit> values = invocation.getArgument(0);
+            List<TicketAudit> copy = new ArrayList<>();
+            values.forEach(copy::add);
+            savedAudits.set(copy);
+            return copy;
+        });
+
+        // when
+        persistenceService.persistDetectedAudits(response, request);
+
+        // then
+        verify(ticketAuditRepository).saveAll(any());
+        assertEquals(1, savedAudits.get().size());
+        assertEquals("uid-2", savedAudits.get().getFirst().getAccountId());
+    }
+
+    /** 테스트용 예매 두 건을 요청에 담습니다. */
     private MacroAnalysisRequest request() {
         return new MacroAnalysisRequest(REQUEST_ID, List.of(
                 new MacroAnalysisRequest.Ticket(
@@ -110,6 +156,7 @@ class MacroAuditPersistenceServiceTest {
         ));
     }
 
+    /** 요청 구성원으로 군집 응답을 만듭니다. */
     private MacroAnalysisResponse response(FastApiClusterResponse.Member... members) {
         FastApiClusterResponse cluster = new FastApiClusterResponse(
                 "cluster-001",

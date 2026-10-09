@@ -18,7 +18,7 @@ import com.ticket.defender_core.global.converter.StringListConverter;
                 @UniqueConstraint(name = "uk_reservation_reporter", columnNames = {"reservation_no", "reporter_id"})
         },
         indexes = {
-                @Index(name = "idx_ticket_audit_event_reservation_evidence", columnList = "event_id,reservation_no,evidence_type")
+                @Index(name = "idx_ticket_audit_reservation_evidence_status", columnList = "reservation_no,evidence_type,status")
         }
 )
 public class TicketAudit {
@@ -31,35 +31,8 @@ public class TicketAudit {
     private String paymentHash;
     private String addressHash;
 
-    @Column(name = "event_id")
-    private String eventId;
-
     private String reservationNo;
     private Double mappingScore;
-
-    @Column(name = "device_id_hash")
-    private String deviceIdHash;
-
-    @Column(name = "ip_hash")
-    private String ipHash;
-
-    @Column(name = "cluster_id")
-    private String clusterId;
-
-    @Column(name = "risk_score")
-    private Double riskScore;
-
-    @Column(name = "analysis_algorithm")
-    private String analysisAlgorithm;
-
-    @Column(name = "analysis_algorithm_version")
-    private String analysisAlgorithmVersion;
-
-    @Column(name = "analysis_request_id")
-    private String analysisRequestId;
-
-    @Column(name = "analysis_completed_at")
-    private LocalDateTime analysisCompletedAt;
 
     private String reporterId;
 
@@ -79,6 +52,10 @@ public class TicketAudit {
     @Column(name = "evidence_image_urls", columnDefinition = "TEXT")
     private List<String> evidenceImageUrls;
 
+    @OneToOne(mappedBy = "ticketAudit", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private MacroAuditEvidence macroAuditEvidence;
+
+    /** 기본 감사 내역을 만듭니다. */
     public TicketAudit(String accountId, String paymentHash, String addressHash) {
         this.accountId = accountId;
         this.paymentHash = paymentHash;
@@ -86,6 +63,7 @@ public class TicketAudit {
         this.status = AuditStatus.NORMAL;
     }
 
+    /** 상태를 적발 완료로 바꾸고 적발 시각을 기록합니다. */
     public void markAsFraud() {
         this.status = AuditStatus.FRAUD_DETECTED;
         if (this.evidenceType == null) {
@@ -94,28 +72,22 @@ public class TicketAudit {
         this.detectedAt = LocalDateTime.now();
     }
 
+    /** 감사 정보와 매크로 증거를 함께 구성합니다. */
     public static TicketAudit createMacroAudit(MacroAnalysisEvidence evidence) {
         TicketAudit audit = new TicketAudit(
                 evidence.accountId(),
                 evidence.paymentHash(),
                 evidence.addressHash()
         );
-        audit.eventId = evidence.eventId();
         audit.reservationNo = evidence.reservationNo();
-        audit.deviceIdHash = evidence.deviceIdHash();
-        audit.ipHash = evidence.ipHash();
-        audit.clusterId = evidence.clusterId();
-        audit.riskScore = evidence.riskScore();
-        audit.analysisAlgorithm = evidence.algorithm();
-        audit.analysisAlgorithmVersion = evidence.algorithmVersion();
-        audit.analysisRequestId = evidence.analysisRequestId();
-        audit.analysisCompletedAt = evidence.analyzedAt();
         audit.evidenceType = EvidenceType.MACRO_GRAPH;
         audit.status = AuditStatus.FRAUD_DETECTED;
         audit.detectedAt = LocalDateTime.now();
+        audit.macroAuditEvidence = MacroAuditEvidence.create(audit, evidence);
         return audit;
     }
 
+    /** 접수 시각과 캡처 정보를 담은 팬 제보를 만듭니다. */
     public static TicketAudit createVlmAudit(
             String reservationNo,
             String accountId,

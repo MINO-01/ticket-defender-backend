@@ -8,8 +8,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.UnknownContentTypeException;
 
 import java.time.Duration;
 import java.util.HashSet;
@@ -47,11 +50,20 @@ public class FastApiAdapter {
     @CircuitBreaker(name = "fastApi", fallbackMethod = "analyzeFallback")
     public MacroAnalysisResponse requestMacroAnalysis(MacroAnalysisRequest request) {
         String baseUrl = fastApiUrl.replaceAll("/+$", "");
-        MacroAnalysisResponse response = restClient.post()
-                .uri(baseUrl + ANALYSIS_PATH)
-                .body(request)
-                .retrieve()
-                .body(MacroAnalysisResponse.class);
+        MacroAnalysisResponse response;
+        try {
+            response = restClient.post()
+                    .uri(baseUrl + ANALYSIS_PATH)
+                    .body(request)
+                    .retrieve()
+                    .body(MacroAnalysisResponse.class);
+        } catch (RestClientException cause) {
+            if (cause instanceof UnknownContentTypeException
+                    || cause.contains(HttpMessageNotReadableException.class)) {
+                throw new FastApiResponseContractException("FastAPI 응답 본문을 해석할 수 없습니다.", cause);
+            }
+            throw cause;
+        }
 
         validateResponse(request, response);
         return response;

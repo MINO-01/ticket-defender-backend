@@ -6,4 +6,8 @@ public class FastApiResponseContractException extends IllegalStateException {
     public FastApiResponseContractException(String message) {
         super(message);
     }
+
+    public FastApiResponseContractException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

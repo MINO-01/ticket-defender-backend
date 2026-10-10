@@ -1,8 +1,12 @@
 package com.ticket.defender_core.adapter.in.web;
 
 import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
+import com.ticket.defender_core.adapter.out.api.FastApiResponseContractException;
+import com.ticket.defender_core.application.service.FraudAnalysisStatus;
 import com.ticket.defender_core.application.service.FraudAnalysisService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -13,14 +17,22 @@ public class AuditController {
 
     private final FraudAnalysisService fraudAnalysisService;
 
+    /** 분석 서버가 응답하지 않으면 재시도할 수 있도록 503을 반환합니다. */
     @PostMapping("/analyze")
-    public ResponseEntity<String> receiveAndAnalyze(@RequestBody AgentAnalysisRequest request) {
-        if (request.tickets() == null || request.tickets().isEmpty() || request.tickets().contains(null)) {
-            return ResponseEntity.badRequest().body("요청 데이터가 비어있습니다.");
+    public ResponseEntity<String> receiveAndAnalyze(@Valid @RequestBody AgentAnalysisRequest request) {
+        FraudAnalysisStatus status = fraudAnalysisService.processAgentData(request);
+        if (status == FraudAnalysisStatus.UNAVAILABLE) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body("분석 서버가 응답하지 않아 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
         }
 
-        fraudAnalysisService.processAgentData(request);
-
         return ResponseEntity.ok("데이터 수신 및 분석 파이프라인 처리가 완료되었습니다.");
+    }
+
+    /** 잘못된 분석 서버 응답은 재시도 안내 없이 502로 구분합니다. */
+    @ExceptionHandler(FastApiResponseContractException.class)
+    public ResponseEntity<String> handleResponseContractFailure() {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body("분석 서버의 응답이 올바르지 않아 요청을 처리하지 못했습니다.");
     }
 }

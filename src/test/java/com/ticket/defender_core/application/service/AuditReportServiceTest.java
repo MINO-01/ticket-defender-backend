@@ -42,6 +42,7 @@ class AuditReportServiceTest {
     @Mock
     private ApplicationEventPublisher eventPublisher;
 
+    /** 승인된 제보를 발급하고 후순위 제보를 반려합니다. */
     @Test
     @DisplayName("메인 제보 승인 후 동일 예매 건의 후순위 제보를 반려하고 제보자별 이벤트를 발행한다.")
     void issueAuditReport_RejectsAndNotifiesDuplicateReporters() {
@@ -63,14 +64,16 @@ class AuditReportServiceTest {
                 AuditStatus.REPORT_ISSUED,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(1);
-        given(ticketAuditRepository.findByReservationNoAndIdNotAndStatus(
+        given(ticketAuditRepository.findByReservationNoAndIdNotAndEvidenceTypeAndStatus(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(List.of(duplicateOne, duplicateTwo));
         given(ticketAuditRepository.rejectDuplicateAudits(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.DUPLICATED,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(2);
@@ -88,6 +91,7 @@ class AuditReportServiceTest {
         verify(ticketAuditRepository).rejectDuplicateAudits(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.DUPLICATED,
                 AuditStatus.FRAUD_DETECTED
         );
@@ -99,6 +103,7 @@ class AuditReportServiceTest {
         verifyNoMoreInteractions(eventPublisher);
     }
 
+    /** 후순위 제보가 없어도 보고서를 발급합니다. */
     @Test
     @DisplayName("후순위 제보가 없어도 메인 보고서를 정상적으로 발급한다.")
     void issueAuditReport_CompletesWhenThereAreNoDuplicates() {
@@ -118,9 +123,10 @@ class AuditReportServiceTest {
                 AuditStatus.REPORT_ISSUED,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(1);
-        given(ticketAuditRepository.findByReservationNoAndIdNotAndStatus(
+        given(ticketAuditRepository.findByReservationNoAndIdNotAndEvidenceTypeAndStatus(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(List.of());
 
@@ -130,7 +136,7 @@ class AuditReportServiceTest {
         // then
         assertThat(result).containsExactly((byte) 4, (byte) 5, (byte) 6);
         verify(ticketAuditRepository, never()).rejectDuplicateAudits(
-                anyString(), anyLong(), any(AuditStatus.class), any(AuditStatus.class)
+                anyString(), anyLong(), any(EvidenceType.class), any(AuditStatus.class), any(AuditStatus.class)
         );
         verify(eventPublisher).publishEvent(
                 new FraudVerifiedEvent(MAIN_AUDIT_ID, RESERVATION_NO, "main_reporter")
@@ -139,6 +145,7 @@ class AuditReportServiceTest {
         verifyNoMoreInteractions(eventPublisher);
     }
 
+    /** 접수 순서가 늦은 제보는 발급하지 않습니다. */
     @Test
     @DisplayName("최초 접수 제보가 아니면 PDF를 만들거나 제보 상태를 변경하지 않는다.")
     void issueAuditReport_RejectsLaterReportBeforeGeneratingPdf() {
@@ -168,11 +175,12 @@ class AuditReportServiceTest {
                 anyLong(), any(AuditStatus.class), any(AuditStatus.class)
         );
         verify(ticketAuditRepository, never()).rejectDuplicateAudits(
-                anyString(), anyLong(), any(AuditStatus.class), any(AuditStatus.class)
+                anyString(), anyLong(), any(EvidenceType.class), any(AuditStatus.class), any(AuditStatus.class)
         );
         verifyNoInteractions(eventPublisher);
     }
 
+    /** PDF 생성에 실패하면 상태를 변경하지 않습니다. */
     @Test
     @DisplayName("PDF 생성에 실패하면 상태 변경, 중복 반려, 이벤트 발행을 수행하지 않는다.")
     void issueAuditReport_DoesNotRejectDuplicatesWhenPdfGenerationFails() {
@@ -201,15 +209,16 @@ class AuditReportServiceTest {
         verify(ticketAuditRepository, never()).updateStatusById(
                 anyLong(), any(AuditStatus.class), any(AuditStatus.class)
         );
-        verify(ticketAuditRepository, never()).findByReservationNoAndIdNotAndStatus(
-                anyString(), anyLong(), any(AuditStatus.class)
+        verify(ticketAuditRepository, never()).findByReservationNoAndIdNotAndEvidenceTypeAndStatus(
+                anyString(), anyLong(), any(EvidenceType.class), any(AuditStatus.class)
         );
         verify(ticketAuditRepository, never()).rejectDuplicateAudits(
-                anyString(), anyLong(), any(AuditStatus.class), any(AuditStatus.class)
+                anyString(), anyLong(), any(EvidenceType.class), any(AuditStatus.class), any(AuditStatus.class)
         );
         verifyNoInteractions(eventPublisher);
     }
 
+    /** 메인 상태 변경에 실패하면 후순위 제보를 처리하지 않습니다. */
     @Test
     @DisplayName("메인 제보 상태 변경에 실패하면 후순위 제보를 반려하지 않는다.")
     void issueAuditReport_DoesNotRejectDuplicatesWhenMainStatusUpdateFails() {
@@ -239,15 +248,16 @@ class AuditReportServiceTest {
         assertThat(thrown)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("보고서 발급 조건");
-        verify(ticketAuditRepository, never()).findByReservationNoAndIdNotAndStatus(
-                anyString(), anyLong(), any(AuditStatus.class)
+        verify(ticketAuditRepository, never()).findByReservationNoAndIdNotAndEvidenceTypeAndStatus(
+                anyString(), anyLong(), any(EvidenceType.class), any(AuditStatus.class)
         );
         verify(ticketAuditRepository, never()).rejectDuplicateAudits(
-                anyString(), anyLong(), any(AuditStatus.class), any(AuditStatus.class)
+                anyString(), anyLong(), any(EvidenceType.class), any(AuditStatus.class), any(AuditStatus.class)
         );
         verifyNoInteractions(eventPublisher);
     }
 
+    /** 조회 건수와 변경 건수가 다르면 이벤트 없이 실패합니다. */
     @Test
     @DisplayName("조회한 후순위 제보 수와 실제 반려 수가 다르면 이벤트를 발행하지 않고 실패한다.")
     void issueAuditReport_FailsWhenDuplicateCountChangesConcurrently() {
@@ -271,14 +281,16 @@ class AuditReportServiceTest {
                 AuditStatus.REPORT_ISSUED,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(1);
-        given(ticketAuditRepository.findByReservationNoAndIdNotAndStatus(
+        given(ticketAuditRepository.findByReservationNoAndIdNotAndEvidenceTypeAndStatus(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(List.of(duplicateAudit));
         given(ticketAuditRepository.rejectDuplicateAudits(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.DUPLICATED,
                 AuditStatus.FRAUD_DETECTED
         )).willReturn(0);
@@ -293,12 +305,14 @@ class AuditReportServiceTest {
         verify(ticketAuditRepository).rejectDuplicateAudits(
                 RESERVATION_NO,
                 MAIN_AUDIT_ID,
+                EvidenceType.FAN_REPORT,
                 AuditStatus.DUPLICATED,
                 AuditStatus.FRAUD_DETECTED
         );
         verifyNoInteractions(eventPublisher);
     }
 
+    /** 승인할 팬 제보 내역을 만듭니다. */
     private TicketAudit mainAudit() {
         TicketAudit audit = mock(TicketAudit.class);
         given(audit.getId()).willReturn(MAIN_AUDIT_ID);
@@ -308,6 +322,7 @@ class AuditReportServiceTest {
         return audit;
     }
 
+    /** 후순위 팬 제보 내역을 만듭니다. */
     private TicketAudit duplicateAudit(Long id, String reporterId) {
         TicketAudit audit = mock(TicketAudit.class);
         given(audit.getId()).willReturn(id);

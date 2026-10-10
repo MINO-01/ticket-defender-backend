@@ -4,9 +4,7 @@ import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.FastApiAdapter;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
-import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
-import com.ticket.defender_core.domain.AuditStatus;
-import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,78 +13,184 @@ import org.mockito.Captor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 
-import java.util.Collections;
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
 
 @ExtendWith(MockitoExtension.class)
 class FraudAnalysisServiceTest {
+
+    private static final String PAYMENT_HASH = "a".repeat(64);
+    private static final String ADDRESS_HASH = "b".repeat(64);
+    private static final String DEVICE_HASH = "c".repeat(64);
+    private static final String IP_HASH = "d".repeat(64);
 
     @Mock
     private FastApiAdapter fastApiAdapter;
 
     @Mock
-    private TicketAuditRepository ticketAuditRepository;
+    private MacroAuditPersistenceService macroAuditPersistenceService;
 
     @InjectMocks
     private FraudAnalysisService fraudAnalysisService;
 
     @Captor
-    private ArgumentCaptor<List<TicketAudit>> auditListCaptor;
+    private ArgumentCaptor<MacroAnalysisRequest> requestCaptor;
 
+    @Captor
+    private ArgumentCaptor<MacroAnalysisResponse> responseCaptor;
+
+    /** 분석 결과의 군집 구성원과 출처를 저장 서비스에 전달합니다. */
     @Test
-    @DisplayName("FastAPI 분석 결과가 정상일 때, 중복이 없다면 실제 주소와 함께 DB에 적재되어야 한다.")
-    void processAgentData_Success() {
+    @DisplayName("분석 요청에 티켓별 연결 정보를 보존하고 완료된 군집을 저장 서비스에 전달한다")
+    void processAgentData_completedAnalysis_persistsResponse() {
         // given
-        AgentAnalysisRequest request = new AgentAnalysisRequest(List.of(
-                new AgentAnalysisRequest.TicketHashData("userA", "hash1234", "addrA"),
-                new AgentAnalysisRequest.TicketHashData("userB", "hash1234", "addrB")
+        AgentAnalysisRequest input = new AgentAnalysisRequest(List.of(
+                new AgentAnalysisRequest.TicketData(
+                        "uid-1", "res-1", "event-1", PAYMENT_HASH, null, DEVICE_HASH, null),
+                new AgentAnalysisRequest.TicketData(
+                        "uid-2", "res-2", "event-1", PAYMENT_HASH, ADDRESS_HASH, null, IP_HASH)
         ));
-
-        FastApiClusterResponse fakeResponse = new FastApiClusterResponse(
-                "cluster_1",
-                List.of("hash1234"),         // 불량 결제수단 해시 목록
-                List.of("addrA", "addrB"),   // 불량 주소 해시 목록
-                0.99                         // 매크로 확률
-        );
-
+        AtomicReference<MacroAnalysisResponse> expectedResponse = new AtomicReference<>();
         given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
-                .willReturn(List.of(fakeResponse));
-
-        given(ticketAuditRepository.findByPaymentHashIn(anyList())).willReturn(Collections.emptyList());
+                .willAnswer(invocation -> {
+                    MacroAnalysisRequest request = invocation.getArgument(0);
+                    MacroAnalysisResponse response = completedResponse(request.requestId());
+                    expectedResponse.set(response);
+                    return response;
+                });
 
         // when
-        fraudAnalysisService.processAgentData(request);
+        FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
 
         // then
-        verify(ticketAuditRepository, times(1)).saveAll(auditListCaptor.capture());
+        verify(fastApiAdapter).requestMacroAnalysis(requestCaptor.capture());
+        MacroAnalysisRequest sentRequest = requestCaptor.getValue();
+        assertNotNull(sentRequest.requestId());
+        assertEquals(2, sentRequest.tickets().size());
+        assertEquals("res-1", sentRequest.tickets().get(0).reservationNo());
+        assertEquals("event-1", sentRequest.tickets().get(0).eventId());
+        assertEquals(DEVICE_HASH, sentRequest.tickets().get(0).deviceIdHash());
+        assertEquals("res-2", sentRequest.tickets().get(1).reservationNo());
+        assertEquals(IP_HASH, sentRequest.tickets().get(1).ipHash());
 
-        List<TicketAudit> savedAudits = auditListCaptor.getValue();
-        assertEquals(2, savedAudits.size());
-        assertEquals("addrA", savedAudits.get(0).getAddressHash());
-        assertEquals(AuditStatus.FRAUD_DETECTED, savedAudits.get(0).getStatus());
+        verify(macroAuditPersistenceService)
+                .persistDetectedAudits(responseCaptor.capture(), eq(sentRequest));
+        assertSame(expectedResponse.get(), responseCaptor.getValue());
+        assertEquals(FraudAnalysisStatus.COMPLETED, status);
     }
 
+    /** 유니크 충돌 뒤 저장을 다시 시도합니다. */
     @Test
-    @DisplayName("FastAPI 서버가 다운되어 빈 리스트이 오면, DB에 아무것도 저장하지 않는다.")
-    void processAgentData_Fallback_NoSave() {
+    @DisplayName("동시 저장 경쟁으로 유니크 키 충돌이 나면 기존 증거를 다시 조회해 누락분을 저장한다")
+    void processAgentData_retriesPersistenceAfterConcurrentUniqueKeyConflict() {
         // given
-        AgentAnalysisRequest request = new AgentAnalysisRequest(List.of());
-
+        AgentAnalysisRequest input = new AgentAnalysisRequest(List.of(
+                new AgentAnalysisRequest.TicketData(
+                        "uid-1", "res-1", "event-1", PAYMENT_HASH, null, DEVICE_HASH, null),
+                new AgentAnalysisRequest.TicketData(
+                        "uid-2", "res-2", "event-1", PAYMENT_HASH, ADDRESS_HASH, null, IP_HASH)
+        ));
         given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
-                .willReturn(Collections.emptyList());
+                .willAnswer(invocation -> {
+                    MacroAnalysisRequest request = invocation.getArgument(0);
+                    return completedResponse(request.requestId());
+                });
+        doThrow(new DataIntegrityViolationException("동시 요청 유니크 키 충돌"))
+                .doNothing()
+                .when(macroAuditPersistenceService)
+                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class));
 
         // when
-        fraudAnalysisService.processAgentData(request);
+        FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
 
         // then
-        verify(ticketAuditRepository, times(0)).saveAll(any());
+        assertEquals(FraudAnalysisStatus.COMPLETED, status);
+        verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
+                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class));
+    }
+
+    /** 분석을 완료하지 못하면 결과를 저장하지 않습니다. */
+    @Test
+    @DisplayName("분석 서버가 사용할 수 없는 상태이면 감사 내역을 저장하지 않는다")
+    void processAgentData_unavailable_doesNotPersist() {
+        // given
+        AgentAnalysisRequest input = new AgentAnalysisRequest(List.of(
+                new AgentAnalysisRequest.TicketData(
+                        "uid-1", "res-1", "event-1", PAYMENT_HASH, null, null, null)
+        ));
+        given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
+                .willAnswer(invocation -> {
+                    MacroAnalysisRequest request = invocation.getArgument(0);
+                    return MacroAnalysisResponse.unavailable(request.requestId());
+                });
+
+        // when
+        FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
+
+        // then
+        verify(macroAuditPersistenceService, never()).persistDetectedAudits(any(), any());
+        assertEquals(FraudAnalysisStatus.UNAVAILABLE, status);
+    }
+
+    /** 군집이 없는 완료 결과는 저장 없이 처리합니다. */
+    @Test
+    @DisplayName("정상 분석에서 의심 군집이 없으면 감사 내역을 저장하지 않는다")
+    void processAgentData_completedWithoutClusters_doesNotPersist() {
+        // given
+        AgentAnalysisRequest input = new AgentAnalysisRequest(List.of(
+                new AgentAnalysisRequest.TicketData(
+                        "uid-1", "res-1", "event-1", PAYMENT_HASH, null, null, null)
+        ));
+        given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
+                .willAnswer(invocation -> {
+                    MacroAnalysisRequest request = invocation.getArgument(0);
+                    return new MacroAnalysisResponse(
+                            request.requestId(), MacroAnalysisResponse.Status.COMPLETED,
+                            "LOUVAIN", "1.0.0", OffsetDateTime.parse("2026-10-08T10:15:30Z"), List.of());
+                });
+
+        // when
+        FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
+
+        // then
+        verify(macroAuditPersistenceService, never()).persistDetectedAudits(any(), any());
+        assertEquals(FraudAnalysisStatus.COMPLETED, status);
+    }
+
+    /** 테스트용 완료 응답을 만듭니다. */
+    private MacroAnalysisResponse completedResponse(String requestId) {
+        FastApiClusterResponse cluster = new FastApiClusterResponse(
+                "cluster-1",
+                List.of(
+                        new FastApiClusterResponse.Member("uid-1", "res-1", "event-1"),
+                        new FastApiClusterResponse.Member("uid-2", "res-2", "event-1")
+                ),
+                List.of(PAYMENT_HASH),
+                List.of(ADDRESS_HASH),
+                List.of(DEVICE_HASH),
+                List.of(IP_HASH),
+                0.91
+        );
+        return new MacroAnalysisResponse(
+                requestId,
+                MacroAnalysisResponse.Status.COMPLETED,
+                "LOUVAIN",
+                "1.0.0",
+                OffsetDateTime.parse("2026-10-08T10:15:30Z"),
+                List.of(cluster)
+        );
     }
 }

@@ -1,6 +1,7 @@
 package com.ticket.defender_core.adapter.in.web;
 
 import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
+import com.ticket.defender_core.adapter.out.api.FastApiResponseContractException;
 import com.ticket.defender_core.application.service.FraudAnalysisStatus;
 import com.ticket.defender_core.application.service.FraudAnalysisService;
 import jakarta.validation.Valid;
@@ -26,5 +27,12 @@ public class AuditController {
         }
 
         return ResponseEntity.ok("데이터 수신 및 분석 파이프라인 처리가 완료되었습니다.");
+    }
+
+    /** 잘못된 분석 서버 응답은 재시도 안내 없이 502로 구분합니다. */
+    @ExceptionHandler(FastApiResponseContractException.class)
+    public ResponseEntity<String> handleResponseContractFailure() {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body("분석 서버의 응답이 올바르지 않아 요청을 처리하지 못했습니다.");
     }
 }

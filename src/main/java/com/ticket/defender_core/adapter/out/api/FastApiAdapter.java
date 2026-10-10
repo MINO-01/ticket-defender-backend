@@ -64,28 +64,34 @@ public class FastApiAdapter {
         return MacroAnalysisResponse.unavailable(request.requestId());
     }
 
+    /** 응답 계약 위반은 장애 fallback으로 변환하지 않습니다. */
+    public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, FastApiResponseContractException cause) {
+        log.error("FastAPI가 계약에 맞지 않는 분석 결과를 반환했습니다. 요청 ID: {}", request.requestId(), cause);
+        throw cause;
+    }
+
     /** 요청 ID와 분석 정보, 군집 목록이 응답에 있는지 확인합니다. */
     private void validateResponse(MacroAnalysisRequest request, MacroAnalysisResponse response) {
         if (response == null) {
-            throw new IllegalStateException("FastAPI 응답 본문이 비어 있습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답 본문이 비어 있습니다.");
         }
         if (!request.requestId().equals(response.requestId())) {
-            throw new IllegalStateException("FastAPI 응답의 요청 ID가 요청과 일치하지 않습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답의 요청 ID가 요청과 일치하지 않습니다.");
         }
         if (response.status() != MacroAnalysisResponse.Status.COMPLETED) {
-            throw new IllegalStateException("FastAPI가 완료되지 않은 분석 상태를 반환했습니다.");
+            throw new FastApiResponseContractException("FastAPI가 완료되지 않은 분석 상태를 반환했습니다.");
         }
         if (!"LOUVAIN".equals(response.algorithm())) {
-            throw new IllegalStateException("FastAPI 분석 알고리즘이 계약된 Louvain과 일치하지 않습니다.");
+            throw new FastApiResponseContractException("FastAPI 분석 알고리즘이 계약된 Louvain과 일치하지 않습니다.");
         }
         if (response.algorithmVersion() == null || response.algorithmVersion().isBlank()) {
-            throw new IllegalStateException("FastAPI 응답에 알고리즘 버전이 없습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 알고리즘 버전이 없습니다.");
         }
         if (response.analyzedAt() == null) {
-            throw new IllegalStateException("FastAPI 응답에 분석 완료 시각이 없습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 분석 완료 시각이 없습니다.");
         }
         if (response.clusters() == null) {
-            throw new IllegalStateException("FastAPI 응답에 군집 목록이 없습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 군집 목록이 없습니다.");
         }
 
         Set<TicketKey> submittedTickets = new HashSet<>();
@@ -106,40 +112,40 @@ public class FastApiAdapter {
             Set<TicketKey> allMembers
     ) {
         if (cluster == null || cluster.clusterId() == null || cluster.clusterId().isBlank()) {
-            throw new IllegalStateException("FastAPI 응답에 군집 식별자가 없습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 군집 식별자가 없습니다.");
         }
         if (!clusterIds.add(cluster.clusterId())) {
-            throw new IllegalStateException("FastAPI 응답에 중복 군집 식별자가 있습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 중복 군집 식별자가 있습니다.");
         }
         if (cluster.riskScore() == null || !Double.isFinite(cluster.riskScore())
                 || cluster.riskScore() < 0 || cluster.riskScore() > 1) {
-            throw new IllegalStateException("군집 위험도는 0부터 1 사이의 조사 우선순위 점수여야 합니다.");
+            throw new FastApiResponseContractException("군집 위험도는 0부터 1 사이의 조사 우선순위 점수여야 합니다.");
         }
         if (cluster.members() == null) {
-            throw new IllegalStateException("FastAPI 응답에 군집 구성원 목록이 없습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 군집 구성원 목록이 없습니다.");
         }
         if (cluster.members().size() < 2) {
-            throw new IllegalStateException("의심 군집에는 서로 다른 예매 내역이 두 건 이상 필요합니다.");
+            throw new FastApiResponseContractException("의심 군집에는 서로 다른 예매 내역이 두 건 이상 필요합니다.");
         }
 
         Set<TicketKey> clusterMembers = new HashSet<>();
         for (FastApiClusterResponse.Member member : cluster.members()) {
             if (member == null || isBlank(member.accountId()) || isBlank(member.reservationNo())
                     || isBlank(member.eventId())) {
-                throw new IllegalStateException("군집 구성원의 계정·예매·공연 식별자가 모두 필요합니다.");
+                throw new FastApiResponseContractException("군집 구성원의 계정·예매·공연 식별자가 모두 필요합니다.");
             }
             TicketKey memberKey = TicketKey.from(member);
             if (!submittedTickets.contains(memberKey)) {
-                throw new IllegalStateException("FastAPI가 이번 요청에 포함되지 않은 예매 내역을 반환했습니다.");
+                throw new FastApiResponseContractException("FastAPI가 이번 요청에 포함되지 않은 예매 내역을 반환했습니다.");
             }
             if (!clusterMembers.add(memberKey) || !allMembers.add(memberKey)) {
-                throw new IllegalStateException("예매 내역이 응답에서 여러 번 군집 구성원으로 지정되었습니다.");
+                throw new FastApiResponseContractException("예매 내역이 응답에서 여러 번 군집 구성원으로 지정되었습니다.");
             }
         }
 
         if (cluster.paymentHashes() == null || cluster.addressHashes() == null
                 || cluster.deviceIdHashes() == null || cluster.ipHashes() == null) {
-            throw new IllegalStateException("FastAPI 응답에 필수 연결 토큰 배열이 누락되었습니다.");
+            throw new FastApiResponseContractException("FastAPI 응답에 필수 연결 토큰 배열이 누락되었습니다.");
         }
 
         validateHashTokens(cluster.paymentHashes());
@@ -148,14 +154,14 @@ public class FastApiAdapter {
         validateHashTokens(cluster.ipHashes());
         if (cluster.paymentHashes().isEmpty() && cluster.addressHashes().isEmpty()
                 && cluster.deviceIdHashes().isEmpty() && cluster.ipHashes().isEmpty()) {
-            throw new IllegalStateException("군집을 뒷받침하는 가명 연결 신호가 없습니다.");
+            throw new FastApiResponseContractException("군집을 뒷받침하는 가명 연결 신호가 없습니다.");
         }
     }
 
     /** 연결 토큰이 64자리 소문자 16진수인지 확인합니다. */
     private void validateHashTokens(List<String> tokens) {
         if (tokens.stream().anyMatch(token -> token == null || !HASH_TOKEN_PATTERN.matcher(token).matches())) {
-            throw new IllegalStateException("분석 결과의 연결 토큰 형식이 계약과 일치하지 않습니다.");
+            throw new FastApiResponseContractException("분석 결과의 연결 토큰 형식이 계약과 일치하지 않습니다.");
         }
     }
 

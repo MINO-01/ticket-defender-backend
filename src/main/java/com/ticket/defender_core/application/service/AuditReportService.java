@@ -12,7 +12,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -25,9 +24,9 @@ public class AuditReportService {
     private final PdfGeneratorAdapter pdfGeneratorAdapter;
     private final ApplicationEventPublisher eventPublisher;
 
-    /** 적발 내역의 소명 보고서를 PDF로 발급합니다. */
-    @Transactional
+    /** 담당자 승인 절차가 마련될 때까지 공식 감사 보고서 발급을 차단합니다. */
     public byte[] issueAuditReport(Long auditId) {
+        rejectIssuanceUntilApprovalWorkflowIsReady();
 
         TicketAudit audit = ticketAuditRepository.findById(auditId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 감사 내역입니다. ID: " + auditId));
@@ -58,6 +57,10 @@ public class AuditReportService {
         log.info("메인 제보 승인 이벤트를 발행했습니다. 감사 내역 ID: {}", audit.getId());
 
         return pdf;
+    }
+
+    private void rejectIssuanceUntilApprovalWorkflowIsReady() {
+        throw new AuditReportIssuanceDisabledException();
     }
 
     /** 먼저 접수된 팬 제보만 보고서를 발급할 수 있습니다. */

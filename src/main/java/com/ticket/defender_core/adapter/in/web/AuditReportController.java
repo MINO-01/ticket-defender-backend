@@ -1,16 +1,21 @@
 package com.ticket.defender_core.adapter.in.web;
 
 import com.ticket.defender_core.application.service.AuditReportService;
+import com.ticket.defender_core.application.service.AuditReportIssuanceDisabledException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PostMapping;
+
+import java.net.URI;
 
 @Slf4j
 @RestController
@@ -25,7 +30,7 @@ public class AuditReportController {
      */
     @PostMapping("/{auditId}/report")
     public ResponseEntity<byte[]> downloadAuditReport(@PathVariable Long auditId) {
-        log.info("요청 수신: PDF 공식 암표 탐지 보고서 발급 (auditId={})", auditId);
+        log.info("요청 수신: PDF 공식 암표 탐지 보고서 발급");
 
         byte[] pdfBytes = auditReportService.issueAuditReport(auditId);
 
@@ -37,5 +42,16 @@ public class AuditReportController {
         headers.setCacheControl("must-revalidate, post-check=0, pre-check=0");
 
         return new ResponseEntity<>(pdfBytes, headers, HttpStatus.OK);
+    }
+
+    @ExceptionHandler(AuditReportIssuanceDisabledException.class)
+    public ResponseEntity<ProblemDetail> handleIssuanceDisabled(AuditReportIssuanceDisabledException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, exception.getMessage());
+        problem.setType(URI.create("about:blank"));
+        problem.setInstance(URI.create("about:blank"));
+        problem.setProperty("code", AuditReportIssuanceDisabledException.ERROR_CODE);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(problem);
     }
 }

@@ -1,22 +1,35 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$JarPath,
-    [string]$GradleUserHome
+    [string]$GradleUserHome,
+    [string]$DataDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $backend = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $workspace = (Resolve-Path -LiteralPath (Join-Path $backend '..')).Path
-$data = Join-Path $workspace 'ticket-defender-data'
+if (-not $PSBoundParameters.ContainsKey('DataDirectory')) {
+    $DataDirectory = Join-Path $workspace 'ticket-defender-data'
+}
+if ([string]::IsNullOrWhiteSpace($DataDirectory) -or
+        -not (Test-Path -LiteralPath $DataDirectory -PathType Container)) {
+    throw 'Data directory is unavailable: specify a valid -DataDirectory'
+}
+$data = (Resolve-Path -LiteralPath $DataDirectory).Path
 $composeFile = Join-Path $data 'tests\docker-compose.gds.yml'
 $python = Join-Path $data 'venv\Scripts\python.exe'
 $gradle = Join-Path $backend 'gradlew.bat'
 $jar = (Resolve-Path -LiteralPath $JarPath).Path
 
-if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $python -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $gradle -PathType Leaf)) {
-    throw 'Required workspace files are unavailable'
+foreach ($relativePath in @('main.py', 'api\routes\graph_routes.py',
+        'core\dependencies.py', 'tests\docker-compose.gds.yml',
+        'venv\Scripts\python.exe')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $data $relativePath) -PathType Leaf)) {
+        throw "Required Data file is unavailable: $relativePath"
+    }
+}
+if (-not (Test-Path -LiteralPath $gradle -PathType Leaf)) {
+    throw 'Backend Gradle Wrapper is unavailable'
 }
 if ((Get-Item -LiteralPath $jar).Length -lt 1000000) {
     throw 'GDS test JAR is invalid'

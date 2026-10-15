@@ -2,6 +2,7 @@ package com.ticket.defender_core.adapter.out.api;
 
 import com.sun.net.httpserver.HttpServer;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
+import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.ResourceAccessException;
@@ -24,11 +25,26 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class FastApiAdapterHttpTest {
 
     private static final String REQUEST_ID = "2136558c-2326-4430-a46d-0793494e9b49";
+    private static final String LOOPBACK_HOST = "127.0.0.1";
+
+    @Test
+    void successfulHttpResponseIsCompletedAnalysis() throws IOException {
+        HttpServer server = server(200, response("COMPLETED", "LOUVAIN"));
+        try {
+            assertThat(server.getAddress().getAddress().getHostAddress()).isEqualTo(LOOPBACK_HOST);
+            MacroAnalysisResponse analysis = adapter(server.getAddress().getPort()).requestMacroAnalysis(request());
+            assertThat(analysis.requestId()).isEqualTo(REQUEST_ID);
+            assertThat(analysis.status()).isEqualTo(MacroAnalysisResponse.Status.COMPLETED);
+            assertThat(analysis.clusters()).isEmpty();
+        } finally {
+            server.stop(0);
+        }
+    }
 
     @Test
     void connectionFailureIsNotACompletedAnalysis() throws IOException {
         int port;
-        try (ServerSocket reserved = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+        try (ServerSocket reserved = new ServerSocket(0, 1, InetAddress.getByName(LOOPBACK_HOST))) {
             port = reserved.getLocalPort();
         }
 
@@ -40,7 +56,7 @@ class FastApiAdapterHttpTest {
     void readTimeoutIsNotACompletedAnalysis() throws IOException {
         CountDownLatch received = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), 0), 0);
         server.createContext("/api/v1/clusters/analyze", exchange -> {
             received.countDown();
             try {
@@ -105,7 +121,7 @@ class FastApiAdapterHttpTest {
 
     private FastApiAdapter adapter(int port) {
         FastApiAdapter adapter = new FastApiAdapter(RestClient.builder());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://127.0.0.1:" + port);
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://" + LOOPBACK_HOST + ":" + port);
         return adapter;
     }
 
@@ -125,7 +141,7 @@ class FastApiAdapterHttpTest {
 
     private HttpServer server(int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), 0), 0);
         server.createContext("/api/v1/clusters/analyze", exchange -> {
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", "application/json");

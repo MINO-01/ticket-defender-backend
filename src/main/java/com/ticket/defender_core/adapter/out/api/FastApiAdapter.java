@@ -15,8 +15,10 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.UnknownContentTypeException;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -72,13 +74,13 @@ public class FastApiAdapter {
     /** 호출에 실패하면 적발 결과 대신 분석 불가 상태를 반환합니다. */
     public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, Throwable cause) {
         String causeName = cause == null ? "알 수 없는 오류" : cause.getClass().getSimpleName();
-        log.error("FastAPI 그래프 분석을 완료하지 못했습니다. 분석 불가 상태로 처리합니다. 원인: {}", causeName, cause);
+        log.error("FastAPI 그래프 분석을 완료하지 못했습니다. 분석 불가 상태로 처리합니다. 원인 유형: {}", causeName);
         return MacroAnalysisResponse.unavailable(request.requestId());
     }
 
     /** 응답 계약 위반은 장애 fallback으로 변환하지 않습니다. */
     public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, FastApiResponseContractException cause) {
-        log.error("FastAPI가 계약에 맞지 않는 분석 결과를 반환했습니다. 요청 ID: {}", request.requestId(), cause);
+        log.error("FastAPI가 계약에 맞지 않는 분석 결과를 반환했습니다. 요청 ID: {}", request.requestId());
         throw cause;
     }
 
@@ -106,8 +108,8 @@ public class FastApiAdapter {
             throw new FastApiResponseContractException("FastAPI 응답에 군집 목록이 없습니다.");
         }
 
-        Set<TicketKey> submittedTickets = new HashSet<>();
-        request.tickets().forEach(ticket -> submittedTickets.add(TicketKey.from(ticket)));
+        Map<TicketKey, MacroAnalysisRequest.Ticket> submittedTickets = new HashMap<>();
+        request.tickets().forEach(ticket -> submittedTickets.put(TicketKey.from(ticket), ticket));
 
         Set<String> clusterIds = new HashSet<>();
         Set<TicketKey> allMembers = new HashSet<>();
@@ -119,7 +121,7 @@ public class FastApiAdapter {
     /** 군집 구성원과 연결 토큰이 요청 내용과 일치하는지 확인합니다. */
     private void validateCluster(
             FastApiClusterResponse cluster,
-            Set<TicketKey> submittedTickets,
+            Map<TicketKey, MacroAnalysisRequest.Ticket> submittedTickets,
             Set<String> clusterIds,
             Set<TicketKey> allMembers
     ) {
@@ -141,18 +143,27 @@ public class FastApiAdapter {
         }
 
         Set<TicketKey> clusterMembers = new HashSet<>();
+        Set<String> paymentHashes = new HashSet<>();
+        Set<String> addressHashes = new HashSet<>();
+        Set<String> deviceIdHashes = new HashSet<>();
+        Set<String> ipHashes = new HashSet<>();
         for (FastApiClusterResponse.Member member : cluster.members()) {
             if (member == null || isBlank(member.accountId()) || isBlank(member.reservationNo())
                     || isBlank(member.eventId())) {
                 throw new FastApiResponseContractException("군집 구성원의 계정·예매·공연 식별자가 모두 필요합니다.");
             }
             TicketKey memberKey = TicketKey.from(member);
-            if (!submittedTickets.contains(memberKey)) {
+            MacroAnalysisRequest.Ticket submittedTicket = submittedTickets.get(memberKey);
+            if (submittedTicket == null) {
                 throw new FastApiResponseContractException("FastAPI가 이번 요청에 포함되지 않은 예매 내역을 반환했습니다.");
             }
             if (!clusterMembers.add(memberKey) || !allMembers.add(memberKey)) {
                 throw new FastApiResponseContractException("예매 내역이 응답에서 여러 번 군집 구성원으로 지정되었습니다.");
             }
+            addToken(paymentHashes, submittedTicket.paymentHash());
+            addToken(addressHashes, submittedTicket.addressHash());
+            addToken(deviceIdHashes, submittedTicket.deviceIdHash());
+            addToken(ipHashes, submittedTicket.ipHash());
         }
 
         if (cluster.paymentHashes() == null || cluster.addressHashes() == null
@@ -160,20 +171,27 @@ public class FastApiAdapter {
             throw new FastApiResponseContractException("FastAPI 응답에 필수 연결 토큰 배열이 누락되었습니다.");
         }
 
-        validateHashTokens(cluster.paymentHashes());
-        validateHashTokens(cluster.addressHashes());
-        validateHashTokens(cluster.deviceIdHashes());
-        validateHashTokens(cluster.ipHashes());
+        validateHashTokens(cluster.paymentHashes(), paymentHashes);
+        validateHashTokens(cluster.addressHashes(), addressHashes);
+        validateHashTokens(cluster.deviceIdHashes(), deviceIdHashes);
+        validateHashTokens(cluster.ipHashes(), ipHashes);
         if (cluster.paymentHashes().isEmpty() && cluster.addressHashes().isEmpty()
                 && cluster.deviceIdHashes().isEmpty() && cluster.ipHashes().isEmpty()) {
             throw new FastApiResponseContractException("군집을 뒷받침하는 가명 연결 신호가 없습니다.");
         }
     }
 
-    /** 연결 토큰이 64자리 소문자 16진수인지 확인합니다. */
-    private void validateHashTokens(List<String> tokens) {
-        if (tokens.stream().anyMatch(token -> token == null || !HASH_TOKEN_PATTERN.matcher(token).matches())) {
-            throw new FastApiResponseContractException("분석 결과의 연결 토큰 형식이 계약과 일치하지 않습니다.");
+    private void addToken(Set<String> tokens, String token) {
+        if (token != null) {
+            tokens.add(token);
+        }
+    }
+
+    /** 연결 토큰이 해당 군집 구성원의 요청 신호인지 확인합니다. */
+    private void validateHashTokens(List<String> tokens, Set<String> submittedTokens) {
+        if (tokens.stream().anyMatch(token -> token == null || !HASH_TOKEN_PATTERN.matcher(token).matches()
+                || !submittedTokens.contains(token))) {
+            throw new FastApiResponseContractException("분석 결과의 연결 토큰이 요청 군집과 일치하지 않습니다.");
         }
     }
 

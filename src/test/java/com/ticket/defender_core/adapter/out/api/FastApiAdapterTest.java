@@ -5,6 +5,7 @@ import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -18,6 +19,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 
 class FastApiAdapterTest {
 
@@ -139,6 +141,52 @@ class FastApiAdapterTest {
         // when / then
         assertThrows(IllegalStateException.class, () -> adapter.requestMacroAnalysis(request()));
         server.verify();
+    }
+
+    @Test
+    @DisplayName("형식이 올바른 토큰도 해당 군집의 요청 구성원에게 없으면 거부한다")
+    void requestMacroAnalysis_rejectsTokenOutsideClusterMembers() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        MacroAnalysisRequest request = new MacroAnalysisRequest(REQUEST_ID, List.of(
+                request().tickets().get(0),
+                request().tickets().get(1),
+                new MacroAnalysisRequest.Ticket("uid-3", "res-3", "event-1",
+                        "c".repeat(64), null, null, null)
+        ));
+        String responseJson = """
+                {"requestId":"%s","status":"COMPLETED","algorithm":"LOUVAIN",
+                 "algorithmVersion":"gds-2.6.6","analyzedAt":"2026-10-08T10:15:30Z",
+                 "clusters":[{"clusterId":"cluster-001",
+                   "members":[{"accountId":"uid-1","reservationNo":"res-1","eventId":"event-1"},
+                              {"accountId":"uid-2","reservationNo":"res-2","eventId":"event-1"}],
+                   "paymentHashes":["%s"],"addressHashes":[],"deviceIdHashes":[],"ipHashes":[],
+                   "riskScore":0.91}]}
+                """.formatted(REQUEST_ID, "c".repeat(64));
+        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+                .andRespond(withSuccess(responseJson, MediaType.APPLICATION_JSON));
+
+        assertThrows(FastApiResponseContractException.class, () -> adapter.requestMacroAnalysis(request));
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("HTTP 422와 500은 완료된 빈 군집으로 해석하지 않는다")
+    void requestMacroAnalysis_rejectsHttpErrors() {
+        for (HttpStatus status : List.of(HttpStatus.UNPROCESSABLE_ENTITY, HttpStatus.INTERNAL_SERVER_ERROR)) {
+            RestClient.Builder builder = RestClient.builder();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+            FastApiAdapter adapter = new FastApiAdapter(builder.build());
+            ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+            server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+                    .andRespond(withStatus(status).body("{\"detail\":\"unavailable\"}"));
+
+            assertThrows(org.springframework.web.client.RestClientException.class,
+                    () -> adapter.requestMacroAnalysis(request()));
+            server.verify();
+        }
     }
 
     /** 서버 장애는 분석 불가 상태로 처리됩니다. */

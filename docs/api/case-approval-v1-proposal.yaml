@@ -17,7 +17,7 @@ security:
   - userAuth: []
 x-tenant-boundary:
   source: authenticated server membership, never request tenantId
-  resources: [Case, CaseSourceReference, EvidenceSnapshot, IssuanceHold, ReviewReceipt, ApprovalRequest, ApprovalDecision, ReportVersion, PDF]
+  resources: [Case, CaseSourceReference, CaseActivity, EvidenceSnapshot, IssuanceHold, ReviewReceipt, ApprovalRequest, ApprovalDecision, ReportVersion, PDF]
   crossTenantOrHiddenEvent: 404 RESOURCE_NOT_FOUND
   sameTenantRoleDenied: 403 FORBIDDEN
 tags:
@@ -29,7 +29,7 @@ x-error-catalog:
   '401': [UNAUTHENTICATED]
   '403': [FORBIDDEN, SELF_APPROVAL_FORBIDDEN]
   '404': [RESOURCE_NOT_FOUND]
-  '409': [CASE_STATE_CONFLICT, CASE_VERSION_CONFLICT, APPROVAL_REQUEST_ALREADY_PENDING, APPROVAL_ALREADY_DECIDED, APPROVAL_REQUEST_NOT_PENDING, IDEMPOTENCY_KEY_REUSED, EVIDENCE_VERSION_MISMATCH, REPORT_CONTENT_MISMATCH, REPORT_VERSION_CONFLICT, REPORT_REVISION_CLOSED, REPORT_NOT_APPROVED, REPORT_NOT_GENERATED, REPORT_ALREADY_GENERATED, REPORT_RENDER_IN_PROGRESS, ISSUANCE_HOLD_ACTIVE, REVIEW_RECEIPT_MISMATCH, REVIEW_RECEIPT_UNUSABLE]
+  '409': [CASE_STATE_CONFLICT, CASE_VERSION_CONFLICT, APPROVAL_REQUEST_ALREADY_PENDING, APPROVAL_ALREADY_DECIDED, APPROVAL_REQUEST_NOT_PENDING, IDEMPOTENCY_KEY_REUSED, EVIDENCE_VERSION_MISMATCH, EVIDENCE_REVIEW_NOT_COMPLETED, EVIDENCE_REVIEW_MISMATCH, REPORT_CONTENT_MISMATCH, REPORT_VERSION_CONFLICT, REPORT_REVISION_CLOSED, REPORT_NOT_APPROVED, REPORT_NOT_GENERATED, REPORT_ALREADY_GENERATED, REPORT_RENDER_IN_PROGRESS, ISSUANCE_HOLD_ACTIVE, REVIEW_RECEIPT_MISMATCH, REVIEW_RECEIPT_UNUSABLE]
   '422': [VALIDATION_FAILED]
   '500': [INTERNAL_ERROR]
   '503': [DEPENDENCY_UNAVAILABLE]
@@ -144,6 +144,8 @@ paths:
               example:
                 caseId: 11111111-1111-4111-8111-111111111111
                 evidenceRevision: 2
+                currentEvidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                currentManifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
                 sources:
                   - caseSourceReferenceId: 44444444-4444-4444-8444-444444444444
                     sourceType: ANALYSIS_FINDING
@@ -230,6 +232,67 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/evidence-review-completions:
+    post:
+      tags: [Cases]
+      operationId: completeCaseEvidenceReviewProposal
+      x-required-roles: [REVIEWER]
+      summary: V2 증거의 사전 검토 완료 활동 기록
+      description: >-
+        PROPOSED/미구현. 권한 있는 REVIEWER의 명시적 NO_NEW_REPORT 검토 완료 명령이다.
+        서버는 인증 tenant/event/Case와 당시 REVIEWER 권한, IN_REVIEW 상태, 이전 불변
+        승인 Decision이 증거 revision 증가로 STALE인지, 현재 활성 불변 snapshot의
+        ID·manifest digest·revision과 ACTIVE IssuanceHold 부재를 검사한다.
+        현재 snapshot이 없거나 제출 바인딩과 다르면 409다. CaseActivity
+        EVIDENCE_REVIEW_COMPLETED 저장과 caseVersion 증가는 한 트랜잭션이다.
+        재시도에도 현재 인증·tenant/event 접근 범위를 검사한다. 같은 actor/tenant/operation의
+        동일 멱등 키·본문은 이미 저장된 활동/응답을 반환하고
+        다른 본문은 409 IDEMPOTENCY_KEY_REUSED다. GET·운영 메모·종료 명령은 이 활동을
+        만들지 않는다. 상태 전이와 ApprovalRequest/Decision 생성은 하지 않는다.
+      parameters:
+        - {$ref: '#/components/parameters/CaseId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompleteEvidenceReviewInput'}
+            example:
+              expectedCaseVersion: 7
+              evidenceRevision: 2
+              evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+              manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              reviewOutcome: NO_NEW_REPORT
+              reason: 'V2 반대 증거를 재검토하고 새 공식 보고서를 발급하지 않기로 결정했습니다.'
+      responses:
+        '201':
+          description: 사전에 확정된 append-only 검토 활동. 동일 멱등 요청 재시도는 이 저장 결과를 반환.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaseActivity'}
+              example:
+                activityId: 99999999-9999-4999-8999-999999999999
+                tenantId: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+                eventId: 33333333-3333-4333-8333-333333333333
+                caseId: 11111111-1111-4111-8111-111111111111
+                eventType: EVIDENCE_REVIEW_COMPLETED
+                actorUserId: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+                reviewedBy: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+                occurredAt: '2026-10-17T01:55:00Z'
+                reviewedAt: '2026-10-17T01:55:00Z'
+                caseVersionAfter: 8
+                evidenceRevision: 2
+                evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                reviewOutcome: NO_NEW_REPORT
+                reason: 'V2 반대 증거를 재검토하고 새 공식 보고서를 발급하지 않기로 결정했습니다.'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/cases/{caseId}/transitions:
     post:
       tags: [Cases]
@@ -243,23 +306,71 @@ paths:
         READY_FOR_APPROVAL에 PENDING 요청이 없으면 사유와 함께 IN_REVIEW 또는
         NEEDS_EVIDENCE로 복귀할 수 있다. PENDING이면 이 경로로 우회할 수 없고 먼저
         철회/반려/시스템 무효화가 Request·ReportVersion과 Case 복귀를 원자 처리한다.
-        CLOSED에는 closureDisposition이 필수다. APPROVED_FOR_REPORT는 현재 생성 PDF가
+        CLOSED에는 closureDisposition이 필수다. IN_REVIEW에서는 V2 근거 재검토 후
+        이전 승인 적격성이 STALE이고 신규 공식 보고서를 발급하지 않는 경우에만
+        NO_NEW_REPORT_AFTER_STALE로 종료한다. reviewedEvidenceRevision은 현재 Case
+        revision과 일치하고 과거 승인 snapshot보다 커야 하며 noNewReportReason은
+        종료 reason과 별도로 기록한다. 종료 전에 확정된 reviewActivityId가 현재
+        snapshot ID/hash·revision, tenant/event/Case, 당시 REVIEWER와 NO_NEW_REPORT에
+        일치해야 한다. 검토 활동 없이 종료 명령 안에서 새로 만들 수 없다.
+        ReportVersion 본문 변경만으로 STALE인 경우에는 이 종료 분기를 허용하지 않는다.
+        이전 Decision·PDF 참조는 서버 이력에서 조회한다.
+        APPROVED_FOR_REPORT는 현재 생성 PDF가
         공식 공개된 GENERATED_REPORT 또는 별도 사유의 ISSUANCE_ABANDONED만 허용하며
-        ACTIVE 발급 보류·렌더 예약이 없어야 한다. DISMISSED는 NOT_APPLICABLE만 허용한다.
+        DISMISSED는 근거 있는 기각에서 NOT_APPLICABLE만 허용한다. STALE 또는 발급 포기만으로
+        DISMISSED를 선택할 수 없다. 모든 종료에서 ACTIVE 발급 보류·렌더 예약·PENDING 요청이
+        없어야 한다. 종료·CaseActivity·감사를 원자 기록하며 실패 시 전체 롤백한다.
         종료 후 신규 렌더는 금지한다. expectedCaseVersion은 Case.caseVersion과 비교한다.
+        revision 불일치는 409 EVIDENCE_VERSION_MISMATCH, ACTIVE 보류는
+        ISSUANCE_HOLD_ACTIVE, 예약 중은 REPORT_RENDER_IN_PROGRESS, STALE 승인/상태
+        조건 불일치는 CASE_STATE_CONFLICT, 검토 활동 ID 미존재·타 범위는 동일한
+        404 RESOURCE_NOT_FOUND다. 같은 사건의 기존 활동이 검토 완료 유형이 아니면
+        EVIDENCE_REVIEW_NOT_COMPLETED, 현재 근거와 검토 불일치는 EVIDENCE_REVIEW_MISMATCH,
+        필수 사유 누락은 422 VALIDATION_FAILED다.
       parameters: [{$ref: '#/components/parameters/CaseId'}]
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/CaseTransitionInput'}
-            example: {toStatus: NEEDS_EVIDENCE, expectedCaseVersion: 4, reason: '추가 이미지 확인 필요'}
+            examples:
+              evidenceNeeded:
+                value: {toStatus: NEEDS_EVIDENCE, expectedCaseVersion: 4, reason: '추가 이미지 확인 필요'}
+              noNewReportAfterStale:
+                value:
+                  toStatus: CLOSED
+                  expectedCaseVersion: 8
+                  reason: 'V2 근거 재검토를 완료하여 사건을 종료합니다.'
+                  closureDisposition: NO_NEW_REPORT_AFTER_STALE
+                  reviewActivityId: 99999999-9999-4999-8999-999999999999
+                  reviewedEvidenceRevision: 2
+                  noNewReportReason: '현재 근거로 추가 공식 보고서를 발급하지 않기로 결정했습니다.'
       responses:
         '200':
-          description: 상태 변경과 활동 이력 기록 완료. CLOSED는 발급 완료/포기/기각 종료를 closureDisposition으로 구분.
+          description: 상태 변경과 활동 이력 기록 완료. CLOSED는 발급 완료/포기/기각/V2 재검토 후 신규 미발급을 closureDisposition으로 구분.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Case'}
+              example:
+                caseId: 11111111-1111-4111-8111-111111111111
+                eventId: 33333333-3333-4333-8333-333333333333
+                type: GRAPH_CLUSTER
+                status: CLOSED
+                caseVersion: 9
+                evidenceRevision: 2
+                hasActiveIssuanceHold: false
+                currentReportVersionId: 44444444-4444-4444-8444-444444444444
+                closureDisposition: NO_NEW_REPORT_AFTER_STALE
+                closureReason: 'V2 근거 재검토를 완료하여 사건을 종료합니다.'
+                closureEvidenceRevision: 2
+                closureReviewActivityId: 99999999-9999-4999-8999-999999999999
+                closureStaleApprovalDecisionId: 55555555-5555-4555-8555-555555555555
+                closurePriorGeneratedReportVersionIds: [44444444-4444-4444-8444-444444444444]
+                closureActivityId: 66666666-6666-4666-8666-666666666666
+                noNewReportReason: '현재 근거로 추가 공식 보고서를 발급하지 않기로 결정했습니다.'
+                closedAt: '2026-10-17T02:00:00Z'
+                allowedActions: [VIEW_ACTIVITIES, DOWNLOAD_HISTORY]
+                createdAt: '2026-10-17T01:00:00Z'
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -802,7 +913,11 @@ components:
       required: [caseId, eventId, type, status, caseVersion, evidenceRevision, hasActiveIssuanceHold, allowedActions, createdAt]
       allOf:
         - if: {properties: {status: {const: CLOSED}}, required: [status]}
-          then: {required: [closureDisposition, closedAt]}
+          then: {required: [closureDisposition, closureReason, closedAt]}
+        - if: {properties: {closureDisposition: {const: NO_NEW_REPORT_AFTER_STALE}}, required: [closureDisposition]}
+          then:
+            required: [closureEvidenceRevision, closureReviewActivityId, closureStaleApprovalDecisionId, closurePriorGeneratedReportVersionIds, closureActivityId, noNewReportReason]
+            properties: {status: {const: CLOSED}}
       properties:
         caseId: {type: string, format: uuid}
         eventId: {type: string, format: uuid}
@@ -816,16 +931,27 @@ components:
         relatedCaseId: {type: string, format: uuid}
         relationReason: {type: string, maxLength: 2000}
         summary: {type: string, maxLength: 2000}
-        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NOT_APPLICABLE], readOnly: true}
+        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NO_NEW_REPORT_AFTER_STALE, NOT_APPLICABLE], readOnly: true}
+        closureReason: {type: string, minLength: 3, maxLength: 2000, readOnly: true}
         closureReportVersionId: {type: string, format: uuid, readOnly: true}
         issuanceAbandonmentReason: {type: string, readOnly: true}
+        noNewReportReason: {type: string, minLength: 3, maxLength: 2000, readOnly: true}
+        closureEvidenceRevision: {type: integer, minimum: 1, readOnly: true}
+        closureReviewActivityId: {type: string, format: uuid, readOnly: true, description: 종료 전에 확정된 EVIDENCE_REVIEW_COMPLETED CaseActivity.activityId.}
+        closureStaleApprovalDecisionId: {type: string, format: uuid, readOnly: true}
+        closurePriorGeneratedReportVersionIds: {type: array, uniqueItems: true, items: {type: string, format: uuid}, readOnly: true}
+        closureActivityId: {type: string, format: uuid, readOnly: true}
         closedAt: {type: string, format: date-time, readOnly: true}
         allowedActions: {type: array, items: {type: string}}
         createdAt: {type: string, format: date-time}
       description: >-
         tenantId는 서버 저장 소유 범위로 필수지만 권한 근거로 요청받거나 이 응답에 노출하지 않는다.
         caseVersion은 모든 Case 명령의 expectedCaseVersion과 비교한다.
-        closureDisposition은 CLOSED에서만 기록하며 ISSUANCE_ABANDONED는 발급 완료가 아니다.
+        closureDisposition은 CLOSED에서만 기록한다. ISSUANCE_ABANDONED와
+        NO_NEW_REPORT_AFTER_STALE은 발급 완료가 아니다. 후자는 서버가 V2 검토 revision,
+        이전 STALE 승인 Decision과 과거 공식 PDF의 ReportVersion ID 목록(없으면 빈 배열)을
+        이력에서 확정하고 closureReviewActivityId로 사전 검토 활동,
+        closureActivityId로 별도 종료 감사를 연결한다.
     CasePage:
       type: object
       additionalProperties: false
@@ -907,14 +1033,39 @@ components:
       properties:
         caseId: {type: string, format: uuid}
         evidenceRevision: {type: integer, minimum: 0}
+        currentEvidenceSnapshotId: {type: string, format: uuid, readOnly: true}
+        currentManifestSha256: {$ref: '#/components/schemas/Sha256'}
         sources: {type: array, items: {$ref: '#/components/schemas/CaseSourceReference'}}
         evidenceItems: {type: array, items: {$ref: '#/components/schemas/EvidenceItem'}}
+      dependentRequired:
+        currentEvidenceSnapshotId: [currentManifestSha256]
+        currentManifestSha256: [currentEvidenceSnapshotId]
+      description: >-
+        현재 revision의 불변 snapshot이 있으면 서버가 현재 ID와 digest를 함께 제공한다.
+        없으면 둘 다 생략한다. 검토 완료 명령은 서버 저장 현재 snapshot과 다시 비교하며
+        클라이언트가 이 조회값을 제시했다는 사실만으로 검토 완료를 인정하지 않는다.
     CaseActivity:
       type: object
       additionalProperties: false
       required: [activityId, caseId, eventType, occurredAt, caseVersionAfter]
+      allOf:
+        - if: {properties: {closureDisposition: {const: NO_NEW_REPORT_AFTER_STALE}}, required: [closureDisposition]}
+          then:
+            required: [actorUserId, reason, noNewReportReason, fromStatus, toStatus, reviewActivityId, closureEvidenceRevision, closureStaleApprovalDecisionId, closurePriorGeneratedReportVersionIds, approvalAuditEventId]
+            properties:
+              eventType: {const: CASE_CLOSED}
+              actorUserId: {type: string, format: uuid}
+              fromStatus: {const: IN_REVIEW}
+              toStatus: {const: CLOSED}
+        - if: {properties: {eventType: {const: EVIDENCE_REVIEW_COMPLETED}}, required: [eventType]}
+          then:
+            required: [tenantId, eventId, actorUserId, reviewedBy, reviewedAt, evidenceRevision, evidenceSnapshotId, manifestSha256, reviewOutcome, reason]
+            properties:
+              reviewOutcome: {const: NO_NEW_REPORT}
       properties:
         activityId: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid, readOnly: true}
+        eventId: {type: string, format: uuid, readOnly: true}
         caseId: {type: string, format: uuid}
         eventType: {type: string}
         actorUserId: {type: [string, 'null'], format: uuid}
@@ -925,6 +1076,25 @@ components:
         caseVersionAfter: {type: integer, minimum: 0}
         approvalAuditEventId: {type: string, format: uuid}
         requestId: {type: string, format: uuid}
+        evidenceRevision: {type: integer, minimum: 1}
+        evidenceSnapshotId: {type: string, format: uuid}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewedBy: {type: string, format: uuid, readOnly: true}
+        reviewedAt: {type: string, format: date-time, readOnly: true}
+        reviewOutcome: {type: string, enum: [NO_NEW_REPORT]}
+        reviewActivityId: {type: string, format: uuid, description: 종료 활동에서 참조하는 이전 EVIDENCE_REVIEW_COMPLETED activityId.}
+        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NO_NEW_REPORT_AFTER_STALE, NOT_APPLICABLE]}
+        noNewReportReason: {type: string, minLength: 3, maxLength: 2000}
+        closureEvidenceRevision: {type: integer, minimum: 1}
+        closureStaleApprovalDecisionId: {type: string, format: uuid}
+        closurePriorGeneratedReportVersionIds: {type: array, uniqueItems: true, items: {type: string, format: uuid}}
+      description: >-
+        EVIDENCE_REVIEW_COMPLETED의 activityId가 계약상 caseActivityId이며 저장된 인증
+        REVIEWER actorUserId=reviewedBy, 서버 occurredAt=reviewedAt이다. 검토 활동은
+        종료 명령보다 먼저 확정되어야 하고 조회·메모·종료 명령으로 생성하지 않는다.
+        NO_NEW_REPORT_AFTER_STALE 종료 활동은 별도의 종료·신규 미발급 사유, V2 revision,
+        사전 reviewActivityId, 이전 불변 승인 Decision과 과거 공식 PDF ReportVersion ID 목록(없으면 빈 배열),
+        연결된 ApprovalAuditEvent를 보존한다. 증거/개인정보 원문은 감사에 복제하지 않는다.
     CaseActivityPage:
       type: object
       additionalProperties: false
@@ -953,6 +1123,22 @@ components:
         items의 출처 타입·ID와 팬 제보/증거 소속 관계는 불변 manifest 및 digest에 포함한다.
         이 응답은 민감 원문·object key를 제외한 불변 manifest 투영이다.
         전체 canonical manifest의 digest는 서버가 저장·검증한다. 보고서 내용/템플릿은 별도 ReportVersion.
+    CompleteEvidenceReviewInput:
+      type: object
+      additionalProperties: false
+      required: [expectedCaseVersion, evidenceRevision, evidenceSnapshotId, manifestSha256, reviewOutcome, reason]
+      properties:
+        expectedCaseVersion: {type: integer, minimum: 0}
+        evidenceRevision: {type: integer, minimum: 1}
+        evidenceSnapshotId: {type: string, format: uuid}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewOutcome: {type: string, const: NO_NEW_REPORT}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+      description: >-
+        서버 인증 문맥의 REVIEWER만 제출한다. tenantId·eventId·reviewedBy·reviewedAt은
+        클라이언트가 보내지 않고 서버가 저장한다. 서버 현재 V2 revision·snapshot ID/hash,
+        증거 변경에 따른 과거 승인 STALE, Case IN_REVIEW, ACTIVE 보류 부재를 확인한다.
+        응답의 activityId는 별도 종료 명령의 reviewActivityId로 사용한다.
     CaseTransitionInput:
       type: object
       additionalProperties: false
@@ -964,20 +1150,35 @@ components:
           then: {required: [closureReportVersionId]}
         - if: {properties: {closureDisposition: {const: ISSUANCE_ABANDONED}}, required: [closureDisposition]}
           then: {required: [issuanceAbandonmentReason]}
+        - if: {properties: {closureDisposition: {const: NO_NEW_REPORT_AFTER_STALE}}, required: [closureDisposition]}
+          then:
+            required: [reviewActivityId, reviewedEvidenceRevision, noNewReportReason]
+            properties: {toStatus: {const: CLOSED}}
       properties:
         toStatus:
           type: string
           enum: [TRIAGED, IN_REVIEW, NEEDS_EVIDENCE, READY_FOR_APPROVAL, DISMISSED, CLOSED]
         expectedCaseVersion: {type: integer, minimum: 0}
         reason: {type: string, minLength: 3, maxLength: 2000}
-        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NOT_APPLICABLE]}
+        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NO_NEW_REPORT_AFTER_STALE, NOT_APPLICABLE]}
         closureReportVersionId: {type: string, format: uuid}
         issuanceAbandonmentReason: {type: string, minLength: 3, maxLength: 2000}
+        reviewActivityId: {type: string, format: uuid, description: 종료 전에 저장된 EVIDENCE_REVIEW_COMPLETED activityId.}
+        reviewedEvidenceRevision: {type: integer, minimum: 1, description: REVIEWER가 재검토한 현재 Case.evidenceRevision과 일치해야 한다.}
+        noNewReportReason: {type: string, minLength: 3, maxLength: 2000}
       description: >-
         READY_FOR_APPROVAL의 PENDING 요청이 없을 때 IN_REVIEW/NEEDS_EVIDENCE 복귀 가능.
         PENDING이면 철회·반려·시스템 무효화가 먼저 Request와 Case를 원자 처리한다.
+        IN_REVIEW의 CLOSED는 V2 재검토·이전 승인 STALE 조건에서
+        NO_NEW_REPORT_AFTER_STALE만 허용한다. REVIEWER가 사전 검토 활동의
+        reviewActivityId·reviewedEvidenceRevision·별도 noNewReportReason을 제출한다.
+        서버는 그 활동이 종료 전에 확정됐고 같은 tenant/event/Case·현재 revision·
+        snapshot ID/hash·당시 REVIEWER 권한·NO_NEW_REPORT에 묶였는지, 이전 승인
+        Decision이 증거 revision 증가로 STALE인지 확인한다. ReportVersion 내용 변경만으로
+        STALE인 경우에는 이 분기를 사용할 수 없다.
         APPROVED_FOR_REPORT의 CLOSED는 GENERATED_REPORT 또는 ISSUANCE_ABANDONED만,
-        DISMISSED의 CLOSED는 NOT_APPLICABLE만 허용한다. ACTIVE 보류·렌더 예약 시 종료 거절.
+        DISMISSED의 CLOSED는 근거 있는 기각에서 NOT_APPLICABLE만 허용한다.
+        모든 CLOSED에서 ACTIVE 보류·렌더 예약·PENDING 요청은 거절한다.
     IssuanceHold:
       type: object
       x-internal-only: true

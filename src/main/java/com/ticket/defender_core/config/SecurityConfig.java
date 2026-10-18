@@ -1,0 +1,74 @@
+package com.ticket.defender_core.config;
+
+import com.ticket.defender_core.security.JwtDecoderFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint;
+
+@Configuration
+public class SecurityConfig {
+
+    @Bean("adminJwtDecoder")
+    JwtDecoder adminJwtDecoder(
+            @Value("${ticket-defender.security.admin.issuer:}") String issuer,
+            @Value("${ticket-defender.security.admin.jwk-set-uri:}") String jwkSetUri,
+            @Value("${ticket-defender.security.admin.audience:}") String audience) {
+        return JwtDecoderFactory.create(issuer, jwkSetUri, audience, null);
+    }
+
+    @Bean("analysisJwtDecoder")
+    JwtDecoder analysisJwtDecoder(
+            @Value("${ticket-defender.security.analysis.issuer:}") String issuer,
+            @Value("${ticket-defender.security.analysis.jwk-set-uri:}") String jwkSetUri,
+            @Value("${ticket-defender.security.analysis.audience:}") String audience,
+            @Value("${ticket-defender.security.analysis.client-id:}") String clientId) {
+        if ((issuer != null && !issuer.isBlank()) && (clientId == null || clientId.isBlank())) {
+            throw new IllegalStateException("Analysis JWT client ID must be configured");
+        }
+        return JwtDecoderFactory.create(issuer, jwkSetUri, audience, clientId);
+    }
+
+    @Bean
+    @Order(1)
+    SecurityFilterChain analysisSecurity(HttpSecurity http,
+            @Qualifier("analysisJwtDecoder") JwtDecoder decoder) throws Exception {
+        return common(http)
+                .securityMatcher("/api/v1/audits/analyze")
+                .authorizeHttpRequests(requests -> requests.anyRequest().authenticated())
+                .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))
+                .build();
+    }
+
+    @Bean
+    @Order(3)
+    SecurityFilterChain adminSecurity(HttpSecurity http,
+            @Qualifier("adminJwtDecoder") JwtDecoder decoder) throws Exception {
+        return common(http)
+                .authorizeHttpRequests(requests -> requests
+                        .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
+                        .anyRequest().denyAll())
+                .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))
+                .build();
+    }
+
+    private HttpSecurity common(HttpSecurity http) throws Exception {
+        return http
+                .csrf(AbstractHttpConfigurer::disable)
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .formLogin(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .exceptionHandling(errors -> errors
+                        .authenticationEntryPoint(new BearerTokenAuthenticationEntryPoint())
+                        .accessDeniedHandler((request, response, exception) -> response.sendError(403)));
+    }
+}

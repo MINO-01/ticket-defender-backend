@@ -146,7 +146,9 @@ class AnalysisIngestApiTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer("unknown", CLIENT_ID, false))
                         .contentType(MediaType.APPLICATION_JSON).content(body("shared-event")))
                 .andExpect(status().isForbidden());
-        jdbc.update("UPDATE tenants SET status='INACTIVE' WHERE id=?", TENANT_A.toString());
+        entityManager.flush();
+        assertThat(jdbc.update("UPDATE tenants SET status='INACTIVE' WHERE id=?", TENANT_A.toString()))
+                .isEqualTo(1);
         entityManager.clear();
         mvc.perform(post("/api/v1/audits/analyze")
                         .header(HttpHeaders.AUTHORIZATION, bearer("ingest-a", CLIENT_ID, false))
@@ -178,7 +180,9 @@ class AnalysisIngestApiTest {
 
     @Test
     void inactiveServiceBindingCannotAnalyze() throws Exception {
-        jdbc.update("UPDATE service_tenant_bindings SET status='INACTIVE' WHERE subject='ingest-a'");
+        entityManager.flush();
+        assertThat(jdbc.update("UPDATE service_tenant_bindings SET status='INACTIVE' WHERE subject='ingest-a'"))
+                .isEqualTo(1);
         entityManager.clear();
         mvc.perform(post("/api/v1/audits/analyze")
                         .header(HttpHeaders.AUTHORIZATION, bearer("ingest-a", CLIENT_ID, false))

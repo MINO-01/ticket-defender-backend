@@ -3,22 +3,35 @@ package com.ticket.defender_core.integration;
 import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceRepository;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
+import com.ticket.defender_core.adapter.out.persistence.ServiceTenantBindingRepository;
+import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
+import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
 import com.ticket.defender_core.application.service.FraudAnalysisService;
 import com.ticket.defender_core.application.service.FraudAnalysisStatus;
 import com.ticket.defender_core.domain.AuditStatus;
 import com.ticket.defender_core.domain.EvidenceType;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.domain.AccessRecordStatus;
+import com.ticket.defender_core.domain.ServiceTenantBinding;
+import com.ticket.defender_core.domain.Tenant;
+import com.ticket.defender_core.domain.TenantEvent;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.time.Instant;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +49,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 class Track1LiveIntegrationTest {
 
+    private static final UUID TENANT_ID = UUID.fromString("11111111-1111-4111-8111-111111111111");
+    private static final UUID EVENT_ID = UUID.fromString("33333333-3333-4333-8333-333333333333");
+
     @Autowired
     private FraudAnalysisService fraudAnalysisService;
 
@@ -44,6 +60,39 @@ class Track1LiveIntegrationTest {
 
     @Autowired
     private MacroAuditEvidenceRepository macroAuditEvidenceRepository;
+
+    @Autowired
+    private TenantRepository tenants;
+
+    @Autowired
+    private TenantEventRepository events;
+
+    @Autowired
+    private ServiceTenantBindingRepository serviceBindings;
+
+    @BeforeEach
+    void seedIngestScope() {
+        tenants.save(new Tenant(TENANT_ID, "테스트 고객사", AccessRecordStatus.ACTIVE));
+        events.save(new TenantEvent(EVENT_ID, TENANT_ID, "event-1", "테스트 공연", AccessRecordStatus.ACTIVE));
+        serviceBindings.save(new ServiceTenantBinding(UUID.randomUUID(), "https://issuer.example.test/service",
+                "trusted-ingest", "ingest-1", TENANT_ID, AccessRecordStatus.ACTIVE));
+        Jwt jwt = Jwt.withTokenValue("test-service-token")
+                .header("alg", "RS256")
+                .issuer("https://issuer.example.test/service")
+                .subject("ingest-1")
+                .claim("client_id", "trusted-ingest")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        JwtAuthenticationToken authentication = new JwtAuthenticationToken(jwt);
+        authentication.setAuthenticated(true);
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        SecurityContextHolder.clearContext();
+    }
 
     @Test
     void realLouvainResponseIsMappedAndSavedOnlyOnce() {
@@ -63,6 +112,10 @@ class Track1LiveIntegrationTest {
         });
         assertThat(evidence).extracting(MacroAuditEvidence::getEventId)
                 .containsExactly("event-1", "event-1");
+        assertThat(evidence).allSatisfy(item -> {
+            assertThat(item.getTenantId()).isEqualTo(TENANT_ID);
+            assertThat(item.getInternalEventId()).isEqualTo(EVENT_ID);
+        });
         assertThat(evidence).extracting(MacroAuditEvidence::getClusterId)
                 .doesNotContainNull().containsOnly(evidence.getFirst().getClusterId());
         assertThat(evidence.getFirst().getClusterId()).startsWith("cluster-");

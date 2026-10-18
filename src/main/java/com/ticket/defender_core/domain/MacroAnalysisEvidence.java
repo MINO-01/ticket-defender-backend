@@ -2,6 +2,7 @@ package com.ticket.defender_core.domain;
 
 import java.time.LocalDateTime;
 import java.util.Objects;
+import java.util.UUID;
 
 /** 예매 건의 가명 근거와 군집 분석 출처를 담습니다. */
 public record MacroAnalysisEvidence(
@@ -17,7 +18,9 @@ public record MacroAnalysisEvidence(
         String algorithm,
         String algorithmVersion,
         String analysisRequestId,
-        LocalDateTime analyzedAt
+        LocalDateTime analyzedAt,
+        UUID tenantId,
+        UUID internalEventId
 ) {
     /** 저장에 필요한 식별자와 분석 정보를 확인합니다. */
     public MacroAnalysisEvidence {
@@ -30,6 +33,8 @@ public record MacroAnalysisEvidence(
         Objects.requireNonNull(algorithmVersion, "분석 알고리즘 버전은 필수입니다.");
         Objects.requireNonNull(analysisRequestId, "분석 요청 ID는 필수입니다.");
         Objects.requireNonNull(analyzedAt, "분석 완료 시각은 필수입니다.");
+        Objects.requireNonNull(tenantId, "고객사 식별자는 필수입니다.");
+        Objects.requireNonNull(internalEventId, "내부 공연 식별자는 필수입니다.");
 
         if (!Double.isFinite(riskScore) || riskScore < 0 || riskScore > 1) {
             throw new IllegalArgumentException("군집 위험도는 0부터 1 사이여야 합니다.");

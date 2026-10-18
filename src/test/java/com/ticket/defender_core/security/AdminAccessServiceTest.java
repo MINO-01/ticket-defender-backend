@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.InsufficientAuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -72,6 +73,29 @@ class AdminAccessServiceTest {
                 .requireEventAccess(EVENT, Set.of(AdminRole.ANALYST)))
                 .isInstanceOf(InsufficientAuthenticationException.class);
         verifyNoInteractions(events, memberships);
+    }
+
+    @Test
+    void eventDatabaseFailureCannotGrantAccess() {
+        authenticate();
+        given(events.findTenantId(EVENT)).willThrow(new DataAccessResourceFailureException("database unavailable"));
+
+        assertThatThrownBy(() -> new AdminAccessService(memberships, events)
+                .requireEventAccess(EVENT, Set.of(AdminRole.ANALYST)))
+                .isInstanceOf(DataAccessResourceFailureException.class);
+        verifyNoInteractions(memberships);
+    }
+
+    @Test
+    void membershipDatabaseFailureCannotGrantAccess() {
+        authenticate();
+        given(events.findTenantId(EVENT)).willReturn(Optional.of(TENANT));
+        given(memberships.findActiveMembership("admin-1", TENANT))
+                .willThrow(new DataAccessResourceFailureException("database unavailable"));
+
+        assertThatThrownBy(() -> new AdminAccessService(memberships, events)
+                .requireEventAccess(EVENT, Set.of(AdminRole.ANALYST)))
+                .isInstanceOf(DataAccessResourceFailureException.class);
     }
 
     private void authenticate() {

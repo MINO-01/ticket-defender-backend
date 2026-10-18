@@ -9,6 +9,7 @@ import com.ticket.defender_core.domain.MacroAnalysisEvidence;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.MacroEvidenceKey;
 import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.security.AnalysisIngestScope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,11 +37,16 @@ public class MacroAuditPersistenceService {
     @Transactional
     public void persistDetectedAudits(
             MacroAnalysisResponse response,
-            MacroAnalysisRequest request
+            MacroAnalysisRequest request,
+            AnalysisIngestScope scope
     ) {
+        if (scope == null) {
+            throw new IllegalArgumentException("검증된 분석 반입 범위가 필요합니다.");
+        }
         validateAnalysisResponse(response, request);
 
         Map<TicketKey, MacroAnalysisRequest.Ticket> requestedTickets = indexRequestedTickets(request.tickets());
+        requestedTickets.keySet().forEach(key -> scope.requireEventId(key.eventId()));
         Map<TicketKey, ClusterMember> detectedMembers = indexDetectedMembers(response.clusters(), requestedTickets);
         if (detectedMembers.isEmpty()) {
             log.info("저장할 매크로 군집 구성원이 없습니다. 요청 ID: {}", response.requestId());
@@ -49,16 +55,16 @@ public class MacroAuditPersistenceService {
 
         Map<String, TicketKey> requestedKeysByHash = new HashMap<>();
         detectedMembers.keySet().forEach(ticketKey -> {
-            String evidenceKey = keyFor(ticketKey);
+            String evidenceKey = keyFor(ticketKey, scope);
             TicketKey previous = requestedKeysByHash.putIfAbsent(evidenceKey, ticketKey);
             if (previous != null && !previous.equals(ticketKey)) {
                 throw new IllegalStateException("서로 다른 예매 식별 조합이 같은 매크로 증거 키를 생성했습니다.");
             }
         });
 
-        Set<TicketKey> existingMacroAudits = findExistingMacroAudits(requestedKeysByHash);
+        Set<TicketKey> existingMacroAudits = findExistingMacroAudits(requestedKeysByHash, scope);
         List<TicketAudit> newAudits = createNewAudits(
-                detectedMembers, requestedTickets, existingMacroAudits, response);
+                detectedMembers, requestedTickets, existingMacroAudits, response, scope);
 
         if (!newAudits.isEmpty()) {
             ticketAuditRepository.saveAll(newAudits);
@@ -122,7 +128,8 @@ public class MacroAuditPersistenceService {
     }
 
     /** 이미 저장된 매크로 증거를 키 목록으로 조회합니다. */
-    private Set<TicketKey> findExistingMacroAudits(Map<String, TicketKey> requestedKeysByHash) {
+    private Set<TicketKey> findExistingMacroAudits(
+            Map<String, TicketKey> requestedKeysByHash, AnalysisIngestScope scope) {
         Set<TicketKey> existing = new HashSet<>();
         List<MacroAuditEvidence> evidenceRows = macroAuditEvidenceRepository
                 .findAllByEvidenceKeyIn(requestedKeysByHash.keySet());
@@ -131,7 +138,9 @@ public class MacroAuditPersistenceService {
             TicketKey requestedKey = requestedKeysByHash.get(evidence.getEvidenceKey());
             TicketKey storedKey = new TicketKey(
                     evidence.getAccountId(), evidence.getReservationNo(), evidence.getEventId());
-            if (requestedKey == null || !requestedKey.equals(storedKey)) {
+            if (requestedKey == null || !requestedKey.equals(storedKey)
+                    || !scope.tenantId().equals(evidence.getTenantId())
+                    || !scope.requireEventId(requestedKey.eventId()).equals(evidence.getInternalEventId())) {
                 throw new IllegalStateException("기존 매크로 증거 키가 다른 예매 식별 조합과 충돌했습니다.");
             }
             existing.add(storedKey);
@@ -144,7 +153,8 @@ public class MacroAuditPersistenceService {
             Map<TicketKey, ClusterMember> detectedMembers,
             Map<TicketKey, MacroAnalysisRequest.Ticket> requestedTickets,
             Set<TicketKey> existingMacroAudits,
-            MacroAnalysisResponse response
+            MacroAnalysisResponse response,
+            AnalysisIngestScope scope
     ) {
         List<TicketAudit> newAudits = new ArrayList<>();
         for (Map.Entry<TicketKey, ClusterMember> entry : detectedMembers.entrySet()) {
@@ -168,16 +178,19 @@ public class MacroAuditPersistenceService {
                     response.algorithm(),
                     response.algorithmVersion(),
                     response.requestId(),
-                    response.analyzedAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime()
+                    response.analyzedAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(),
+                    scope.tenantId(),
+                    scope.requireEventId(ticket.eventId())
             );
             newAudits.add(TicketAudit.createMacroAudit(evidence));
         }
         return newAudits;
     }
 
-    /** 공연·예매·계정 조합의 유니크 키를 만듭니다. */
-    private String keyFor(TicketKey ticketKey) {
-        return MacroEvidenceKey.create(ticketKey.eventId(), ticketKey.reservationNo(), ticketKey.accountId());
+    /** 고객사·공연·예매·계정 조합의 유니크 키를 만듭니다. */
+    private String keyFor(TicketKey ticketKey, AnalysisIngestScope scope) {
+        return MacroEvidenceKey.create(scope.tenantId(), scope.requireEventId(ticketKey.eventId()),
+                ticketKey.reservationNo(), ticketKey.accountId());
     }
 
     private record TicketKey(String accountId, String reservationNo, String eventId) {

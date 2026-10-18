@@ -5,10 +5,13 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.UUID;
 
 /** 매크로 증거 내역을 조회하는 리포지토리입니다. */
 public interface MacroAuditEvidenceRepository extends JpaRepository<MacroAuditEvidence, Long> {
 
     /** 키 목록에 해당하는 기존 증거를 조회합니다. */
     List<MacroAuditEvidence> findAllByEvidenceKeyIn(Collection<String> evidenceKeys);
+
+    List<MacroAuditEvidence> findAllByTenantIdAndInternalEventId(UUID tenantId, UUID internalEventId);
 }

@@ -4,6 +4,8 @@ import com.ticket.defender_core.adapter.in.web.dto.AgentAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.FastApiAdapter;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import com.ticket.defender_core.security.AnalysisIngestAccessService;
+import com.ticket.defender_core.security.AnalysisIngestScope;
 import org.springframework.dao.DataIntegrityViolationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,12 +21,14 @@ public class FraudAnalysisService {
 
     private final FastApiAdapter fastApiAdapter;
     private final MacroAuditPersistenceService macroAuditPersistenceService;
+    private final AnalysisIngestAccessService ingestAccessService;
 
     /**
      * 요청 데이터를 분석 서버로 보내고 완료된 결과만 저장합니다.
      * 저장 중 유니크 키 충돌이 나면 기존 내역을 다시 조회합니다.
      */
     public FraudAnalysisStatus processAgentData(AgentAnalysisRequest request) {
+        AnalysisIngestScope scope = ingestAccessService.requireScope(request);
         String requestId = UUID.randomUUID().toString();
         List<MacroAnalysisRequest.Ticket> tickets = request.tickets().stream()
                 .map(ticket -> new MacroAnalysisRequest.Ticket(
@@ -56,11 +60,11 @@ public class FraudAnalysisService {
         }
 
         try {
-            macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest);
+            macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest, scope);
         } catch (DataIntegrityViolationException concurrentInsert) {
             log.info("동시 분석 요청이 같은 매크로 증거를 저장했습니다. 기존 증거를 다시 확인합니다. 요청 ID: {}",
                     requestId);
-            macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest);
+            macroAuditPersistenceService.persistDetectedAudits(response, analysisRequest, scope);
         }
         return FraudAnalysisStatus.COMPLETED;
     }

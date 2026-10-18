@@ -16,6 +16,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -66,7 +67,9 @@ class AuditReportServiceTest {
         TicketAudit audit = TicketAudit.createMacroAudit(new MacroAnalysisEvidence(
                 "account-macro", "reservation-macro", "event-macro",
                 "a".repeat(64), null, null, null,
-                "cluster-1", 0.91, "LOUVAIN", "1.0.0", "request-1", RECEIVED_AT
+                "cluster-1", 0.91, "LOUVAIN", "1.0.0", "request-1", RECEIVED_AT,
+                UUID.fromString("11111111-1111-4111-8111-111111111111"),
+                UUID.fromString("33333333-3333-4333-8333-333333333333")
         ));
         assertThat(audit.getEvidenceType()).isEqualTo(EvidenceType.MACRO_GRAPH);
         assertThat(audit.getMappingScore()).isNull();

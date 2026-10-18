@@ -110,6 +110,9 @@ class SecurityApiTest {
     @MockitoBean
     private FraudAnalysisService fraudAnalysisService;
 
+    @MockitoBean
+    private AnalysisIngestAccessService ingestAccessService;
+
     @BeforeAll
     static void createKeys() throws Exception {
         adminKey = newRsaKey();

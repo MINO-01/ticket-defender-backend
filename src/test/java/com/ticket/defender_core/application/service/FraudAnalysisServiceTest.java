@@ -5,6 +5,9 @@ import com.ticket.defender_core.adapter.out.api.FastApiAdapter;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import com.ticket.defender_core.security.AnalysisIngestAccessService;
+import com.ticket.defender_core.security.AnalysisIngestScope;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,6 +20,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,6 +48,13 @@ class FraudAnalysisServiceTest {
     @Mock
     private MacroAuditPersistenceService macroAuditPersistenceService;
 
+    @Mock
+    private AnalysisIngestAccessService ingestAccessService;
+
+    private final AnalysisIngestScope scope = new AnalysisIngestScope(
+            UUID.fromString("11111111-1111-4111-8111-111111111111"),
+            Map.of("event-1", UUID.fromString("33333333-3333-4333-8333-333333333333")));
+
     @InjectMocks
     private FraudAnalysisService fraudAnalysisService;
 
@@ -51,6 +63,11 @@ class FraudAnalysisServiceTest {
 
     @Captor
     private ArgumentCaptor<MacroAnalysisResponse> responseCaptor;
+
+    @BeforeEach
+    void authorizeIngest() {
+        given(ingestAccessService.requireScope(any(AgentAnalysisRequest.class))).willReturn(scope);
+    }
 
     /** 분석 결과의 군집 구성원과 출처를 저장 서비스에 전달합니다. */
     @Test
@@ -87,7 +104,7 @@ class FraudAnalysisServiceTest {
         assertEquals(IP_HASH, sentRequest.tickets().get(1).ipHash());
 
         verify(macroAuditPersistenceService)
-                .persistDetectedAudits(responseCaptor.capture(), eq(sentRequest));
+                .persistDetectedAudits(responseCaptor.capture(), eq(sentRequest), eq(scope));
         assertSame(expectedResponse.get(), responseCaptor.getValue());
         assertEquals(FraudAnalysisStatus.COMPLETED, status);
     }
@@ -111,7 +128,7 @@ class FraudAnalysisServiceTest {
         doThrow(new DataIntegrityViolationException("동시 요청 유니크 키 충돌"))
                 .doNothing()
                 .when(macroAuditPersistenceService)
-                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class));
+                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class), eq(scope));
 
         // when
         FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
@@ -119,7 +136,7 @@ class FraudAnalysisServiceTest {
         // then
         assertEquals(FraudAnalysisStatus.COMPLETED, status);
         verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
-                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class));
+                .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class), eq(scope));
     }
 
     /** 분석을 완료하지 못하면 결과를 저장하지 않습니다. */
@@ -141,7 +158,7 @@ class FraudAnalysisServiceTest {
         FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
 
         // then
-        verify(macroAuditPersistenceService, never()).persistDetectedAudits(any(), any());
+        verify(macroAuditPersistenceService, never()).persistDetectedAudits(any(), any(), any());
         assertEquals(FraudAnalysisStatus.UNAVAILABLE, status);
     }
 
@@ -166,7 +183,7 @@ class FraudAnalysisServiceTest {
         FraudAnalysisStatus status = fraudAnalysisService.processAgentData(input);
 
         // then
-        verify(macroAuditPersistenceService, never()).persistDetectedAudits(any(), any());
+        verify(macroAuditPersistenceService, never()).persistDetectedAudits(any(), any(), any());
         assertEquals(FraudAnalysisStatus.COMPLETED, status);
     }
 

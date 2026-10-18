@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.MapsId;
 import jakarta.persistence.OneToOne;
@@ -12,8 +13,11 @@ import jakarta.persistence.UniqueConstraint;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 /** 매크로 분석 결과를 팬 제보와 분리해 저장합니다. */
 @Entity
@@ -21,6 +25,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Table(
         name = "macro_audit_evidence",
+        indexes = @Index(name = "idx_macro_audit_evidence_scope", columnList = "tenant_id,internal_event_id"),
         uniqueConstraints = @UniqueConstraint(
                 name = "uk_macro_audit_evidence_key",
                 columnNames = "evidence_key"
@@ -42,6 +47,14 @@ public class MacroAuditEvidence {
 
     @Column(name = "event_id", nullable = false)
     private String eventId;
+
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "tenant_id", length = 36)
+    private UUID tenantId;
+
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "internal_event_id", length = 36)
+    private UUID internalEventId;
 
     @Column(name = "reservation_no", nullable = false)
     private String reservationNo;
@@ -76,8 +89,10 @@ public class MacroAuditEvidence {
     private MacroAuditEvidence(TicketAudit ticketAudit, MacroAnalysisEvidence evidence) {
         this.ticketAudit = ticketAudit;
         this.evidenceKey = MacroEvidenceKey.create(
-                evidence.eventId(), evidence.reservationNo(), evidence.accountId());
+                evidence.tenantId(), evidence.internalEventId(), evidence.reservationNo(), evidence.accountId());
         this.eventId = evidence.eventId();
+        this.tenantId = evidence.tenantId();
+        this.internalEventId = evidence.internalEventId();
         this.reservationNo = evidence.reservationNo();
         this.accountId = evidence.accountId();
         this.deviceIdHash = evidence.deviceIdHash();

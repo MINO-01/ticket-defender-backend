@@ -10,6 +10,7 @@ import com.ticket.defender_core.domain.EvidenceType;
 import com.ticket.defender_core.domain.MacroAnalysisEvidence;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.security.AnalysisIngestScope;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,6 +22,8 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -39,6 +42,10 @@ class MacroAuditPersistenceServiceTest {
     private static final String IP_HASH = "d".repeat(64);
     private static final String REQUEST_ID = "2136558c-2326-4430-a46d-0793494e9b49";
     private static final LocalDateTime ANALYZED_AT = LocalDateTime.parse("2026-10-08T10:15:30");
+    private static final UUID TENANT_ID = UUID.fromString("11111111-1111-4111-8111-111111111111");
+    private static final UUID INTERNAL_EVENT_ID = UUID.fromString("33333333-3333-4333-8333-333333333333");
+    private static final AnalysisIngestScope SCOPE = new AnalysisIngestScope(
+            TENANT_ID, Map.of("event-1", INTERNAL_EVENT_ID));
 
     @Mock
     private TicketAuditRepository ticketAuditRepository;
@@ -71,7 +78,7 @@ class MacroAuditPersistenceServiceTest {
         });
 
         // when
-        persistenceService.persistDetectedAudits(response, request);
+        persistenceService.persistDetectedAudits(response, request, SCOPE);
 
         // then
         verify(ticketAuditRepository).saveAll(any());
@@ -81,6 +88,8 @@ class MacroAuditPersistenceServiceTest {
         assertEquals("res-1", firstAudit.getReservationNo());
         MacroAuditEvidence firstEvidence = firstAudit.getMacroAuditEvidence();
         assertEquals("event-1", firstEvidence.getEventId());
+        assertEquals(TENANT_ID, firstEvidence.getTenantId());
+        assertEquals(INTERNAL_EVENT_ID, firstEvidence.getInternalEventId());
         assertEquals(DEVICE_HASH, firstEvidence.getDeviceIdHash());
         assertEquals(IP_HASH, savedAudits.get().get(1).getMacroAuditEvidence().getIpHash());
         assertEquals("cluster-001", firstEvidence.getClusterId());
@@ -107,7 +116,7 @@ class MacroAuditPersistenceServiceTest {
 
         // when / then
         assertThrows(IllegalStateException.class,
-                () -> persistenceService.persistDetectedAudits(response, request));
+                () -> persistenceService.persistDetectedAudits(response, request, SCOPE));
         verify(ticketAuditRepository, never()).saveAll(any());
     }
 
@@ -123,7 +132,8 @@ class MacroAuditPersistenceServiceTest {
         );
         MacroAnalysisEvidence existingAnalysis = new MacroAnalysisEvidence(
                 "uid-1", "res-1", "event-1", PAYMENT_HASH, null, DEVICE_HASH, null,
-                "cluster-001", 0.91, "LOUVAIN", "1.0.0", REQUEST_ID, ANALYZED_AT);
+                "cluster-001", 0.91, "LOUVAIN", "1.0.0", REQUEST_ID, ANALYZED_AT,
+                TENANT_ID, INTERNAL_EVENT_ID);
         TicketAudit existingAudit = TicketAudit.createMacroAudit(existingAnalysis);
         MacroAuditEvidence existingEvidence = existingAudit.getMacroAuditEvidence();
         given(macroAuditEvidenceRepository.findAllByEvidenceKeyIn(any()))
@@ -138,7 +148,7 @@ class MacroAuditPersistenceServiceTest {
         });
 
         // when
-        persistenceService.persistDetectedAudits(response, request);
+        persistenceService.persistDetectedAudits(response, request, SCOPE);
 
         // then
         verify(ticketAuditRepository).saveAll(any());

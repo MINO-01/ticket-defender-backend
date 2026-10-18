@@ -5,8 +5,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.util.UUID;
 
-/** 공연·예매·계정 조합에서 고정 길이 SHA-256 키를 만듭니다. */
+/** 기존 키와 고객사 범위 키를 각각 고정 길이 SHA-256 값으로 만듭니다. */
 public final class MacroEvidenceKey {
 
     private MacroEvidenceKey() {}
@@ -23,6 +24,25 @@ public final class MacroEvidenceKey {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             updateLengthPrefixed(digest, eventId);
+            updateLengthPrefixed(digest, reservationNo);
+            updateLengthPrefixed(digest, accountId);
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 해시를 계산할 수 없습니다.", exception);
+        }
+    }
+
+    public static String create(UUID tenantId, UUID internalEventId, String reservationNo, String accountId) {
+        Objects.requireNonNull(tenantId, "고객사 식별자는 필수입니다.");
+        Objects.requireNonNull(internalEventId, "내부 공연 식별자는 필수입니다.");
+        Objects.requireNonNull(reservationNo, "예매 번호는 필수입니다.");
+        Objects.requireNonNull(accountId, "계정 식별자는 필수입니다.");
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateLengthPrefixed(digest, "tenant-scoped-v2");
+            updateLengthPrefixed(digest, tenantId.toString());
+            updateLengthPrefixed(digest, internalEventId.toString());
             updateLengthPrefixed(digest, reservationNo);
             updateLengthPrefixed(digest, accountId);
             return HexFormat.of().formatHex(digest.digest());

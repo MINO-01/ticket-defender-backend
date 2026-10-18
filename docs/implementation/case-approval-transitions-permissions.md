@@ -37,21 +37,26 @@ MVP에서 `DISMISSED`와 `CLOSED`는 기존 사건을 직접 재개하는 진입
 
 V2 반영으로 `IN_REVIEW`가 된 사건은 새 snapshot·ReportVersion·승인·PDF를 완료한 뒤 기존 `APPROVED_FOR_REPORT → CLOSED (GENERATED_REPORT)` 경로를 사용할 수 있다. 새 공식 보고서를 발급하지 않기로 한 경우에만 위 `NO_NEW_REPORT_AFTER_STALE` 경로를 사용한다. 이 명령은 서버 저장 현재 `evidenceRevision`·snapshot/hash와 **사전 확정된** 검토 활동, 이전 승인 snapshot revision·`STALE` 적격성, 활성 요청·보류·예약, 과거 공식 PDF 목록을 Case 잠금/조건부 갱신 경계에서 검사하고 `caseVersion` 변경·종료 CaseActivity·ApprovalAuditEvent를 원자 처리한다. `reviewedEvidenceRevision`은 REVIEWER의 선언이며 서버의 검토 활동과 현재 근거를 모두 대조한다. 종료는 승인 또는 발급 완료가 아니며 V1 Decision·PDF와 발급 이력은 수정하지 않는다. 새 PDF가 공식 공개되지 않았으면 이전 `GENERATED`를 `SUPERSEDED`로 바꾸지 않는다. `STALE`만을 이유로 `DISMISSED`를 선택할 수 없다.
 
+이 종료 명령은 먼저 인증·tenant/event/Case 접근 범위를 확인한다. 그다음 (1) `expectedCaseVersion` 대 현재 `Case.caseVersion` 불일치 → 409 `CASE_VERSION_CONFLICT`, (2) `reviewedEvidenceRevision` 대 현재 `Case.evidenceRevision` 불일치 → 409 `EVIDENCE_VERSION_MISMATCH` 순으로 검사한다. 이어 활동 ID를 허용된 tenant/event/Case 범위에서 조회해 미존재·타 범위는 동일한 404 `RESOURCE_NOT_FOUND`로 처리한다. 같은 범위의 검토 완료 활동이 있으면 (3) 그 활동의 revision·snapshot ID·manifest digest 대 현재 근거 불일치 → 409 `EVIDENCE_REVIEW_MISMATCH`를 적용한다. 앞선 버전 오류는 활동 ID의 존재·소속에 따라 달라지지 않는다.
+
+아래 V3 오류 우선순위 사례는 접근 가능한 같은 Case가 `IN_REVIEW`이고, 증거 변경으로 이전 승인이 `STALE`이며, 필수 입력이 있고, ACTIVE 보류·PENDING 요청·렌더 예약이 없음을 전제한다.
+
 | 계약 검증 시나리오 | 기대 결과 |
 |---|---|
 | V1 승인 후 관련 V2 근거 반영 | Case `IN_REVIEW`, 현재 승인 적격성 `STALE`; V1 Decision·PDF 불변 |
 | V2 재승인·신규 공식 PDF 공개 후 종료 | `APPROVED_FOR_REPORT → CLOSED (GENERATED_REPORT)`; 공개 성공 시에만 V1 PDF `SUPERSEDED` |
 | V2 검토 활동이 종료 전에 확정되고 현재 snapshot과 일치 | 현재 revision·증거 변경에 따른 STALE 승인·두 사유와 과거 PDF 목록 확인 후 `IN_REVIEW → CLOSED (NO_NEW_REPORT_AFTER_STALE)`; 검토 활동과 종료 활동은 별도, 종료 CaseActivity·ApprovalAuditEvent 원자 기록 |
-| 사전 검토 활동 없음, 클라이언트 revision만 일치하고 제출한 활동 ID도 없음 | 404 `RESOURCE_NOT_FOUND`; 종료·종료 감사 없음. 타 범위 ID도 같은 응답 |
-| 같은 사건의 기존 일반 메모 활동 ID를 검토 완료 ID로 제출 | 409 `EVIDENCE_REVIEW_NOT_COMPLETED`; 메모로 사전 검토를 대용하지 않음 |
-| V1 활동만 있거나 검토 뒤 V3로 근거 변경 | 409 `EVIDENCE_REVIEW_MISMATCH`; V2 활동 재사용 금지 |
-| 타 Case·tenant·event의 검토 활동 ID | 404 `RESOURCE_NOT_FOUND`; 미존재 ID와 동일 응답으로 활동 존재 여부를 노출하지 않음 |
+| Case 버전·제출 revision은 최신이나 존재하지 않는 `reviewActivityId` 제출 | 404 `RESOURCE_NOT_FOUND`; 종료·종료 감사 없음. 타 범위 ID도 같은 응답. ID 필드 누락은 422 `VALIDATION_FAILED` |
+| Case 버전·제출 revision이 최신이며 같은 사건의 기존 일반 메모 활동 ID를 검토 완료 ID로 제출 | 409 `EVIDENCE_REVIEW_NOT_COMPLETED`; 메모로 사전 검토를 대용하지 않음 |
+| 현재 V3, V2 당시 `expectedCaseVersion`·`reviewedEvidenceRevision=2`·V2 검토 활동 ID 제출 | 409 `CASE_VERSION_CONFLICT`; 이후 근거·활동 검사는 오류 선택에 영향 없음 |
+| 현재 V3, Case 버전은 최신이나 `reviewedEvidenceRevision=2`·V2 검토 활동 ID 제출 | 409 `EVIDENCE_VERSION_MISMATCH`; 활동의 오래된 바인딩보다 제출 revision 불일치가 우선 |
+| 현재 V3, Case 버전·`reviewedEvidenceRevision=3`은 최신이나 V2 검토 활동 ID 제출 | 409 `EVIDENCE_REVIEW_MISMATCH`; V2 활동 재사용 금지 |
+| Case 버전·제출 revision이 최신이며 타 Case·tenant·event의 검토 활동 ID 제출 | 404 `RESOURCE_NOT_FOUND`; 미존재 ID와 동일 응답으로 활동 존재 여부를 노출하지 않음 |
 | 증거 revision은 그대로이고 ReportVersion 본문 변경만으로 승인 `STALE` | 409 `CASE_STATE_CONFLICT`; 이 관리상 종료 분기는 증거 변경 후 재검토에만 사용 |
 | 증거 검토 활동 저장 실패 | 500 `INTERNAL_ERROR`; 활동·Case 버전 변경 롤백 |
 | V1 PDF 존재, V2 승인 없음 | V1 동일 파일 재다운로드 가능; V1 승인으로 V2 신규 발급 불가, 신규 PDF 없이 종료해도 V1 `SUPERSEDED` 금지 |
 | ACTIVE IssuanceHold, PENDING 승인 요청 또는 렌더 예약 중 종료 | 각각 409 `ISSUANCE_HOLD_ACTIVE`, `APPROVAL_REQUEST_ALREADY_PENDING` 또는 `REPORT_RENDER_IN_PROGRESS`; 종료·감사 기록 없음 |
 | STALE/미발급만을 사유로 `DISMISSED` 요청 | 조사상 기각 근거가 없어 422 `VALIDATION_FAILED`; Case `IN_REVIEW` 유지 |
-| `expectedCaseVersion`/`reviewedEvidenceRevision` 불일치 | 각각 409 `CASE_VERSION_CONFLICT`/`EVIDENCE_VERSION_MISMATCH`; 종료·감사 기록 없음 |
 | 종료 감사 기록 저장 실패 | 500 `INTERNAL_ERROR`; Case 상태·버전·CaseActivity·ApprovalAuditEvent 모두 롤백 |
 
 ## 지속적인 발급 보류

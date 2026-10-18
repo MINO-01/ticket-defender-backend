@@ -320,13 +320,18 @@ paths:
         DISMISSED는 근거 있는 기각에서 NOT_APPLICABLE만 허용한다. STALE 또는 발급 포기만으로
         DISMISSED를 선택할 수 없다. 모든 종료에서 ACTIVE 발급 보류·렌더 예약·PENDING 요청이
         없어야 한다. 종료·CaseActivity·감사를 원자 기록하며 실패 시 전체 롤백한다.
-        종료 후 신규 렌더는 금지한다. expectedCaseVersion은 Case.caseVersion과 비교한다.
-        revision 불일치는 409 EVIDENCE_VERSION_MISMATCH, ACTIVE 보류는
-        ISSUANCE_HOLD_ACTIVE, 예약 중은 REPORT_RENDER_IN_PROGRESS, STALE 승인/상태
-        조건 불일치는 CASE_STATE_CONFLICT, 검토 활동 ID 미존재·타 범위는 동일한
-        404 RESOURCE_NOT_FOUND다. 같은 사건의 기존 활동이 검토 완료 유형이 아니면
-        EVIDENCE_REVIEW_NOT_COMPLETED, 현재 근거와 검토 불일치는 EVIDENCE_REVIEW_MISMATCH,
-        필수 사유 누락은 422 VALIDATION_FAILED다.
+        종료 후 신규 렌더는 금지한다. NO_NEW_REPORT_AFTER_STALE 종료에서는 먼저 인증과
+        tenant/event/Case 접근 범위를 검증한다. 접근 가능한 Case의 expectedCaseVersion과
+        현재 Case.caseVersion이 다르면 409 CASE_VERSION_CONFLICT, 다음
+        reviewedEvidenceRevision과 현재 Case.evidenceRevision이 다르면 409
+        EVIDENCE_VERSION_MISMATCH다. 그 다음 검토 활동 ID를 허용된 tenant/event/Case
+        범위에서 조회하며 미존재·타 범위는 동일한 404 RESOURCE_NOT_FOUND다.
+        같은 사건의 기존 활동이 검토 완료 유형이 아니면 409 EVIDENCE_REVIEW_NOT_COMPLETED,
+        저장된 검토 활동의 revision·snapshot ID·manifest digest와 현재 근거가 다르면
+        409 EVIDENCE_REVIEW_MISMATCH다. 앞선 버전 오류는 활동 ID의 존재·소속에
+        따라 달라지지 않는다. ACTIVE 보류는 ISSUANCE_HOLD_ACTIVE,
+        예약 중은 REPORT_RENDER_IN_PROGRESS, STALE 승인/상태 조건 불일치는
+        CASE_STATE_CONFLICT, 필수 필드 누락은 422 VALIDATION_FAILED다.
       parameters: [{$ref: '#/components/parameters/CaseId'}]
       requestBody:
         required: true

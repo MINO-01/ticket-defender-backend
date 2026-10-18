@@ -1,0 +1,1462 @@
+openapi: 3.1.0
+x-contract-status: PROPOSED_UNIMPLEMENTED
+info:
+  title: Ticket Defender Case and Approval API (PROPOSAL)
+  version: 0.1.0
+  description: >-
+    MVP 정책을 반영한 문서 전용 PROPOSED 초안. 아래 경로는 현재 Spring Backend에 구현되어 있지 않다.
+    기존 /api/v1/audits/** 경로를 바꾸거나 공식 PDF 발급을 허용하지 않는다.
+    인증, tenant membership, 공연 범위, 파일 접근 통제가 구현되기 전 활성화 금지.
+    tenantId는 요청에서 받지 않고 인증된 서버 문맥에서 결정한다.
+    Specs 관리자 API도 PROPOSED이며 같은 Case 경로의 필드명과 구 ReportVersion
+    approve 경로는 docs/issues/case-approval-decisions-followups.md의 동기화 대상이다.
+servers:
+  - url: http://localhost:8080
+    description: 제안 경로 설명용. 가동 중인 API라는 뜻이 아님.
+security:
+  - userAuth: []
+x-tenant-boundary:
+  source: authenticated server membership, never request tenantId
+  resources: [Case, CaseSourceReference, CaseActivity, EvidenceSnapshot, IssuanceHold, ReviewReceipt, ApprovalRequest, ApprovalDecision, ReportVersion, PDF]
+  crossTenantOrHiddenEvent: 404 RESOURCE_NOT_FOUND
+  sameTenantRoleDenied: 403 FORBIDDEN
+tags:
+  - name: Cases
+  - name: Approvals
+  - name: Reports
+x-error-catalog:
+  '400': [INVALID_REQUEST]
+  '401': [UNAUTHENTICATED]
+  '403': [FORBIDDEN, SELF_APPROVAL_FORBIDDEN]
+  '404': [RESOURCE_NOT_FOUND]
+  '409': [CASE_STATE_CONFLICT, CASE_VERSION_CONFLICT, APPROVAL_REQUEST_ALREADY_PENDING, APPROVAL_ALREADY_DECIDED, APPROVAL_REQUEST_NOT_PENDING, IDEMPOTENCY_KEY_REUSED, EVIDENCE_VERSION_MISMATCH, EVIDENCE_REVIEW_NOT_COMPLETED, EVIDENCE_REVIEW_MISMATCH, REPORT_CONTENT_MISMATCH, REPORT_VERSION_CONFLICT, REPORT_REVISION_CLOSED, REPORT_NOT_APPROVED, REPORT_NOT_GENERATED, REPORT_ALREADY_GENERATED, REPORT_RENDER_IN_PROGRESS, ISSUANCE_HOLD_ACTIVE, REVIEW_RECEIPT_MISMATCH, REVIEW_RECEIPT_UNUSABLE]
+  '422': [VALIDATION_FAILED]
+  '500': [INTERNAL_ERROR]
+  '503': [DEPENDENCY_UNAVAILABLE]
+paths:
+  /api/v1/cases:
+    post:
+      tags: [Cases]
+      operationId: createCaseProposal
+      x-required-roles: [ANALYST, REVIEWER]
+      summary: Case 또는 연결된 후속 Case 생성
+      description: >-
+        ANALYST 또는 REVIEWER의 명시적 생성. 종료 Case의 직접 재개는 없으며
+        후속 Case는 relatedCaseId와 relationReason을 함께 제공한다.
+        FAN_REPORT는 영속 fanReportIds가 필요하며 evidenceIds만으로 제보를 추정하지 않는다.
+        서버가 제보·증거의 tenant/event 및 소유 관계를 검사한다.
+        원 Case의 승인·보고서·감사 이력은 복제하거나 승계하지 않는다.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateCaseInput'}
+            example:
+              eventId: 33333333-3333-4333-8333-333333333333
+              type: FAN_REPORT
+              fanReportIds: [22222222-2222-4222-8222-222222222222]
+              evidenceIds: [88888888-8888-4888-8888-888888888888]
+              reason: '동일 공연의 제보와 증거를 연결'
+      responses:
+        '201':
+          description: 새 OPEN Case. 같은 키·같은 본문 재전송은 저장된 같은 응답.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Case'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    get:
+      tags: [Cases]
+      operationId: listCasesProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: 권한 범위의 Case 목록 조회
+      description: tenant와 공연 접근 범위를 서버에서 강제한다. 분석 실패는 빈 결과로 바꾸지 않는다.
+      parameters:
+        - {name: eventId, in: query, schema: {type: string, format: uuid}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/CaseStatus'}}
+        - {name: page, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses:
+        '200':
+          description: 권한 범위에 속하는 Case 페이지
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CasePage'}
+              example:
+                items:
+                  - caseId: 11111111-1111-4111-8111-111111111111
+                    eventId: 33333333-3333-4333-8333-333333333333
+                    status: IN_REVIEW
+                    type: GRAPH_CLUSTER
+                    caseVersion: 4
+                    evidenceRevision: 2
+                    hasActiveIssuanceHold: false
+                    allowedActions: [VIEW_SOURCES, VIEW_ACTIVITIES]
+                    createdAt: '2026-10-17T01:00:00Z'
+                page: 0
+                pageSize: 20
+                hasNext: false
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}:
+    get:
+      tags: [Cases]
+      operationId: getCaseProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: Case 상세 조회
+      parameters: [{$ref: '#/components/parameters/CaseId'}]
+      responses:
+        '200':
+          description: 현재 상태와 서버가 계산한 허용 행위
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Case'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/sources:
+    get:
+      tags: [Cases]
+      operationId: listCaseSourcesProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: Case 출처와 현재 근거 메타데이터 조회
+      description: >-
+        FAN_REPORT의 fanReportId와 소속 EVIDENCE_ASSET의 evidenceId를 구분한다.
+        비공개 파일 원본·직접 URL은 반환하지 않는다.
+      parameters: [{$ref: '#/components/parameters/CaseId'}]
+      responses:
+        '200':
+          description: 연결 출처와 근거 버전
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaseSources'}
+              example:
+                caseId: 11111111-1111-4111-8111-111111111111
+                evidenceRevision: 2
+                currentEvidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                currentManifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                sources:
+                  - caseSourceReferenceId: 44444444-4444-4444-8444-444444444444
+                    sourceType: ANALYSIS_FINDING
+                    sourceRecordId: 55555555-5555-4555-8555-555555555555
+                    sourceVersion: 1
+                    eventId: 33333333-3333-4333-8333-333333333333
+                    analysisRunId: 66666666-6666-4666-8666-666666666666
+                    clusterId: cluster-demo-01
+                    linkedAt: '2026-10-17T01:05:00Z'
+                  - caseSourceReferenceId: 12121212-1212-4212-8212-121212121212
+                    sourceType: FAN_REPORT
+                    sourceRecordId: 22222222-2222-4222-8222-222222222222
+                    fanReportId: 22222222-2222-4222-8222-222222222222
+                    sourceVersion: 1
+                    eventId: 33333333-3333-4333-8333-333333333333
+                    linkedAt: '2026-10-17T01:06:00Z'
+                  - caseSourceReferenceId: 13131313-1313-4313-8313-131313131313
+                    sourceType: EVIDENCE_ASSET
+                    sourceRecordId: 88888888-8888-4888-8888-888888888888
+                    fanReportId: 22222222-2222-4222-8222-222222222222
+                    sourceVersion: 1
+                    eventId: 33333333-3333-4333-8333-333333333333
+                    linkedAt: '2026-10-17T01:06:00Z'
+                evidenceItems:
+                  - itemId: 90909090-9090-4090-8090-909090909090
+                    kind: ORIGINAL_IMAGE
+                    itemVersion: 1
+                    itemSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                    sourceType: EVIDENCE_ASSET
+                    sourceRecordId: 88888888-8888-4888-8888-888888888888
+                    sourceVersion: 1
+                    evidenceId: 88888888-8888-4888-8888-888888888888
+                    fanReportId: 22222222-2222-4222-8222-222222222222
+                  - itemId: 91919191-9191-4191-8191-919191919191
+                    kind: GRAPH_FINDING
+                    itemVersion: 1
+                    itemSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                    sourceType: ANALYSIS_FINDING
+                    sourceRecordId: 55555555-5555-4555-8555-555555555555
+                    sourceVersion: 1
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/activities:
+    get:
+      tags: [Cases]
+      operationId: listCaseActivitiesProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: Case 활동 이력 조회
+      parameters:
+        - {$ref: '#/components/parameters/CaseId'}
+        - {name: page, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses:
+        '200':
+          description: 감사 추적 가능한 append-only 활동 페이지
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaseActivityPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/evidence-snapshots/{evidenceSnapshotId}:
+    get:
+      tags: [Cases]
+      operationId: getEvidenceSnapshotProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: 불변 증거 manifest 메타데이터 조회
+      parameters:
+        - {$ref: '#/components/parameters/CaseId'}
+        - {$ref: '#/components/parameters/EvidenceSnapshotId'}
+      responses:
+        '200':
+          description: 특정 Case의 불변 manifest 메타데이터 투영. 원본 object key와 민감 원문은 제외.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EvidenceSnapshot'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/evidence-review-completions:
+    post:
+      tags: [Cases]
+      operationId: completeCaseEvidenceReviewProposal
+      x-required-roles: [REVIEWER]
+      summary: V2 증거의 사전 검토 완료 활동 기록
+      description: >-
+        PROPOSED/미구현. 권한 있는 REVIEWER의 명시적 NO_NEW_REPORT 검토 완료 명령이다.
+        서버는 인증 tenant/event/Case와 당시 REVIEWER 권한, IN_REVIEW 상태, 이전 불변
+        승인 Decision이 증거 revision 증가로 STALE인지, 현재 활성 불변 snapshot의
+        ID·manifest digest·revision과 ACTIVE IssuanceHold 부재를 검사한다.
+        현재 snapshot이 없거나 제출 바인딩과 다르면 409다. CaseActivity
+        EVIDENCE_REVIEW_COMPLETED 저장과 caseVersion 증가는 한 트랜잭션이다.
+        재시도에도 현재 인증·tenant/event 접근 범위를 검사한다. 같은 actor/tenant/operation의
+        동일 멱등 키·본문은 이미 저장된 활동/응답을 반환하고
+        다른 본문은 409 IDEMPOTENCY_KEY_REUSED다. GET·운영 메모·종료 명령은 이 활동을
+        만들지 않는다. 상태 전이와 ApprovalRequest/Decision 생성은 하지 않는다.
+      parameters:
+        - {$ref: '#/components/parameters/CaseId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompleteEvidenceReviewInput'}
+            example:
+              expectedCaseVersion: 7
+              evidenceRevision: 2
+              evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+              manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              reviewOutcome: NO_NEW_REPORT
+              reason: 'V2 반대 증거를 재검토하고 새 공식 보고서를 발급하지 않기로 결정했습니다.'
+      responses:
+        '201':
+          description: 사전에 확정된 append-only 검토 활동. 동일 멱등 요청 재시도는 이 저장 결과를 반환.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaseActivity'}
+              example:
+                activityId: 99999999-9999-4999-8999-999999999999
+                tenantId: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+                eventId: 33333333-3333-4333-8333-333333333333
+                caseId: 11111111-1111-4111-8111-111111111111
+                eventType: EVIDENCE_REVIEW_COMPLETED
+                actorUserId: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+                reviewedBy: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+                occurredAt: '2026-10-17T01:55:00Z'
+                reviewedAt: '2026-10-17T01:55:00Z'
+                caseVersionAfter: 8
+                evidenceRevision: 2
+                evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                reviewOutcome: NO_NEW_REPORT
+                reason: 'V2 반대 증거를 재검토하고 새 공식 보고서를 발급하지 않기로 결정했습니다.'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/transitions:
+    post:
+      tags: [Cases]
+      operationId: transitionCaseProposal
+      x-required-roles: [REVIEWER]
+      summary: Case 업무 상태 변경 계약
+      description: >-
+        REVIEWER만 수행. APPROVED_FOR_REPORT는 결정 명령으로만 전이하며
+        CLOSED/DISMISSED를 재개할 수 없다. APPROVED_FOR_REPORT에서 IN_REVIEW로의
+        복귀는 증거/보고서 revision을 바꾸는 시스템 명령으로만 처리한다.
+        READY_FOR_APPROVAL에 PENDING 요청이 없으면 사유와 함께 IN_REVIEW 또는
+        NEEDS_EVIDENCE로 복귀할 수 있다. PENDING이면 이 경로로 우회할 수 없고 먼저
+        철회/반려/시스템 무효화가 Request·ReportVersion과 Case 복귀를 원자 처리한다.
+        CLOSED에는 closureDisposition이 필수다. IN_REVIEW에서는 V2 근거 재검토 후
+        이전 승인 적격성이 STALE이고 신규 공식 보고서를 발급하지 않는 경우에만
+        NO_NEW_REPORT_AFTER_STALE로 종료한다. reviewedEvidenceRevision은 현재 Case
+        revision과 일치하고 과거 승인 snapshot보다 커야 하며 noNewReportReason은
+        종료 reason과 별도로 기록한다. 종료 전에 확정된 reviewActivityId가 현재
+        snapshot ID/hash·revision, tenant/event/Case, 당시 REVIEWER와 NO_NEW_REPORT에
+        일치해야 한다. 검토 활동 없이 종료 명령 안에서 새로 만들 수 없다.
+        ReportVersion 본문 변경만으로 STALE인 경우에는 이 종료 분기를 허용하지 않는다.
+        이전 Decision·PDF 참조는 서버 이력에서 조회한다.
+        APPROVED_FOR_REPORT는 현재 생성 PDF가
+        공식 공개된 GENERATED_REPORT 또는 별도 사유의 ISSUANCE_ABANDONED만 허용하며
+        DISMISSED는 근거 있는 기각에서 NOT_APPLICABLE만 허용한다. STALE 또는 발급 포기만으로
+        DISMISSED를 선택할 수 없다. 모든 종료에서 ACTIVE 발급 보류·렌더 예약·PENDING 요청이
+        없어야 한다. 종료·CaseActivity·감사를 원자 기록하며 실패 시 전체 롤백한다.
+        종료 후 신규 렌더는 금지한다. NO_NEW_REPORT_AFTER_STALE 종료에서는 먼저 인증과
+        tenant/event/Case 접근 범위를 검증한다. 접근 가능한 Case의 expectedCaseVersion과
+        현재 Case.caseVersion이 다르면 409 CASE_VERSION_CONFLICT, 다음
+        reviewedEvidenceRevision과 현재 Case.evidenceRevision이 다르면 409
+        EVIDENCE_VERSION_MISMATCH다. 그 다음 검토 활동 ID를 허용된 tenant/event/Case
+        범위에서 조회하며 미존재·타 범위는 동일한 404 RESOURCE_NOT_FOUND다.
+        같은 사건의 기존 활동이 검토 완료 유형이 아니면 409 EVIDENCE_REVIEW_NOT_COMPLETED,
+        저장된 검토 활동의 revision·snapshot ID·manifest digest와 현재 근거가 다르면
+        409 EVIDENCE_REVIEW_MISMATCH다. 앞선 버전 오류는 활동 ID의 존재·소속에
+        따라 달라지지 않는다. ACTIVE 보류는 ISSUANCE_HOLD_ACTIVE,
+        예약 중은 REPORT_RENDER_IN_PROGRESS, STALE 승인/상태 조건 불일치는
+        CASE_STATE_CONFLICT, 필수 필드 누락은 422 VALIDATION_FAILED다.
+      parameters: [{$ref: '#/components/parameters/CaseId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaseTransitionInput'}
+            examples:
+              evidenceNeeded:
+                value: {toStatus: NEEDS_EVIDENCE, expectedCaseVersion: 4, reason: '추가 이미지 확인 필요'}
+              noNewReportAfterStale:
+                value:
+                  toStatus: CLOSED
+                  expectedCaseVersion: 8
+                  reason: 'V2 근거 재검토를 완료하여 사건을 종료합니다.'
+                  closureDisposition: NO_NEW_REPORT_AFTER_STALE
+                  reviewActivityId: 99999999-9999-4999-8999-999999999999
+                  reviewedEvidenceRevision: 2
+                  noNewReportReason: '현재 근거로 추가 공식 보고서를 발급하지 않기로 결정했습니다.'
+      responses:
+        '200':
+          description: 상태 변경과 활동 이력 기록 완료. CLOSED는 발급 완료/포기/기각/V2 재검토 후 신규 미발급을 closureDisposition으로 구분.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Case'}
+              example:
+                caseId: 11111111-1111-4111-8111-111111111111
+                eventId: 33333333-3333-4333-8333-333333333333
+                type: GRAPH_CLUSTER
+                status: CLOSED
+                caseVersion: 9
+                evidenceRevision: 2
+                hasActiveIssuanceHold: false
+                currentReportVersionId: 44444444-4444-4444-8444-444444444444
+                closureDisposition: NO_NEW_REPORT_AFTER_STALE
+                closureReason: 'V2 근거 재검토를 완료하여 사건을 종료합니다.'
+                closureEvidenceRevision: 2
+                closureReviewActivityId: 99999999-9999-4999-8999-999999999999
+                closureStaleApprovalDecisionId: 55555555-5555-4555-8555-555555555555
+                closurePriorGeneratedReportVersionIds: [44444444-4444-4444-8444-444444444444]
+                closureActivityId: 66666666-6666-4666-8666-666666666666
+                noNewReportReason: '현재 근거로 추가 공식 보고서를 발급하지 않기로 결정했습니다.'
+                closedAt: '2026-10-17T02:00:00Z'
+                allowedActions: [VIEW_ACTIVITIES, DOWNLOAD_HISTORY]
+                createdAt: '2026-10-17T01:00:00Z'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/assignee:
+    put:
+      tags: [Cases]
+      operationId: assignCaseProposal
+      x-required-roles: [TENANT_ADMIN, REVIEWER]
+      summary: Case 담당자 배정 계약
+      description: >-
+        REVIEWER 또는 허용된 TENANT_ADMIN만 수행. PENDING 요청이 있으면 현재 요청자/REVIEWER
+        권한을 같은 트랜잭션에서 재평가하고 유효하지 않으면 무효화·감사한다.
+      parameters: [{$ref: '#/components/parameters/CaseId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AssignCaseInput'}
+      responses:
+        '200':
+          description: 배정·caseVersion·활동 이력 갱신 완료
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Case'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/report-versions:
+    post:
+      tags: [Reports]
+      operationId: createReportVersionProposal
+      x-required-roles: [REVIEWER]
+      summary: 현재 snapshot에 묶인 불변 DRAFT ReportVersion 생성
+      description: >-
+        REVIEWER의 사건 검토 범위와 tenant/event 범위를 확인한다. Case는 IN_REVIEW,
+        READY_FOR_APPROVAL 또는 APPROVED_FOR_REPORT이어야 하며 DISMISSED/CLOSED는 거절한다.
+        서버가 보고서 내용을
+        비공개 저장하고 contentSha256을 계산한다. 수정은 기존 revision 덮어쓰기가 아니라
+        새 revision 생성이다. 동일 Case의 revision은 단조 증가한다. Case.currentReportVersionId와
+        caseVersion을 원자 갱신한다. PENDING 요청은 같은 트랜잭션에서 INVALIDATED 처리하고
+        Case를 IN_REVIEW로 되돌린다. 기존 승인이 있으면 적격성을 STALE로 만들고
+        Case를 IN_REVIEW로 되돌린다.
+        현재 snapshot의 evidenceRevision이 같아야 한다.
+      parameters:
+        - {$ref: '#/components/parameters/CaseId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateReportVersionInput'}
+      responses:
+        '201':
+          description: 봉인된 보고서 내용·스냅샷 참조와 DRAFT 상태
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReportVersion'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/cases/{caseId}/approval-requests:
+    get:
+      tags: [Approvals]
+      operationId: listApprovalRequestsProposal
+      x-required-roles: [TENANT_ADMIN, REVIEWER, APPROVER, AUDITOR]
+      summary: Case 승인 요청 이력 조회
+      parameters: [{$ref: '#/components/parameters/CaseId'}]
+      responses:
+        '200':
+          description: 승인 요청 이력. 멱등성 키 원문은 제외한다.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ApprovalRequest'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [Approvals]
+      operationId: submitApprovalRequestProposal
+      x-required-roles: [REVIEWER]
+      summary: 봉인된 ReportVersion과 증거 스냅샷 승인 요청
+      description: >-
+        권한 있는 REVIEWER만 제출한다. ANALYST 단독 제출 불가. 같은 ReportVersion revision에
+        활성 PENDING 요청은 하나이며 REJECTED/WITHDRAWN/INVALIDATED 뒤에는 새 revision이 필요하다.
+        ACTIVE IssuanceHold가 있으면 새 요청 제출을 차단한다.
+      parameters:
+        - {$ref: '#/components/parameters/CaseId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SubmitApprovalInput'}
+            example:
+              reportVersionId: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+              evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+              expectedCaseVersion: 4
+              expectedReportVersion: 0
+              expectedReportContentSha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              reason: '근거 확인을 마쳐 보고서 승인 검토 요청'
+      responses:
+        '201':
+          description: 요청 생성. 같은 키·같은 본문 재전송은 저장된 같은 응답.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalRequest'}
+              example:
+                approvalRequestId: 99999999-9999-4999-8999-999999999999
+                caseId: 11111111-1111-4111-8111-111111111111
+                reportVersionId: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+                reportRevision: 1
+                reportContentSha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                reportTemplateVersion: template-v1
+                requestedBy: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+                requestedAt: '2026-10-17T01:10:00Z'
+                evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                evidenceRevision: 1
+                manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                reason: '근거 확인을 마쳐 보고서 승인 검토 요청'
+                status: PENDING
+                caseVersionAtSubmit: 4
+                version: 0
+                approvalEligibility: NOT_APPLICABLE
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/approval-requests/{approvalRequestId}:
+    get:
+      tags: [Approvals]
+      operationId: getApprovalRequestProposal
+      x-required-roles: [TENANT_ADMIN, REVIEWER, APPROVER, AUDITOR]
+      summary: 승인 요청과 결정 조회
+      parameters: [{$ref: '#/components/parameters/ApprovalRequestId'}]
+      responses:
+        '200':
+          description: 요청, 결정과 현재 증거 적격성
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalRequestDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/approval-requests/{approvalRequestId}/review-package:
+    get:
+      tags: [Approvals]
+      operationId: getApprovalReviewPackageProposal
+      x-required-roles: [APPROVER]
+      summary: 승인자용 봉인된 검토 패키지 조회
+      description: >-
+        인증된 APPROVER의 tenant/event·Case 접근과 PENDING 요청, 현재 snapshot·ReportVersion
+        바인딩을 검사해 검토 대상만 반환한다. GET은 ReviewReceipt를 생성·소비·폐기하거나
+        승인 상태를 변경하지 않는다. 조회나 상세 페이지 열기만으로 검토 완료가 되지 않는다.
+        영수증은 같은 경로의 명시적 POST에서만 발급한다.
+      parameters: [{$ref: '#/components/parameters/ApprovalRequestId'}]
+      responses:
+        '200':
+          description: 영수증 토큰이 없는 읽기 전용 검토 패키지
+          headers:
+            Cache-Control:
+              description: 민감한 보고서 내용을 저장 캐시에 남기지 않음.
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalReviewPackageView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [Approvals]
+      operationId: issueApprovalReviewPackageProposal
+      x-required-roles: [APPROVER]
+      summary: 승인자용 봉인된 검토 패키지와 일회용 영수증 발급
+      description: >-
+        같은 경로의 GET은 조회만 수행한다. 이 명시적 POST에서 영수증을 서버에 생성한다. 상세 페이지를 열기만 해서는
+        검토 완료나 영수증 발급으로 간주하지 않는다. APPROVER가 접근 가능한 PENDING
+        Request/ReportVersion/Snapshot을 같은 서버 시점에 검증한다. ACTIVE IssuanceHold가
+        있으면 발급하지 않는다. 같은 승인자·요청의 새 발급은 이전 미소비 영수증을
+        원자적으로 폐기한다. 자동 POST 재시도는 새 토큰을 만들 수 있다. 서버는 사용자·tenant·
+        event·Case·요청·snapshot ID/hash·ReportVersion ID/digest에 묶인 ReviewReceipt를
+        저장하고 별도 고엔트로피 reviewReceiptToken을 한 번 반환한다. 기본 권장 TTL은
+        15분이며 최종 설정값은 미확정이다. 원문 토큰은 서버 로그·감사에 기록하지 않는다.
+        봉인된 보고서 내용은 APPROVER에게만 제한해서 제공하고 원본 파일 object key는 제외.
+        패키지 조회나 영수증은 실제 이해의 증명이 아니다.
+      parameters: [{$ref: '#/components/parameters/ApprovalRequestId'}]
+      responses:
+        '201':
+          description: 결정 시 재검증할 정확한 버전과 서버 검토 영수증
+          headers:
+            Cache-Control:
+              description: 민감한 검토 패키지와 일회용 토큰은 저장 캐시에 남기지 않음.
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalReviewPackage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/approval-requests/{approvalRequestId}/decision:
+    post:
+      tags: [Approvals]
+      operationId: decideApprovalRequestProposal
+      x-required-roles: [APPROVER]
+      summary: 승인자 결정 1회 기록
+      description: >-
+        유일한 승인/반려 쓰기 경로. APPROVER ID는 인증 문맥에서 결정하며 요청자와
+        동일하면 403. 동일 actor·tenant·operation·Idempotency-Key·본문의 완료된 재시도는
+        먼저 기존 결과를 반환한다. 새 결정은 reviewReceiptToken의 서버 저장 digest·
+        미소비·미만료·범위·snapshot/ReportVersion digest와 ACTIVE 보류 없음을 검증한다.
+        보류 등록 시 미소비 토큰은 폐기한다. 토큰 소비·Request·ReportVersion·Case·Decision·감사를 한 트랜잭션에서 갱신하고
+        Decision/감사에는 내부 reviewReceiptId만 연결한다. 다른 결정에 토큰 재사용 금지.
+        Specs /report-versions/{id}/approve를 독립 명령으로 함께 활성화하지 않는다.
+        장애를 REJECT로 기록하지 않는다.
+      parameters:
+        - {$ref: '#/components/parameters/ApprovalRequestId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DecideApprovalInput'}
+            example:
+              decision: APPROVE
+              reason: '스냅샷 V1의 출처와 한계를 확인함'
+              reviewedEvidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+              reviewedManifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              reviewedReportContentSha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              reviewReceiptToken: SYNTHETIC_NOT_VALID_REVIEW_RECEIPT_TOKEN_0001
+              reviewConfirmed: true
+              expectedCaseVersion: 4
+              expectedRequestVersion: 0
+              expectedReportVersion: 1
+      responses:
+        '200':
+          description: 결정·Case 전이·감사 이력 원자 기록 완료
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DecisionResult'}
+              example:
+                request:
+                  approvalRequestId: 99999999-9999-4999-8999-999999999999
+                  caseId: 11111111-1111-4111-8111-111111111111
+                  reportVersionId: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+                  reportRevision: 1
+                  reportContentSha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  reportTemplateVersion: template-v1
+                  requestedBy: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+                  requestedAt: '2026-10-17T01:10:00Z'
+                  evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                  evidenceRevision: 1
+                  manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  reason: '근거 확인을 마쳐 보고서 승인 검토 요청'
+                  status: APPROVED
+                  caseVersionAtSubmit: 4
+                  version: 1
+                  approvalEligibility: CURRENT
+                decision:
+                  approvalDecisionId: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+                  approvalRequestId: 99999999-9999-4999-8999-999999999999
+                  decidedBy: cccccccc-cccc-4ccc-8ccc-cccccccccccc
+                  decision: APPROVE
+                  reason: '스냅샷 V1의 출처와 한계를 확인함'
+                  decidedAt: '2026-10-17T01:20:00Z'
+                  reviewedEvidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                  reviewedManifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  reviewedReportContentSha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  reviewReceiptId: ffffffff-ffff-4fff-8fff-ffffffffffff
+                  approvalAuditEventId: dddddddd-dddd-4ddd-8ddd-dddddddddddd
+                case:
+                  caseId: 11111111-1111-4111-8111-111111111111
+                  eventId: 33333333-3333-4333-8333-333333333333
+                  status: APPROVED_FOR_REPORT
+                  type: GRAPH_CLUSTER
+                  caseVersion: 5
+                  evidenceRevision: 1
+                  hasActiveIssuanceHold: false
+                  currentReportVersionId: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+                  allowedActions: [VIEW_SOURCES, VIEW_ACTIVITIES]
+                  createdAt: '2026-10-17T01:00:00Z'
+                reportVersion:
+                  reportVersionId: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+                  caseId: 11111111-1111-4111-8111-111111111111
+                  revision: 1
+                  version: 2
+                  status: APPROVED
+                  evidenceSnapshotId: 77777777-7777-4777-8777-777777777777
+                  evidenceRevision: 1
+                  manifestSha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  contentSha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  templateVersion: template-v1
+                  createdAt: '2026-10-17T01:08:00Z'
+                  approvalDecisionId: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+                  approvalEligibility: CURRENT
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+  /api/v1/approval-requests/{approvalRequestId}/withdraw:
+    post:
+      tags: [Approvals]
+      operationId: withdrawApprovalRequestProposal
+      x-required-roles: [REVIEWER]
+      summary: PENDING 승인 요청 철회
+      description: >-
+        현재도 REVIEWER 권한과 사건 범위를 가진 요청자 또는 사건 REVIEWER가 수행한다.
+        승인/반려/기존 철회 이후에는 상태를 바꾸지 않는다. 철회·ReportVersion WITHDRAWN·
+        Case IN_REVIEW·감사를 한 트랜잭션으로 처리한다. 결정과 경합하면 한 명만 성공한다.
+      parameters:
+        - {$ref: '#/components/parameters/ApprovalRequestId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WithdrawApprovalInput'}
+      responses:
+        '200':
+          description: 철회 시각·사유·감사 ID를 포함한 원자 처리 결과. 동일 키/본문은 저장된 응답.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WithdrawalResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/report-versions/{reportVersionId}:
+    get:
+      tags: [Reports]
+      operationId: getReportVersionProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: ReportVersion 상태와 승인·증거 바인딩 조회
+      description: 서버 인증 tenant/event와 해당 보고서 접근 범위를 검사한다. 봉인된 본문 원문은 반환하지 않는다.
+      parameters: [{$ref: '#/components/parameters/ReportVersionId'}]
+      responses:
+        '200':
+          description: 보고서 내용 revision과 상태 version을 구분한 메타데이터
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReportVersion'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/report-versions/{reportVersionId}/render:
+    post:
+      tags: [Reports]
+      operationId: renderReportVersionProposal
+      x-required-roles: []
+      x-activation-status: BLOCKED_POLICY_AND_SECURITY
+      summary: 승인된 보고서의 공식 발급 예약 또는 실패한 동일 입력 재시도
+      description: >-
+        발급 권한은 별도 확정 대상이며 현재 API/기존 AuditReportService 차단은 미구현·유지 상태다.
+        APPROVED 또는 GENERATION_FAILED만 허용한다. Case.status=APPROVED_FOR_REPORT,
+        ACTIVE IssuanceHold·종료·진행 중 예약 없음, 현재 근거/currentReportVersionId·
+        Decision·snapshot·내용 digest를 짧은 DB 트랜잭션에서 확인해 단일 발급을 예약한다.
+        GENERATION_FAILED 재시도도 동일 봉인 입력/템플릿만 사용한다. 외부 렌더링은
+        트랜잭션 밖에서 봉인 입력만으로 수행하고 비공개 임시 저장한다. 공개 직전 같은
+        Case/ReportVersion 직렬화 경계에서 보류·증거 revision·상태·내용 digest를 재확인한다.
+        보류/V2/종료가 먼저면 임시 결과를 공개하지 않고 예약을 해제해 RENDERING에서
+        APPROVED로 복귀하며 차단 감사를 남긴다. 비공개 불변 후보 object의 checksum을
+        확인한 뒤 짧은 최종화 DB 트랜잭션에서 후보 참조·새 GENERATED·이전
+        SUPERSEDED·감사를 함께 확정한다. 다운로드는 확정 참조만 제공하며 DB 실패
+        후보는 공개하지 않는다. GENERATED 재렌더/덮어쓰기는 금지한다.
+      parameters:
+        - {$ref: '#/components/parameters/ReportVersionId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RenderReportInput'}
+      responses:
+        '202':
+          description: 발급 예약 성공. PDF가 생성되었다는 뜻은 아님. 동일 키/본문은 저장된 응답.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReportVersion'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+  /api/v1/report-versions/{reportVersionId}/download:
+    get:
+      tags: [Reports]
+      operationId: downloadGeneratedReportProposal
+      x-required-roles: [TENANT_ADMIN, ANALYST, REVIEWER, APPROVER, AUDITOR]
+      summary: 이미 생성된 불변 PDF 파일 다운로드
+      description: >-
+        인증·tenant/event·보고서 열람 권한 검사와 접근 감사를 남긴 뒤 GENERATED 또는
+        SUPERSEDED의 기존 저장 파일을 그대로 stream한다. Case가 CLOSED이거나 현재
+        근거가 V2여도 이미 생성된 파일은 재다운로드할 수 있지만 새로 렌더하거나 신규
+        발급하지 않는다. 과거 버전임을 응답 메타데이터에 표시한다.
+      parameters: [{$ref: '#/components/parameters/ReportVersionId'}]
+      responses:
+        '200':
+          description: 기존 저장 PDF bytes. 같은 reportVersionId에서 bytes 변경 금지.
+          headers:
+            X-Report-Historical:
+              description: 현재 승인 적격성이 STALE이거나 SUPERSEDED이면 true
+              schema: {type: boolean}
+          content:
+            application/pdf:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+components:
+  securitySchemes:
+    userAuth:
+      type: http
+      scheme: bearer
+      description: 제안된 인증 방식 표시. 실제 OIDC/세션 방식은 미확정이며 현재 미구현.
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    EvidenceSnapshotId:
+      name: evidenceSnapshotId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ApprovalRequestId:
+      name: approvalRequestId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ReportVersionId:
+      name: reportVersionId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 같은 actor·tenant·operation 범위의 고엔트로피 키. 인증 수단은 아님.
+      schema: {type: string, minLength: 8, maxLength: 128}
+  responses:
+    BadRequest: {description: '400 INVALID_REQUEST: JSON/파라미터 형식 오류', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Unauthenticated: {description: '401 UNAUTHENTICATED: 인증 실패', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Forbidden: {description: '403 FORBIDDEN 또는 SELF_APPROVAL_FORBIDDEN: 같은 tenant 내 기능/역할 권한 부족', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    NotFound: {description: '404 RESOURCE_NOT_FOUND: 없음·타 tenant·숨겨야 할 공연 범위. 존재 여부를 구별해 노출하지 않음', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Conflict: {description: '409 상태/버전/멱등성/승인 중복/증거 불일치. 최신 자원을 다시 조회', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    ValidationFailed: {description: '422 VALIDATION_FAILED: 형식은 맞으나 필드·업무 제약 위반', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    InternalError: {description: '500 INTERNAL_ERROR: 서버 장애. 정상 0건 또는 반려로 변환하지 않음', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    DependencyUnavailable: {description: '503 DEPENDENCY_UNAVAILABLE: 필수 저장/검증 의존성 장애', content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+  schemas:
+    Sha256:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    CaseStatus:
+      type: string
+      description: PROPOSED. ApprovalRequest status와 별개.
+      enum: [OPEN, TRIAGED, IN_REVIEW, NEEDS_EVIDENCE, READY_FOR_APPROVAL, APPROVED_FOR_REPORT, DISMISSED, CLOSED]
+    CaseType:
+      type: string
+      description: Specs 관리자 API 초안과 같은 Case 출처 분류. 후속 Case도 독립적으로 분류한다.
+      enum: [GRAPH_CLUSTER, FAN_REPORT, COMBINED]
+    CreateCaseInput:
+      type: object
+      additionalProperties: false
+      required: [eventId, type, reason]
+      allOf:
+        - if: {properties: {type: {const: GRAPH_CLUSTER}}}
+          then: {required: [findingIds], not: {required: [fanReportIds]}}
+        - if: {properties: {type: {const: FAN_REPORT}}}
+          then: {required: [fanReportIds], not: {required: [findingIds]}}
+        - if: {properties: {type: {const: COMBINED}}}
+          then: {required: [findingIds, fanReportIds]}
+      dependentRequired:
+        relatedCaseId: [relationReason]
+        relationReason: [relatedCaseId]
+        evidenceIds: [fanReportIds]
+      properties:
+        eventId: {type: string, format: uuid}
+        type: {$ref: '#/components/schemas/CaseType'}
+        findingIds: {type: array, minItems: 1, uniqueItems: true, items: {type: string, format: uuid}}
+        fanReportIds: {type: array, minItems: 1, uniqueItems: true, items: {type: string, format: uuid}}
+        evidenceIds: {type: array, minItems: 1, uniqueItems: true, items: {type: string, format: uuid}}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+        relatedCaseId: {type: string, format: uuid}
+        relationReason: {type: string, minLength: 3, maxLength: 2000}
+      description: >-
+        GRAPH_CLUSTER는 findingIds만, FAN_REPORT는 영속 fanReportIds만,
+        COMBINED는 둘 다
+        필요하다. evidenceIds는 명시된 fanReportIds에 속한 파일 항목이며 단독으로 제보
+        출처를 만들 수 없다. 서버가 모든 제보·파일의 존재·tenant/event·소유 관계를 검증한다.
+        relatedCaseId와 relationReason은 함께 제공하고 원 Case가 같은 tenant/event의
+        DISMISSED 또는 CLOSED인지 검사한다. 원 Case의 승인·보고서·감사는 승계하지 않는다.
+    Case:
+      type: object
+      additionalProperties: false
+      required: [caseId, eventId, type, status, caseVersion, evidenceRevision, hasActiveIssuanceHold, allowedActions, createdAt]
+      allOf:
+        - if: {properties: {status: {const: CLOSED}}, required: [status]}
+          then: {required: [closureDisposition, closureReason, closedAt]}
+        - if: {properties: {closureDisposition: {const: NO_NEW_REPORT_AFTER_STALE}}, required: [closureDisposition]}
+          then:
+            required: [closureEvidenceRevision, closureReviewActivityId, closureStaleApprovalDecisionId, closurePriorGeneratedReportVersionIds, closureActivityId, noNewReportReason]
+            properties: {status: {const: CLOSED}}
+      properties:
+        caseId: {type: string, format: uuid}
+        eventId: {type: string, format: uuid}
+        type: {$ref: '#/components/schemas/CaseType'}
+        status: {$ref: '#/components/schemas/CaseStatus'}
+        caseVersion: {type: integer, minimum: 0}
+        evidenceRevision: {type: integer, minimum: 0}
+        hasActiveIssuanceHold: {type: boolean, readOnly: true, description: 서버 ACTIVE 보류의 조회 투영. 발급 게이트는 저장 상태를 재검사.}
+        assigneeUserId: {type: [string, 'null'], format: uuid}
+        currentReportVersionId: {type: string, format: uuid, readOnly: true}
+        relatedCaseId: {type: string, format: uuid}
+        relationReason: {type: string, maxLength: 2000}
+        summary: {type: string, maxLength: 2000}
+        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NO_NEW_REPORT_AFTER_STALE, NOT_APPLICABLE], readOnly: true}
+        closureReason: {type: string, minLength: 3, maxLength: 2000, readOnly: true}
+        closureReportVersionId: {type: string, format: uuid, readOnly: true}
+        issuanceAbandonmentReason: {type: string, readOnly: true}
+        noNewReportReason: {type: string, minLength: 3, maxLength: 2000, readOnly: true}
+        closureEvidenceRevision: {type: integer, minimum: 1, readOnly: true}
+        closureReviewActivityId: {type: string, format: uuid, readOnly: true, description: 종료 전에 확정된 EVIDENCE_REVIEW_COMPLETED CaseActivity.activityId.}
+        closureStaleApprovalDecisionId: {type: string, format: uuid, readOnly: true}
+        closurePriorGeneratedReportVersionIds: {type: array, uniqueItems: true, items: {type: string, format: uuid}, readOnly: true}
+        closureActivityId: {type: string, format: uuid, readOnly: true}
+        closedAt: {type: string, format: date-time, readOnly: true}
+        allowedActions: {type: array, items: {type: string}}
+        createdAt: {type: string, format: date-time}
+      description: >-
+        tenantId는 서버 저장 소유 범위로 필수지만 권한 근거로 요청받거나 이 응답에 노출하지 않는다.
+        caseVersion은 모든 Case 명령의 expectedCaseVersion과 비교한다.
+        closureDisposition은 CLOSED에서만 기록한다. ISSUANCE_ABANDONED와
+        NO_NEW_REPORT_AFTER_STALE은 발급 완료가 아니다. 후자는 서버가 V2 검토 revision,
+        이전 STALE 승인 Decision과 과거 공식 PDF의 ReportVersion ID 목록(없으면 빈 배열)을
+        이력에서 확정하고 closureReviewActivityId로 사전 검토 활동,
+        closureActivityId로 별도 종료 감사를 연결한다.
+    CasePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Case'}}
+        page: {type: integer, minimum: 0}
+        pageSize: {type: integer, minimum: 1, maximum: 100}
+        hasNext: {type: boolean}
+    CaseSourceReference:
+      type: object
+      additionalProperties: false
+      required: [caseSourceReferenceId, sourceType, sourceRecordId, sourceVersion, eventId, linkedAt]
+      allOf:
+        - if: {properties: {sourceType: {const: FAN_REPORT}}, required: [sourceType]}
+          then: {required: [fanReportId]}
+        - if: {properties: {sourceType: {const: EVIDENCE_ASSET}}, required: [sourceType]}
+          then: {required: [fanReportId]}
+      properties:
+        caseSourceReferenceId: {type: string, format: uuid}
+        sourceType: {type: string, enum: [ANALYSIS_FINDING, FAN_REPORT, EVIDENCE_ASSET]}
+        sourceRecordId: {type: string, format: uuid}
+        sourceVersion: {type: integer, minimum: 1}
+        eventId: {type: string, format: uuid}
+        analysisRunId: {type: string, format: uuid}
+        clusterId: {type: string, maxLength: 160}
+        fanReportId: {type: string, format: uuid}
+        linkedAt: {type: string, format: date-time}
+        linkReason: {type: string}
+      description: >-
+        FAN_REPORT이면 sourceRecordId=fanReportId. EVIDENCE_ASSET이면
+        sourceRecordId=evidenceId이고 fanReportId는 검증된 소속 제보다.
+        파일 ID만으로 제보를 유추하지 않으며 tenant/event·소유 관계를 서버가 확인한다.
+    EvidenceItem:
+      type: object
+      additionalProperties: false
+      required: [itemId, kind, itemVersion, itemSha256, sourceType, sourceRecordId, sourceVersion]
+      allOf:
+        - if: {properties: {sourceType: {const: FAN_REPORT}}, required: [sourceType]}
+          then: {required: [fanReportId]}
+        - if: {properties: {sourceType: {const: EVIDENCE_ASSET}}, required: [sourceType]}
+          then: {required: [evidenceId, fanReportId]}
+      properties:
+        itemId: {type: string, format: uuid}
+        kind: {type: string, enum: [ORIGINAL_IMAGE, IMAGE_EXTRACTION, DATABASE_MATCH, GRAPH_FINDING, REVIEW_INPUT]}
+        itemVersion: {type: integer, minimum: 1}
+        itemSha256: {$ref: '#/components/schemas/Sha256'}
+        sourceType: {type: string, enum: [ANALYSIS_FINDING, FAN_REPORT, EVIDENCE_ASSET]}
+        sourceRecordId: {type: string, format: uuid, description: "FAN_REPORT는 fanReportId, EVIDENCE_ASSET은 evidenceId, ANALYSIS_FINDING은 findingId."}
+        sourceVersion: {type: integer, minimum: 1}
+        evidenceId: {type: string, format: uuid, description: 영속 증거 항목 ID. EVIDENCE_ASSET이면 sourceRecordId와 동일.}
+        fanReportId: {type: string, format: uuid, description: FAN_REPORT 및 소속 EVIDENCE_ASSET의 영속 제보 ID.}
+        objectVersion: {type: string, description: 원본 파일의 비공개 저장소 object version. object key는 노출하지 않음.}
+        extractionId: {type: string, format: uuid}
+        extractionRevision: {type: integer, minimum: 1}
+        extractionModelVersion: {type: string}
+        correctionRevision: {type: integer, minimum: 1}
+        matchId: {type: string, format: uuid}
+        matchRevision: {type: integer, minimum: 1}
+        matchScopeSha256: {$ref: '#/components/schemas/Sha256'}
+        analysisRunId: {type: string, format: uuid}
+        algorithmVersion: {type: string}
+        findingRevision: {type: integer, minimum: 1}
+        judgementRevision: {type: integer, minimum: 1}
+        summary: {type: string, maxLength: 1000}
+      description: >-
+        kind별 적용 가능한 선택 결과의 ID/버전을 서버가 immutable manifest에 기록한다.
+        FAN_REPORT 항목은 fanReportId를, 그 제보의 EVIDENCE_ASSET 항목은 evidenceId와
+        fanReportId를 함께 고정한다. ANALYSIS_FINDING에는 fanReportId가 필수가 아니다.
+        서버는 존재하는 제보·증거의 실제 소속, Case와 출처의 tenant/event 범위를
+        저장된 기록으로 확인한다. 다른 제보에 속한 evidenceId와 미존재 ID는 연결하지
+        않으며 클라이언트가 전달한 ID만으로 소속을 확정하지 않는다.
+        분석 실행·알고리즘 버전, 추출·수정·대조 버전은 선택된 근거에만 해당한다.
+        민감 원문과 파일 object key는 응답과 승인 감사에 복제하지 않는다.
+    CaseSources:
+      type: object
+      additionalProperties: false
+      required: [caseId, evidenceRevision, sources, evidenceItems]
+      properties:
+        caseId: {type: string, format: uuid}
+        evidenceRevision: {type: integer, minimum: 0}
+        currentEvidenceSnapshotId: {type: string, format: uuid, readOnly: true}
+        currentManifestSha256: {$ref: '#/components/schemas/Sha256'}
+        sources: {type: array, items: {$ref: '#/components/schemas/CaseSourceReference'}}
+        evidenceItems: {type: array, items: {$ref: '#/components/schemas/EvidenceItem'}}
+      dependentRequired:
+        currentEvidenceSnapshotId: [currentManifestSha256]
+        currentManifestSha256: [currentEvidenceSnapshotId]
+      description: >-
+        현재 revision의 불변 snapshot이 있으면 서버가 현재 ID와 digest를 함께 제공한다.
+        없으면 둘 다 생략한다. 검토 완료 명령은 서버 저장 현재 snapshot과 다시 비교하며
+        클라이언트가 이 조회값을 제시했다는 사실만으로 검토 완료를 인정하지 않는다.
+    CaseActivity:
+      type: object
+      additionalProperties: false
+      required: [activityId, caseId, eventType, occurredAt, caseVersionAfter]
+      allOf:
+        - if: {properties: {closureDisposition: {const: NO_NEW_REPORT_AFTER_STALE}}, required: [closureDisposition]}
+          then:
+            required: [actorUserId, reason, noNewReportReason, fromStatus, toStatus, reviewActivityId, closureEvidenceRevision, closureStaleApprovalDecisionId, closurePriorGeneratedReportVersionIds, approvalAuditEventId]
+            properties:
+              eventType: {const: CASE_CLOSED}
+              actorUserId: {type: string, format: uuid}
+              fromStatus: {const: IN_REVIEW}
+              toStatus: {const: CLOSED}
+        - if: {properties: {eventType: {const: EVIDENCE_REVIEW_COMPLETED}}, required: [eventType]}
+          then:
+            required: [tenantId, eventId, actorUserId, reviewedBy, reviewedAt, evidenceRevision, evidenceSnapshotId, manifestSha256, reviewOutcome, reason]
+            properties:
+              reviewOutcome: {const: NO_NEW_REPORT}
+      properties:
+        activityId: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid, readOnly: true}
+        eventId: {type: string, format: uuid, readOnly: true}
+        caseId: {type: string, format: uuid}
+        eventType: {type: string}
+        actorUserId: {type: [string, 'null'], format: uuid}
+        occurredAt: {type: string, format: date-time}
+        reason: {type: string}
+        fromStatus: {$ref: '#/components/schemas/CaseStatus'}
+        toStatus: {$ref: '#/components/schemas/CaseStatus'}
+        caseVersionAfter: {type: integer, minimum: 0}
+        approvalAuditEventId: {type: string, format: uuid}
+        requestId: {type: string, format: uuid}
+        evidenceRevision: {type: integer, minimum: 1}
+        evidenceSnapshotId: {type: string, format: uuid}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewedBy: {type: string, format: uuid, readOnly: true}
+        reviewedAt: {type: string, format: date-time, readOnly: true}
+        reviewOutcome: {type: string, enum: [NO_NEW_REPORT]}
+        reviewActivityId: {type: string, format: uuid, description: 종료 활동에서 참조하는 이전 EVIDENCE_REVIEW_COMPLETED activityId.}
+        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NO_NEW_REPORT_AFTER_STALE, NOT_APPLICABLE]}
+        noNewReportReason: {type: string, minLength: 3, maxLength: 2000}
+        closureEvidenceRevision: {type: integer, minimum: 1}
+        closureStaleApprovalDecisionId: {type: string, format: uuid}
+        closurePriorGeneratedReportVersionIds: {type: array, uniqueItems: true, items: {type: string, format: uuid}}
+      description: >-
+        EVIDENCE_REVIEW_COMPLETED의 activityId가 계약상 caseActivityId이며 저장된 인증
+        REVIEWER actorUserId=reviewedBy, 서버 occurredAt=reviewedAt이다. 검토 활동은
+        종료 명령보다 먼저 확정되어야 하고 조회·메모·종료 명령으로 생성하지 않는다.
+        NO_NEW_REPORT_AFTER_STALE 종료 활동은 별도의 종료·신규 미발급 사유, V2 revision,
+        사전 reviewActivityId, 이전 불변 승인 Decision과 과거 공식 PDF ReportVersion ID 목록(없으면 빈 배열),
+        연결된 ApprovalAuditEvent를 보존한다. 증거/개인정보 원문은 감사에 복제하지 않는다.
+    CaseActivityPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/CaseActivity'}}
+        page: {type: integer, minimum: 0}
+        pageSize: {type: integer, minimum: 1, maximum: 100}
+        hasNext: {type: boolean}
+    EvidenceSnapshot:
+      type: object
+      additionalProperties: false
+      required: [evidenceSnapshotId, tenantId, caseId, caseVersionAtCapture, evidenceRevision, capturedAt, manifestSchemaVersion, manifestSha256, items]
+      properties:
+        evidenceSnapshotId: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid, readOnly: true}
+        caseId: {type: string, format: uuid}
+        caseVersionAtCapture: {type: integer, minimum: 0}
+        evidenceRevision: {type: integer, minimum: 0}
+        capturedAt: {type: string, format: date-time}
+        manifestSchemaVersion: {type: integer, minimum: 1}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        items: {type: array, minItems: 1, items: {$ref: '#/components/schemas/EvidenceItem'}}
+      description: >-
+        tenantId는 서버 저장 manifest에서 결정한 읽기 전용 소유 범위이며 인증된 tenant/event와 대조한다.
+        items의 출처 타입·ID와 팬 제보/증거 소속 관계는 불변 manifest 및 digest에 포함한다.
+        이 응답은 민감 원문·object key를 제외한 불변 manifest 투영이다.
+        전체 canonical manifest의 digest는 서버가 저장·검증한다. 보고서 내용/템플릿은 별도 ReportVersion.
+    CompleteEvidenceReviewInput:
+      type: object
+      additionalProperties: false
+      required: [expectedCaseVersion, evidenceRevision, evidenceSnapshotId, manifestSha256, reviewOutcome, reason]
+      properties:
+        expectedCaseVersion: {type: integer, minimum: 0}
+        evidenceRevision: {type: integer, minimum: 1}
+        evidenceSnapshotId: {type: string, format: uuid}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewOutcome: {type: string, const: NO_NEW_REPORT}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+      description: >-
+        서버 인증 문맥의 REVIEWER만 제출한다. tenantId·eventId·reviewedBy·reviewedAt은
+        클라이언트가 보내지 않고 서버가 저장한다. 서버 현재 V2 revision·snapshot ID/hash,
+        증거 변경에 따른 과거 승인 STALE, Case IN_REVIEW, ACTIVE 보류 부재를 확인한다.
+        응답의 activityId는 별도 종료 명령의 reviewActivityId로 사용한다.
+    CaseTransitionInput:
+      type: object
+      additionalProperties: false
+      required: [toStatus, expectedCaseVersion, reason]
+      allOf:
+        - if: {properties: {toStatus: {const: CLOSED}}, required: [toStatus]}
+          then: {required: [closureDisposition]}
+        - if: {properties: {closureDisposition: {const: GENERATED_REPORT}}, required: [closureDisposition]}
+          then: {required: [closureReportVersionId]}
+        - if: {properties: {closureDisposition: {const: ISSUANCE_ABANDONED}}, required: [closureDisposition]}
+          then: {required: [issuanceAbandonmentReason]}
+        - if: {properties: {closureDisposition: {const: NO_NEW_REPORT_AFTER_STALE}}, required: [closureDisposition]}
+          then:
+            required: [reviewActivityId, reviewedEvidenceRevision, noNewReportReason]
+            properties: {toStatus: {const: CLOSED}}
+      properties:
+        toStatus:
+          type: string
+          enum: [TRIAGED, IN_REVIEW, NEEDS_EVIDENCE, READY_FOR_APPROVAL, DISMISSED, CLOSED]
+        expectedCaseVersion: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+        closureDisposition: {type: string, enum: [GENERATED_REPORT, ISSUANCE_ABANDONED, NO_NEW_REPORT_AFTER_STALE, NOT_APPLICABLE]}
+        closureReportVersionId: {type: string, format: uuid}
+        issuanceAbandonmentReason: {type: string, minLength: 3, maxLength: 2000}
+        reviewActivityId: {type: string, format: uuid, description: 종료 전에 저장된 EVIDENCE_REVIEW_COMPLETED activityId.}
+        reviewedEvidenceRevision: {type: integer, minimum: 1, description: REVIEWER가 재검토한 현재 Case.evidenceRevision과 일치해야 한다.}
+        noNewReportReason: {type: string, minLength: 3, maxLength: 2000}
+      description: >-
+        READY_FOR_APPROVAL의 PENDING 요청이 없을 때 IN_REVIEW/NEEDS_EVIDENCE 복귀 가능.
+        PENDING이면 철회·반려·시스템 무효화가 먼저 Request와 Case를 원자 처리한다.
+        IN_REVIEW의 CLOSED는 V2 재검토·이전 승인 STALE 조건에서
+        NO_NEW_REPORT_AFTER_STALE만 허용한다. REVIEWER가 사전 검토 활동의
+        reviewActivityId·reviewedEvidenceRevision·별도 noNewReportReason을 제출한다.
+        서버는 그 활동이 종료 전에 확정됐고 같은 tenant/event/Case·현재 revision·
+        snapshot ID/hash·당시 REVIEWER 권한·NO_NEW_REPORT에 묶였는지, 이전 승인
+        Decision이 증거 revision 증가로 STALE인지 확인한다. ReportVersion 내용 변경만으로
+        STALE인 경우에는 이 분기를 사용할 수 없다.
+        APPROVED_FOR_REPORT의 CLOSED는 GENERATED_REPORT 또는 ISSUANCE_ABANDONED만,
+        DISMISSED의 CLOSED는 근거 있는 기각에서 NOT_APPLICABLE만 허용한다.
+        모든 CLOSED에서 ACTIVE 보류·렌더 예약·PENDING 요청은 거절한다.
+    IssuanceHold:
+      type: object
+      x-internal-only: true
+      additionalProperties: false
+      required: [holdId, tenantId, eventId, caseId, reasonCode, status, createdAt, createdBy, evidenceRevisionAtOpen, createdAuditEventId]
+      properties:
+        holdId: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid, readOnly: true}
+        eventId: {type: string, format: uuid, readOnly: true}
+        caseId: {type: string, format: uuid}
+        reasonCode: {type: string, enum: [NEW_IMPORTANT_INFORMATION, CONTRADICTORY_EVIDENCE, SOURCE_INTEGRITY_CONCERN, OTHER]}
+        status: {type: string, enum: [ACTIVE, RELEASED]}
+        createdAt: {type: string, format: date-time}
+        createdBy: {type: string, description: 인증된 사용자 ID 또는 SYSTEM 이벤트 ID.}
+        evidenceRevisionAtOpen: {type: integer, minimum: 0}
+        createdAuditEventId: {type: string, format: uuid}
+        resolvedBy: {type: string}
+        resolvedAt: {type: string, format: date-time}
+        resolutionReason: {type: string}
+        evidenceRevisionAtResolution: {type: integer, minimum: 0}
+        resolvedAuditEventId: {type: string, format: uuid}
+      description: >-
+        서버 저장 발급 통제 상태. 공개 등록·해제 API는 아직 제안하지 않는다.
+        ACTIVE는 승인 결정·발급 예약·PDF 공개를 막는다. 관련성 검토와 감사 없이는 해제 불가.
+    AssignCaseInput:
+      type: object
+      additionalProperties: false
+      required: [assigneeUserId, expectedCaseVersion, reason]
+      properties:
+        assigneeUserId: {type: string, format: uuid}
+        expectedCaseVersion: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+    ReportVersionStatus:
+      type: string
+      description: >-
+        Specs 04의 ReportVersion 상태에 WITHDRAWN/INVALIDATED를 추가한 MVP 제안.
+        Case 및 ApprovalRequest 상태와 다르다. SUPERSEDED는 새 공식 PDF가 GENERATED로
+        공개된 뒤 이전 GENERATED에만 적용하며 STALE과 동의어가 아니다.
+      enum: [DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, WITHDRAWN, INVALIDATED, RENDERING, GENERATED, GENERATION_FAILED, SUPERSEDED]
+    ReportVersion:
+      type: object
+      additionalProperties: false
+      required: [reportVersionId, caseId, revision, version, status, evidenceSnapshotId, evidenceRevision, manifestSha256, contentSha256, templateVersion, createdAt, approvalEligibility]
+      properties:
+        reportVersionId: {type: string, format: uuid}
+        caseId: {type: string, format: uuid}
+        revision: {type: integer, minimum: 1, description: 봉인된 내용 revision. 내용 수정 시 새 revision/ID.}
+        version: {type: integer, minimum: 0, description: 상태 변경용 optimistic lock. expectedReportVersion과 비교.}
+        status: {$ref: '#/components/schemas/ReportVersionStatus'}
+        evidenceSnapshotId: {type: string, format: uuid}
+        evidenceRevision: {type: integer, minimum: 0}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        contentSha256: {$ref: '#/components/schemas/Sha256'}
+        templateVersion: {type: string}
+        createdAt: {type: string, format: date-time}
+        approvalDecisionId: {type: string, format: uuid}
+        pdfSha256: {$ref: '#/components/schemas/Sha256'}
+        generatedAt: {type: string, format: date-time}
+        failureCode: {type: string}
+        approvalEligibility: {type: string, enum: [CURRENT, STALE, NOT_APPROVED], readOnly: true, description: 승인 근거·내용 바인딩. CURRENT여도 ACTIVE 보류나 CLOSED이면 신규 발급 불가.}
+      description: >-
+        tenantId는 서버 저장 소유 범위에 필수. 생성 시 봉인된 내용·템플릿·snapshot 참조는
+        이후 불변이며 GENERATED의 PDF bytes도 불변이다. revision과 version은 별개다.
+        RENDERING 중 정책 보류로 공개가 차단되면 APPROVED로 되돌리고 별도 감사한다.
+    CreateReportVersionInput:
+      type: object
+      additionalProperties: false
+      required: [evidenceSnapshotId, templateVersion, expectedCaseVersion, reason]
+      properties:
+        evidenceSnapshotId: {type: string, format: uuid}
+        templateVersion: {type: string, minLength: 1}
+        expectedCaseVersion: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+      description: >-
+        서버가 선택된 보고서 입력을 snapshot과 결합해 봉인하고 contentSha256을 계산한다.
+        원문 증거/보고서 내용은 이 API 예제에 포함하지 않는다.
+    SubmitApprovalInput:
+      type: object
+      additionalProperties: false
+      required: [reportVersionId, evidenceSnapshotId, expectedCaseVersion, expectedReportVersion, expectedReportContentSha256, reason]
+      properties:
+        reportVersionId: {type: string, format: uuid}
+        evidenceSnapshotId: {type: string, format: uuid}
+        expectedCaseVersion: {type: integer, minimum: 0}
+        expectedReportVersion: {type: integer, minimum: 0, description: ReportVersion.version과 비교; 내용 revision이 아님.}
+        expectedReportContentSha256: {$ref: '#/components/schemas/Sha256'}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+    ApprovalRequestStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED, WITHDRAWN, INVALIDATED]
+    ApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [approvalRequestId, caseId, reportVersionId, reportRevision, reportContentSha256, reportTemplateVersion, requestedBy, requestedAt, evidenceSnapshotId, evidenceRevision, manifestSha256, reason, status, caseVersionAtSubmit, version, approvalEligibility]
+      properties:
+        approvalRequestId: {type: string, format: uuid}
+        caseId: {type: string, format: uuid}
+        reportVersionId: {type: string, format: uuid}
+        reportRevision: {type: integer, minimum: 1}
+        reportContentSha256: {$ref: '#/components/schemas/Sha256'}
+        reportTemplateVersion: {type: string}
+        requestedBy: {type: string, format: uuid}
+        requestedAt: {type: string, format: date-time}
+        evidenceSnapshotId: {type: string, format: uuid}
+        evidenceRevision: {type: integer, minimum: 0}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reason: {type: string}
+        status: {$ref: '#/components/schemas/ApprovalRequestStatus'}
+        caseVersionAtSubmit: {type: integer, minimum: 0}
+        version: {type: integer, minimum: 0, description: Request 상태 optimistic lock. expectedRequestVersion과 비교.}
+        withdrawnAt: {type: string, format: date-time}
+        withdrawalReason: {type: string}
+        withdrawalAuditEventId: {type: string, format: uuid}
+        approvalEligibility: {type: string, enum: [CURRENT, STALE, NOT_APPLICABLE], readOnly: true}
+    ApprovalDecision:
+      type: object
+      additionalProperties: false
+      required: [approvalDecisionId, approvalRequestId, decidedBy, decision, reason, decidedAt, reviewedEvidenceSnapshotId, reviewedManifestSha256, reviewedReportContentSha256, reviewReceiptId, approvalAuditEventId]
+      properties:
+        approvalDecisionId: {type: string, format: uuid}
+        approvalRequestId: {type: string, format: uuid}
+        decidedBy: {type: string, format: uuid}
+        decision: {type: string, enum: [APPROVE, REJECT]}
+        reason: {type: string}
+        decidedAt: {type: string, format: date-time}
+        reviewedEvidenceSnapshotId: {type: string, format: uuid}
+        reviewedManifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewedReportContentSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewReceiptId: {type: string, format: uuid, readOnly: true, description: 사용·소비된 서버 영수증 기록 ID. 원문 토큰이 아님.}
+        approvalAuditEventId: {type: string, format: uuid}
+    ReviewReceipt:
+      type: object
+      x-internal-only: true
+      additionalProperties: false
+      required: [reviewReceiptId, tokenSha256, approverUserId, tenantId, eventId, caseId, approvalRequestId, evidenceSnapshotId, manifestSha256, reportVersionId, reportContentSha256, issuedAt, expiresAt, status]
+      properties:
+        reviewReceiptId: {type: string, format: uuid}
+        tokenSha256: {$ref: '#/components/schemas/Sha256'}
+        approverUserId: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid}
+        eventId: {type: string, format: uuid}
+        caseId: {type: string, format: uuid}
+        approvalRequestId: {type: string, format: uuid}
+        evidenceSnapshotId: {type: string, format: uuid}
+        manifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reportVersionId: {type: string, format: uuid}
+        reportContentSha256: {$ref: '#/components/schemas/Sha256'}
+        issuedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        status: {type: string, enum: [ISSUED, CONSUMED, REVOKED, EXPIRED]}
+        consumedAt: {type: string, format: date-time}
+        approvalDecisionId: {type: string, format: uuid}
+      description: >-
+        서버 내부 기록. 제한 TTL(초기 권장 15분, 운영 설정값 미확정)이 지나면 사용할 수 없다.
+        근거/보고서 변경, ACTIVE 보류 등록, 요청 철회·무효화 시 REVOKED 처리하거나
+        같은 범위 검사로 사용 불가.
+        원문 토큰은 저장·로그·감사에 남기지 않는다. 결정당 한 번만 원자 소비한다.
+    ApprovalRequestDetail:
+      type: object
+      additionalProperties: false
+      required: [request, reportVersion]
+      properties:
+        request: {$ref: '#/components/schemas/ApprovalRequest'}
+        decision: {$ref: '#/components/schemas/ApprovalDecision'}
+        reportVersion: {$ref: '#/components/schemas/ReportVersion'}
+    ApprovalReviewPackageView:
+      type: object
+      additionalProperties: false
+      required: [request, reportVersion, snapshot, sealedReportContent]
+      properties:
+        request: {$ref: '#/components/schemas/ApprovalRequest'}
+        reportVersion: {$ref: '#/components/schemas/ReportVersion'}
+        snapshot: {$ref: '#/components/schemas/EvidenceSnapshot'}
+        sealedReportContent:
+          type: object
+          description: >-
+            서버가 봉인한 정확한 보고서 입력의 승인자 전용 canonical JSON.
+            고객사·공연·역할 검증 후에만 제공하며 영수증 토큰은 포함하지 않는다.
+    ApprovalReviewPackage:
+      type: object
+      additionalProperties: false
+      required: [request, reportVersion, snapshot, sealedReportContent, reviewReceiptToken, issuedAt, expiresAt]
+      properties:
+        request: {$ref: '#/components/schemas/ApprovalRequest'}
+        reportVersion: {$ref: '#/components/schemas/ReportVersion'}
+        snapshot: {$ref: '#/components/schemas/EvidenceSnapshot'}
+        sealedReportContent:
+          type: object
+          description: >-
+            서버가 봉인한 정확한 보고서 입력의 승인자 전용 canonical JSON. ReportVersion.contentSha256의
+            대상이며 고객사·공연·역할 검증 후에만 제공하고 로그/감사에 원문 복제 금지.
+        reviewReceiptToken: {type: string, minLength: 32, description: 서버가 한 번 전달하는 고엔트로피 불투명 토큰. 인증 자체를 대체하지 않음.}
+        issuedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+      description: >-
+        서버 저장 ReviewReceipt는 인증 actor/tenant/event/Case/Request/ReportVersion ID·digest/
+        snapshot ID·digest에 묶인다. 결정 시 다시 비교하며 패키지 수령만으로 사람의 이해를
+        증명하지 않는다. 원문 토큰을 로그·감사에 기록하지 않는다.
+    DecideApprovalInput:
+      type: object
+      additionalProperties: false
+      required: [decision, reason, reviewedEvidenceSnapshotId, reviewedManifestSha256, reviewedReportContentSha256, reviewReceiptToken, reviewConfirmed, expectedCaseVersion, expectedRequestVersion, expectedReportVersion]
+      properties:
+        decision: {type: string, enum: [APPROVE, REJECT]}
+        reason: {type: string, minLength: 3, maxLength: 2000}
+        reviewedEvidenceSnapshotId: {type: string, format: uuid}
+        reviewedManifestSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewedReportContentSha256: {$ref: '#/components/schemas/Sha256'}
+        reviewReceiptToken: {type: string, minLength: 32, writeOnly: true, description: 명시적 POST 발급 응답에서 받은 일회용 토큰. 서버 저장 digest로 검증.}
+        reviewConfirmed: {type: boolean, const: true}
+        expectedCaseVersion: {type: integer, minimum: 0}
+        expectedRequestVersion: {type: integer, minimum: 0}
+        expectedReportVersion: {type: integer, minimum: 0, description: ReportVersion.version과 비교.}
+    DecisionResult:
+      type: object
+      additionalProperties: false
+      required: [request, decision, case, reportVersion]
+      properties:
+        request: {$ref: '#/components/schemas/ApprovalRequest'}
+        decision: {$ref: '#/components/schemas/ApprovalDecision'}
+        case: {$ref: '#/components/schemas/Case'}
+        reportVersion: {$ref: '#/components/schemas/ReportVersion'}
+    WithdrawApprovalInput:
+      type: object
+      additionalProperties: false
+      required: [reason, expectedCaseVersion, expectedRequestVersion, expectedReportVersion]
+      properties:
+        reason: {type: string, minLength: 3, maxLength: 2000}
+        expectedCaseVersion: {type: integer, minimum: 0}
+        expectedRequestVersion: {type: integer, minimum: 0}
+        expectedReportVersion: {type: integer, minimum: 0}
+    WithdrawalResult:
+      type: object
+      additionalProperties: false
+      required: [request, case, reportVersion, withdrawnAt, approvalAuditEventId]
+      properties:
+        request: {$ref: '#/components/schemas/ApprovalRequest'}
+        case: {$ref: '#/components/schemas/Case'}
+        reportVersion: {$ref: '#/components/schemas/ReportVersion'}
+        withdrawnAt: {type: string, format: date-time}
+        approvalAuditEventId: {type: string, format: uuid}
+    RenderReportInput:
+      type: object
+      additionalProperties: false
+      required: [expectedCaseVersion, expectedReportVersion, expectedEvidenceRevision, expectedReportContentSha256]
+      properties:
+        expectedCaseVersion: {type: integer, minimum: 0}
+        expectedReportVersion: {type: integer, minimum: 0}
+        expectedEvidenceRevision: {type: integer, minimum: 0}
+        expectedReportContentSha256: {$ref: '#/components/schemas/Sha256'}
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code, requestId]
+      properties:
+        type: {type: string, format: uri-reference}
+        title: {type: string}
+        status: {type: integer, minimum: 400, maximum: 599}
+        code: {type: string}
+        detail: {type: string}
+        requestId: {type: string}
+        violations:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: {type: string}
+              message: {type: string}
+      example:
+        type: about:blank
+        title: Conflict
+        status: 409
+        code: EVIDENCE_VERSION_MISMATCH
+        detail: 현재 근거 버전과 승인된 스냅샷이 일치하지 않습니다.
+        requestId: 88888888-8888-4888-8888-888888888888

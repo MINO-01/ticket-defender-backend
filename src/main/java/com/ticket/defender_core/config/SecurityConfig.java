@@ -1,6 +1,7 @@
 package com.ticket.defender_core.config;
 
 import com.ticket.defender_core.security.JwtDecoderFactory;
+import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -54,6 +55,7 @@ public class SecurityConfig {
             @Qualifier("adminJwtDecoder") JwtDecoder decoder) throws Exception {
         return common(http)
                 .authorizeHttpRequests(requests -> requests
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))

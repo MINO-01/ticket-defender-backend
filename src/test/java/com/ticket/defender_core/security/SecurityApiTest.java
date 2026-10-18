@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
@@ -36,6 +37,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPublicKey;
@@ -46,6 +51,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
@@ -58,7 +64,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(properties = {
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.datasource.url=jdbc:h2:mem:security-api;MODE=MySQL;DB_CLOSE_DELAY=-1",
         "spring.datasource.username=sa",
         "spring.datasource.password=",
@@ -85,6 +91,9 @@ class SecurityApiTest {
 
     @Autowired
     private MockMvc mvc;
+
+    @Value("${local.server.port}")
+    private int port;
 
     @MockitoBean(name = "adminJwtDecoder")
     private JwtDecoder adminDecoder;
@@ -208,6 +217,31 @@ class SecurityApiTest {
     }
 
     @Test
+    void invalidAnalysisInputWithServiceTokenKeepsBadRequest() throws Exception {
+        mvc.perform(post("/api/v1/audits/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(serviceToken())))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(fraudAnalysisService);
+    }
+
+    @Test
+    void embeddedServerKeepsInvalidAnalysisInputStatus() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/v1/audits/analyze"))
+                .header(HttpHeaders.AUTHORIZATION, bearer(serviceToken()))
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                .build();
+
+        HttpResponse<String> response = HttpClient.newHttpClient()
+                .send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        verifyNoInteractions(fraudAnalysisService);
+    }
+
+    @Test
     void officialPdfIsStillBlockedAndOtherRoutesDefaultToDeny() throws Exception {
         mvc.perform(post("/api/v1/audits/123/report"))
                 .andExpect(status().isUnauthorized());
@@ -216,6 +250,8 @@ class SecurityApiTest {
                 .andExpect(status().isConflict())
                 .andExpect(content().string(not(containsString("%PDF-"))));
         mvc.perform(get("/api/v1/cases").header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/error").header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
                 .andExpect(status().isForbidden());
     }
 

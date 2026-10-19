@@ -1,6 +1,7 @@
 package com.ticket.defender_core.adapter.out.pdf;
 
 import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.domain.AuditStatus;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,9 @@ import java.nio.file.Paths;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class PdfGeneratorAdapterTest {
 
@@ -36,9 +40,25 @@ class PdfGeneratorAdapterTest {
         List<String> dummyImages = List.of(
                 "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         );
-        return TicketAudit.createVlmAudit(
-                "RES-TEST-001", "hacker_999", 0.995, "hero_fan_01", dummyImages, java.time.LocalDateTime.now()
-        );
+        TicketAudit audit = mock(TicketAudit.class);
+        when(audit.getStatus()).thenReturn(AuditStatus.FRAUD_DETECTED);
+        when(audit.getDetectedAt()).thenReturn(java.time.LocalDateTime.now());
+        when(audit.getReservationNo()).thenReturn("RES-TEST-001");
+        when(audit.getAccountId()).thenReturn("account-1");
+        when(audit.getReporterId()).thenReturn("reporter-1");
+        when(audit.getMappingScore()).thenReturn(0.995);
+        when(audit.getEvidenceImageUrls()).thenReturn(dummyImages);
+        return audit;
+    }
+
+    @Test
+    void candidateCannotBeRenderedAsOfficialPdf() {
+        TicketAudit candidate = TicketAudit.createVlmAudit(
+                "res-1", "account-1", 0.95, "reporter-1", List.of("image-1"),
+                java.time.LocalDateTime.now());
+
+        assertThatThrownBy(() -> createAdapter().generateVlmReportPdf(candidate))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test

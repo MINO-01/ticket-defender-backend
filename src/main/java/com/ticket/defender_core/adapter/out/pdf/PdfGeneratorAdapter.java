@@ -1,6 +1,7 @@
 package com.ticket.defender_core.adapter.out.pdf;
 
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
+import com.ticket.defender_core.domain.AuditStatus;
 import com.ticket.defender_core.domain.TicketAudit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,9 @@ public class PdfGeneratorAdapter {
      * TicketAudit 도메인 객체를 받아 암표 탐지 보고서 PDF 바이트 배열로 변환합니다.
      */
     public byte[] generateVlmReportPdf(TicketAudit audit) {
+        if (audit.getStatus() != AuditStatus.FRAUD_DETECTED || audit.getDetectedAt() == null) {
+            throw new IllegalStateException("부정거래로 확정되지 않은 팬 제보는 보고서로 렌더링할 수 없습니다.");
+        }
 
         Context context = new Context();
         context.setVariable("reservationNo", audit.getReservationNo());
@@ -52,11 +56,11 @@ public class PdfGeneratorAdapter {
             builder.toStream(outputStream);
             builder.run();
 
-            log.info("PDF 리포트 생성 완료 (예약번호: {})", audit.getReservationNo());
+            log.info("PDF 리포트 생성 완료");
             return outputStream.toByteArray();
 
         } catch (Exception e) {
-            log.error("PDF 렌더링 중 오류 발생 (예약번호: {})", audit.getReservationNo(), e);
+            log.error("PDF 렌더링 중 오류 발생. 원인 유형: {}", e.getClass().getSimpleName());
             throw new RuntimeException("PDF 리포트 생성에 실패했습니다.", e);
         }
     }

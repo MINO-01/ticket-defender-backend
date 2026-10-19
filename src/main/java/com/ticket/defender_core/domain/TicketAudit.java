@@ -87,7 +87,7 @@ public class TicketAudit {
         return audit;
     }
 
-    /** 접수 시각과 캡처 정보를 담은 팬 제보를 만듭니다. */
+    /** VLM 추출 신뢰도와 예매 후보를 분리해 보관하는 팬 제보를 만듭니다. */
     public static TicketAudit createVlmAudit(
             String reservationNo,
             String accountId,
@@ -105,8 +105,7 @@ public class TicketAudit {
         audit.reporterId = reporterId;
         audit.evidenceImageUrls = evidenceImageUrls;
         audit.evidenceType = EvidenceType.FAN_REPORT;
-        audit.status = AuditStatus.FRAUD_DETECTED;
-        audit.detectedAt = LocalDateTime.now();
+        audit.status = AuditStatus.MATCH_CANDIDATE;
         audit.reportReceivedAt = reportReceivedAt;
         return audit;
     }

@@ -57,6 +57,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(requests -> requests
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/track1/clusters",
+                                "/api/v1/admin/track1/clusters/detail").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))
                 .build();

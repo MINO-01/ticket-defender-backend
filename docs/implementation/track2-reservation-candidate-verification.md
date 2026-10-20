@@ -23,6 +23,15 @@
 
 ## MySQL 적용과 후속 계약
 
-`docs/database/track2-reservation-scope-migration.sql`을 기존 관리자 공연 테이블 적용 후 MySQL 8.0.16 이상에서 실행한다. `reservation`에 nullable `tenant_id`, `event_id`, `performance_ref`와 범위 인덱스·공연 소속 FK·부분 범위 차단 CHECK를 추가한다. 기존 행은 출처가 확인되지 않아 모두 null로 남고 후보 조회에서 제외된다. `ddl-auto: validate`이므로 마이그레이션 적용 전 새 앱을 운영 DB에 배포할 수 없다.
+`docs/database/track2-reservation-scope-migration.sql`을 기존 관리자 공연 테이블 적용 후 MySQL 8.0.16 이상에서 실행한다. `reservation`에 nullable `tenant_id`, `event_id`, `performance_ref`와 범위 인덱스·공연 소속 FK·부분 범위 차단 CHECK를 추가한다. 회차와 좌석 컬럼에는 이진 대조 정렬 규칙을 적용해 MySQL 기본 대소문자 무시 정렬 규칙으로 다른 회차·좌석이 섞이지 않게 한다. `ticket_audit.status`의 기존 ENUM 값은 유지하면서 `MATCH_CANDIDATE`를 추가한다. 기존 예매 행은 출처가 확인되지 않아 범위가 모두 null로 남고 후보 조회에서 제외된다. `ddl-auto: validate`이므로 마이그레이션 적용 전 새 앱을 운영 DB에 배포할 수 없다.
 
 후속 제보·예매 반입 계약은 인증된 고객사와 저장된 공연 ID, 예매처의 회차 식별자, 제보 권한을 함께 제공해야 한다. 제보 모델에 이 범위가 없으면 `UNVERIFIABLE`로 남긴다. 현재 `reservation_no` 전역 유일 키와 `TicketAudit`의 범위 컬럼 부재는 유지하므로 고객사별 동일 예매 번호를 지원하거나 Track 2 감사를 고객사별로 읽는 API를 만들 때 별도 이행·권한 설계가 필요하다. 기존 행을 공연에 소급 연결하거나 회차를 생성하지 않는다.
+
+## 격리된 MySQL 검증 기록
+
+2026-10-20에 MySQL 8.0.45의 폐기 가능한 로컬 인스턴스(`127.0.0.1:13306`)에서 확인했다. `origin/main`의 엔티티에 해당하는 예매 범위 없는 스키마와 기존 감사 상태 ENUM을 재현하고 예매 행을 넣은 뒤 마이그레이션을 실행했다. 운영 스키마와 운영 데이터는 직접 검증하지 않았다.
+
+- 최초 SQL에서는 `MATCH_CANDIDATE` 저장이 MySQL 오류 1265로 실패했고, `Round-A` 조회에 `round-a` 예매까지 포함됐다.
+- 보정 SQL 적용 후 기존 예매 1건은 보존되고 세 범위 컬럼은 모두 null이었다. 신규 상태 저장에 성공했고 기존 `FRAUD_DETECTED` 행 6건도 유지됐다.
+- 같은 좌석의 다른 고객사·공연·회차·좌석 표기는 조회에서 제외됐다. 동일 범위의 중복 좌석 2건은 두 후보로 반환됐다. 잘못된 고객사·공연 조합은 FK가, 부분 범위와 빈 회차는 CHECK가 거부했다.
+- 범위 인덱스와 FK·CHECK를 확인했고, 기존 `Track1ConcurrentMySqlTest`의 `ddl-auto=validate` 및 Track 1 동시성 검증이 통과했다.

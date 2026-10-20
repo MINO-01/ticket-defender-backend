@@ -12,6 +12,7 @@ import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
 import com.ticket.defender_core.application.service.FraudAnalysisService;
 import com.ticket.defender_core.application.service.FraudAnalysisStatus;
 import com.ticket.defender_core.domain.AccessRecordStatus;
+import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.ServiceTenantBinding;
 import com.ticket.defender_core.domain.Tenant;
 import com.ticket.defender_core.domain.TenantEvent;
@@ -40,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.reset;
 
 @SpringBootTest(properties = {
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -66,13 +68,25 @@ class Track1ConcurrentMySqlTest {
 
     @Test
     void simultaneousRequestsStoreOneEvidencePerMember() throws Exception {
+        for (int repetition = 0; repetition < 5; repetition++) {
+            assertConcurrentStorageKeepsScopeAndOneEvidencePerMember();
+        }
+    }
+
+    private void assertConcurrentStorageKeepsScopeAndOneEvidencePerMember() throws Exception {
+        reset(fastApiAdapter);
         UUID tenantId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
+        UUID otherTenantId = UUID.randomUUID();
+        UUID otherEventId = UUID.randomUUID();
         String subject = "ingest-" + UUID.randomUUID();
         String externalEventRef = "event-" + UUID.randomUUID();
         tenants.saveAndFlush(new Tenant(tenantId, "동시성 고객사", AccessRecordStatus.ACTIVE));
+        tenants.saveAndFlush(new Tenant(otherTenantId, "다른 고객사", AccessRecordStatus.ACTIVE));
         events.saveAndFlush(new TenantEvent(eventId, tenantId, externalEventRef,
                 "동시성 공연", AccessRecordStatus.ACTIVE));
+        events.saveAndFlush(new TenantEvent(otherEventId, otherTenantId, externalEventRef,
+                "동일 이름의 다른 공연", AccessRecordStatus.ACTIVE));
         bindings.saveAndFlush(new ServiceTenantBinding(UUID.randomUUID(),
                 "https://issuer.example.test/service", "trusted-ingest", subject,
                 tenantId, AccessRecordStatus.ACTIVE));
@@ -125,6 +139,12 @@ class Track1ConcurrentMySqlTest {
         } finally {
             executor.shutdownNow();
         }
-        assertThat(evidence.findAllByTenantIdAndInternalEventId(tenantId, eventId)).hasSize(2);
+        List<MacroAuditEvidence> saved = evidence.findAllByTenantIdAndInternalEventId(tenantId, eventId);
+        assertThat(saved).hasSize(2);
+        assertThat(saved).extracting(MacroAuditEvidence::getAccountId)
+                .containsExactlyInAnyOrder("account-1", "account-2");
+        assertThat(saved).extracting(MacroAuditEvidence::getReservationNo)
+                .containsExactlyInAnyOrder("reservation-1", "reservation-2");
+        assertThat(evidence.findAllByTenantIdAndInternalEventId(otherTenantId, otherEventId)).isEmpty();
     }
 }

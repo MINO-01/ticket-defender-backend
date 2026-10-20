@@ -15,15 +15,35 @@ paths:
       description: >-
         The eventId must identify an active, server registered, public-intake-enabled event.
         tenantId, performanceRef and storage keys are never accepted from the client.
-        Idempotency-Key is 16 to 128 ASCII letters, digits, dot, underscore or hyphen.
-        Identical replay returns 200 with the same receipt and lookupCode null. The code is
-        issued only once and cannot be recovered from the digest; the client must retain it.
+        Generate a random UUIDv4 Idempotency-Key and an independent 32-byte CSPRNG secret
+        before the first request. Send the secret as unpadded base64url in Report-Recovery-Secret.
+        Retain both privately until the receipt and lookup code are safely saved. Identical
+        replay with both credentials returns 200 with the same receipt and lookupCode after
+        a lost first response. The idempotency key alone cannot recover either value.
+        Replay requires identical metadata and image bytes in the same order. A wrong recovery
+        secret returns the same 404 as an unknown report. Never log either header or the response code.
         A pending same-key request returns 409; a failed request returns 503 and requires a new key.
+        A report stored before this recovery contract returns 409 on replay and needs a controlled
+        migration; it is never duplicated or returned with a null lookup code.
       parameters:
         - in: header
           name: Idempotency-Key
           required: true
-          schema: {type: string, minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9._-]+$'}
+          schema:
+            type: string
+            format: uuid
+            minLength: 36
+            maxLength: 36
+            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        - in: header
+          name: Report-Recovery-Secret
+          required: true
+          description: Independent client-generated 32-byte CSPRNG value encoded as canonical unpadded base64url; never put it in a URL or general logs.
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+            pattern: '^[A-Za-z0-9_-]{43}$'
       requestBody:
         required: true
         content:
@@ -57,14 +77,14 @@ paths:
                     askingPrice: '450000'
       responses:
         '201':
-          description: New report accepted; lookupCode shown once
+          description: New report accepted with its lookupCode
           headers:
             Cache-Control: {schema: {type: string, example: no-store}}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/FanReportReceipt'}
         '200':
-          description: Identical completed replay; lookupCode is null
+          description: Identical completed replay with both original credentials; lookupCode is recovered
           content:
             application/json:
               schema: {$ref: '#/components/schemas/FanReportReceipt'}
@@ -124,7 +144,7 @@ components:
       properties:
         fanReportId: {type: string, format: uuid, description: Persistent Case source ID}
         receiptNumber: {type: string}
-        lookupCode: {type: [string, 'null'], description: Null on replay}
+        lookupCode: {type: string, description: Secret status lookup code. Store privately; the server keeps only its digest.}
         intakeStatus: {$ref: '#/components/schemas/IntakeStatus'}
         receivedAt: {type: string, format: date-time, description: UTC server time}
     FanReportLookupRequest:

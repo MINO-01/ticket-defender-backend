@@ -22,7 +22,10 @@ paths:
         a lost first response. The idempotency key alone cannot recover either value.
         Replay requires identical metadata and image bytes in the same order. A wrong recovery
         secret returns the same 404 as an unknown report. Never log either header or the response code.
+        A completed replay remains available after public intake closes or object storage becomes unavailable.
+        New reports still require an open event and a reachable private bucket.
         A pending same-key request returns 409; a failed request returns 503 and requires a new key.
+        A saturated intake admission limit returns 503 INTAKE_BUSY before multipart parsing.
         A report stored before this recovery contract returns 409 on replay and needs a controlled
         migration; it is never duplicated or returned with a null lookup code.
       parameters:
@@ -189,4 +192,4 @@ components:
       headers:
         Retry-After: {schema: {type: integer, example: 60}}
       content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
-    Unavailable: {description: Database or private object store unavailable; no success receipt, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Unavailable: {description: Database or private object store unavailable, or intake concurrency saturated with code INTAKE_BUSY; no new success receipt, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}

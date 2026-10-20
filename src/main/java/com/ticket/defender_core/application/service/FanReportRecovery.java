@@ -1,16 +1,17 @@
 package com.ticket.defender_core.application.service;
 
 import com.ticket.defender_core.adapter.out.persistence.FanReportRepository;
+import com.ticket.defender_core.domain.EvidenceAsset;
 import com.ticket.defender_core.domain.FanReport;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.List;
 
 @Component
 @Slf4j
@@ -24,8 +25,9 @@ public class FanReportRecovery {
             fixedDelayString = "${ticket-defender.fan-report.recovery-delay-ms:600000}")
     public void recoverStale() {
         LocalDateTime before = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(30);
-        for (FanReport report : reports.findTop50ByIntakeStatusInAndReceivedAtBeforeOrderByReceivedAtAsc(
-                List.of(FanReport.IntakeStatus.PENDING_STORAGE, FanReport.IntakeStatus.STORAGE_FAILED), before)) {
+        for (FanReport report : reports.findNeedingCleanup(before,
+                FanReport.IntakeStatus.PENDING_STORAGE, FanReport.IntakeStatus.STORAGE_FAILED,
+                EvidenceAsset.StorageStatus.FAILED, PageRequest.of(0, 50))) {
             try {
                 persistence.cleanStale(report.getFanReportId(), before);
             } catch (Exception ignored) {

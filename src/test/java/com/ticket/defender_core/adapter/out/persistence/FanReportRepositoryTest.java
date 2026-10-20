@@ -8,6 +8,7 @@ import com.ticket.defender_core.domain.TenantEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.TestPropertySource;
 
@@ -61,6 +62,56 @@ class FanReportRepositoryTest {
         reports.saveAndFlush(report(UUID.randomUUID(), tenant, event, "FR-synthetic-2", "c".repeat(64)));
         assertThatThrownBy(() -> reports.saveAndFlush(report(UUID.randomUUID(), tenant, event,
                 "FR-synthetic-3", "c".repeat(64)))).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void completedFailuresDoNotStarveLaterCleanupAndBatchRemainsLimited() {
+        UUID tenant = UUID.randomUUID();
+        UUID event = UUID.randomUUID();
+        for (int i = 0; i < 51; i++) {
+            FanReport cleaned = report(UUID.randomUUID(), tenant, event, "FR-cleaned-" + i,
+                    String.format("%064x", i + 1));
+            cleaned.markStorageFailed();
+            reports.save(cleaned);
+            EvidenceAsset asset = asset(cleaned, "cleaned-" + i);
+            asset.markFailed();
+            assets.save(asset);
+        }
+        FanReport pending = report(UUID.randomUUID(), tenant, event, "FR-pending", "a".repeat(64));
+        reports.save(pending);
+        assets.save(asset(pending, "pending"));
+        FanReport retry = report(UUID.randomUUID(), tenant, event, "FR-retry", "b".repeat(64));
+        retry.markStorageFailed();
+        reports.save(retry);
+        assets.save(asset(retry, "retry"));
+        FanReport received = report(UUID.randomUUID(), tenant, event, "FR-received", "c".repeat(64));
+        received.markReceived();
+        reports.save(received);
+        assets.save(asset(received, "received"));
+        reports.flush();
+        assets.flush();
+
+        var candidates = reports.findNeedingCleanup(LocalDateTime.parse("2026-10-21T12:00:00"),
+                FanReport.IntakeStatus.PENDING_STORAGE, FanReport.IntakeStatus.STORAGE_FAILED,
+                EvidenceAsset.StorageStatus.FAILED, PageRequest.of(0, 50));
+        assertThat(candidates).extracting(FanReport::getFanReportId)
+                .containsExactlyInAnyOrder(pending.getFanReportId(), retry.getFanReportId());
+
+        for (int i = 0; i < 50; i++) {
+            FanReport another = report(UUID.randomUUID(), tenant, event, "FR-new-" + i,
+                    String.format("%064x", i + 1000));
+            reports.save(another);
+        }
+        reports.flush();
+        assertThat(reports.findNeedingCleanup(LocalDateTime.parse("2026-10-21T12:00:00"),
+                FanReport.IntakeStatus.PENDING_STORAGE, FanReport.IntakeStatus.STORAGE_FAILED,
+                EvidenceAsset.StorageStatus.FAILED, PageRequest.of(0, 50))).hasSize(50);
+    }
+
+    private EvidenceAsset asset(FanReport report, String suffix) {
+        return new EvidenceAsset(UUID.randomUUID(), report.getFanReportId(),
+                "fan-reports/synthetic/" + suffix, "image/png", 4, "b".repeat(64),
+                LocalDateTime.parse("2026-10-20T12:00:00"), LocalDateTime.parse("2027-01-18T12:00:00"));
     }
 
     private FanReport report(UUID id, UUID tenant, UUID event, String receipt, String keyDigest) {

@@ -77,6 +77,7 @@ public class FanReportPersistence {
                 || (report.getIntakeStatus() != FanReport.IntakeStatus.PENDING_STORAGE
                 && report.getIntakeStatus() != FanReport.IntakeStatus.STORAGE_FAILED)) return;
         for (EvidenceAsset asset : assets.findByFanReportIdOrderByCreatedAtAsc(reportId)) {
+            if (asset.getStorageStatus() == EvidenceAsset.StorageStatus.FAILED) continue;
             storage.delete(asset.getObjectKey(), asset.getObjectVersion());
             asset.markFailed();
         }

@@ -40,6 +40,9 @@ class FanReportRecoveryTest {
         assertThat(report.getIntakeStatus()).isEqualTo(FanReport.IntakeStatus.STORAGE_FAILED);
         assertThat(first.getStorageStatus()).isEqualTo(EvidenceAsset.StorageStatus.FAILED);
         assertThat(second.getStorageStatus()).isEqualTo(EvidenceAsset.StorageStatus.FAILED);
+        persistence.cleanStale(reportId, LocalDateTime.parse("2026-10-20T13:00:00"));
+        verify(storage, times(1)).delete("fan-reports/first", null);
+        verify(storage, times(1)).delete("fan-reports/second", null);
     }
 
     @Test
@@ -56,6 +59,29 @@ class FanReportRecoveryTest {
                 LocalDateTime.parse("2026-10-20T13:00:00"))).isInstanceOf(IllegalStateException.class);
         assertThat(report.getIntakeStatus()).isEqualTo(FanReport.IntakeStatus.PENDING_STORAGE);
         assertThat(asset.getStorageStatus()).isEqualTo(EvidenceAsset.StorageStatus.PENDING);
+    }
+
+    @Test
+    void partialCleanupRetriesOnlyOutstandingAsset() {
+        UUID reportId = UUID.randomUUID();
+        FanReport report = report(reportId);
+        EvidenceAsset first = asset(reportId, "fan-reports/first");
+        EvidenceAsset second = asset(reportId, "fan-reports/second");
+        when(reports.lockById(reportId)).thenReturn(Optional.of(report));
+        when(assets.findByFanReportIdOrderByCreatedAtAsc(reportId)).thenReturn(List.of(first, second));
+        doThrow(new IllegalStateException("synthetic delete outage")).doNothing()
+                .when(storage).delete("fan-reports/second", null);
+
+        assertThatThrownBy(() -> persistence.cleanStale(reportId,
+                LocalDateTime.parse("2026-10-20T13:00:00"))).isInstanceOf(IllegalStateException.class);
+        assertThat(first.getStorageStatus()).isEqualTo(EvidenceAsset.StorageStatus.FAILED);
+        assertThat(second.getStorageStatus()).isEqualTo(EvidenceAsset.StorageStatus.PENDING);
+
+        persistence.cleanStale(reportId, LocalDateTime.parse("2026-10-20T13:00:00"));
+        assertThat(report.getIntakeStatus()).isEqualTo(FanReport.IntakeStatus.STORAGE_FAILED);
+        assertThat(second.getStorageStatus()).isEqualTo(EvidenceAsset.StorageStatus.FAILED);
+        verify(storage, times(1)).delete("fan-reports/first", null);
+        verify(storage, times(2)).delete("fan-reports/second", null);
     }
 
     @Test

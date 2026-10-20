@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -131,5 +132,56 @@ class FanReportSchemaValidateMySqlTest {
                 .isEqualTo(FanReport.IntakeStatus.STORAGE_FAILED);
         assertThat(assets.findById(evidenceId).orElseThrow().getStorageStatus())
                 .isEqualTo(EvidenceAsset.StorageStatus.FAILED);
+    }
+
+    @Test
+    void cleanedFailuresDoNotStarvePendingEvidenceInMySql() {
+        UUID tenant = UUID.fromString("11111111-1111-4111-8111-111111111111");
+        UUID event = UUID.fromString("33333333-3333-4333-8333-333333333333");
+        LocalDateTime received = LocalDateTime.parse("2026-10-20T09:00:00");
+        for (int i = 0; i < 51; i++) {
+            FanReport cleaned = mysqlReport(tenant, event, received);
+            cleaned.markStorageFailed();
+            reports.save(cleaned);
+            EvidenceAsset asset = mysqlAsset(cleaned, received);
+            asset.markFailed();
+            assets.save(asset);
+        }
+        FanReport pending = mysqlReport(tenant, event, received.plusMinutes(1));
+        reports.save(pending);
+        assets.save(mysqlAsset(pending, received.plusMinutes(1)));
+        reports.flush();
+        assets.flush();
+
+        LocalDateTime before = received.plusHours(1);
+        var candidates = reports.findNeedingCleanup(before, FanReport.IntakeStatus.PENDING_STORAGE,
+                FanReport.IntakeStatus.STORAGE_FAILED, EvidenceAsset.StorageStatus.FAILED,
+                PageRequest.of(0, 50));
+        assertThat(candidates).extracting(FanReport::getFanReportId).contains(pending.getFanReportId());
+        assertThat(candidates).extracting(FanReport::getIntakeStatus)
+                .doesNotContain(FanReport.IntakeStatus.STORAGE_FAILED);
+
+        persistence.cleanStale(pending.getFanReportId(), before);
+        assertThat(reports.findNeedingCleanup(before, FanReport.IntakeStatus.PENDING_STORAGE,
+                FanReport.IntakeStatus.STORAGE_FAILED, EvidenceAsset.StorageStatus.FAILED,
+                PageRequest.of(0, 50))).extracting(FanReport::getFanReportId)
+                .doesNotContain(pending.getFanReportId());
+    }
+
+    private FanReport mysqlReport(UUID tenant, UUID event, LocalDateTime received) {
+        UUID id = UUID.randomUUID();
+        String digest = UUID.randomUUID().toString().replace("-", "")
+                + UUID.randomUUID().toString().replace("-", "");
+        return new FanReport(id, "FR-" + UUID.randomUUID(), tenant, event,
+                LocalDateTime.parse("2026-11-01T19:30:00"), null, FanReport.ReportType.OTHER,
+                "A synthetic cleanup candidate", null, null, null, null, received,
+                digest, "d".repeat(64), "e".repeat(64));
+    }
+
+    private EvidenceAsset mysqlAsset(FanReport report, LocalDateTime created) {
+        UUID evidence = UUID.randomUUID();
+        return new EvidenceAsset(evidence, report.getFanReportId(),
+                "fan-reports/" + report.getFanReportId() + "/" + evidence,
+                "image/png", 4, "a".repeat(64), created, created.plusDays(90));
     }
 }

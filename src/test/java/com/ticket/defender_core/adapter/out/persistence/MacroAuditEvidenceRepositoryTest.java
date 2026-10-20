@@ -102,16 +102,20 @@ class MacroAuditEvidenceRepositoryTest {
         assertThat(legacy.getInternalEventId()).isNull();
     }
 
-    /** 팬 제보 반려는 매크로 감사 상태에 영향을 주지 않습니다. */
+    /** 과거 적발 상태의 팬 제보 반려는 매크로 감사나 새 후보 상태에 영향을 주지 않습니다. */
     @Test
     @DisplayName("팬 제보 반려 쿼리는 같은 예매 번호의 매크로 감사 내역을 변경하지 않는다")
     void rejectFanDuplicates_leavesMacroAuditUntouched() {
         // given
         TicketAudit approvedReport = fanReport("reporter-first");
         TicketAudit laterReport = fanReport("reporter-later");
+        approvedReport.markAsFraud();
+        laterReport.markAsFraud();
+        TicketAudit candidateReport = fanReport("reporter-candidate");
         TicketAudit macroAudit = macroAudit("cluster-1");
         ticketAuditRepository.saveAndFlush(approvedReport);
         ticketAuditRepository.saveAndFlush(laterReport);
+        ticketAuditRepository.saveAndFlush(candidateReport);
         ticketAuditRepository.saveAndFlush(macroAudit);
 
         // when
@@ -137,6 +141,8 @@ class MacroAuditEvidenceRepositoryTest {
                 .isEqualTo(AuditStatus.DUPLICATED);
         assertThat(ticketAuditRepository.findById(macroAudit.getId()).orElseThrow().getStatus())
                 .isEqualTo(AuditStatus.FRAUD_DETECTED);
+        assertThat(ticketAuditRepository.findById(candidateReport.getId()).orElseThrow().getStatus())
+                .isEqualTo(AuditStatus.MATCH_CANDIDATE);
     }
 
     /** 팬 제보는 매크로 증거 없이 저장됩니다. */

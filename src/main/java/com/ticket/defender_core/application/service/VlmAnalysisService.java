@@ -4,14 +4,16 @@ import com.ticket.defender_core.adapter.out.persistence.ReservationRepository;
 import com.ticket.defender_core.adapter.out.persistence.TicketAuditRepository;
 import com.ticket.defender_core.domain.Reservation;
 import com.ticket.defender_core.domain.TicketAudit;
+import com.ticket.defender_core.security.EventScopeLookup;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Optional;
+import java.util.Objects;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -20,6 +22,12 @@ public class VlmAnalysisService {
 
     private final ReservationRepository reservationRepository;
     private final TicketAuditRepository ticketAuditRepository;
+    private final EventScopeLookup eventScopeLookup;
+
+    public enum ExtractionStatus { COMPLETED, FAILED }
+
+    /** 제보의 저장된 고객사·공연 범위와 예매처가 부여한 회차 식별자입니다. VLM 출력에서 만들지 않습니다. */
+    public record ReportScope(UUID tenantId, UUID eventId, String performanceRef) {}
 
     /** reportReceivedAt은 VLM 분석 시작 전, 제보를 서버가 처음 접수한 시각이어야 합니다. */
     public record VlmParsedData(
@@ -29,53 +37,95 @@ public class VlmAnalysisService {
             Double mappingScore,
             String reporterId,
             List<String> evidenceImageUrls,
-            LocalDateTime reportReceivedAt
+            LocalDateTime reportReceivedAt,
+            ExtractionStatus extractionStatus
     ) {
+        public VlmParsedData(String zone, String rowNum, String seatNum, Double mappingScore,
+                String reporterId, List<String> evidenceImageUrls, LocalDateTime reportReceivedAt) {
+            this(zone, rowNum, seatNum, mappingScore, reporterId, evidenceImageUrls,
+                    reportReceivedAt, ExtractionStatus.COMPLETED);
+        }
+
         public VlmParsedData {
             if (reportReceivedAt == null) {
                 throw new IllegalArgumentException("제보 접수 시각은 필수입니다.");
             }
+            Objects.requireNonNull(extractionStatus, "VLM 추출 상태는 필수입니다.");
         }
     }
 
-    /**
-     * [Track 2] VLM 팬 제보 데이터 대조 및 암표상 적발 로직
-     */
-    @Transactional
+    /** 기존 범위 없는 호출은 조회 없이 확인불가로 처리합니다. */
     public void processVlmReport(VlmParsedData parsedData) {
+        processVlmReport(parsedData, null);
+    }
 
-        if (parsedData.mappingScore() == null || parsedData.mappingScore() < 0.85) {
-            log.warn("VLM 매핑 신뢰도(Score: {}) 미달. 대조를 건너뜁니다. (제보자: {})",
-                    parsedData.mappingScore(), parsedData.reporterId());
-            return;
+    /** 검증된 제보 범위에서만 좌석 후보를 조회하며, 결과는 부정판매 판정이 아닙니다. */
+    public VlmVerificationStatus processVlmReport(VlmParsedData parsedData, ReportScope reportScope) {
+        Objects.requireNonNull(parsedData, "VLM 추출 결과는 필수입니다.");
+        String requestId = UUID.randomUUID().toString();
+
+        if (parsedData.extractionStatus() == ExtractionStatus.FAILED) {
+            return logStatus(requestId, VlmVerificationStatus.EXTRACTION_FAILED);
+        }
+        if (!hasUsableSeat(parsedData) || !hasCompleteScope(reportScope)) {
+            return logStatus(requestId, VlmVerificationStatus.UNVERIFIABLE);
         }
 
-        Optional<Reservation> reservationOpt = reservationRepository.findByZoneAndRowNumAndSeatNum(
-                parsedData.zone(),
-                parsedData.rowNum(),
-                parsedData.seatNum()
-        );
-
-        if (reservationOpt.isEmpty()) {
-            log.info("제보된 좌석({}구역 {}열 {}번)과 일치하는 예매 내역이 없습니다. (취소표 혹은 허위 제보)",
-                    parsedData.zone(), parsedData.rowNum(), parsedData.seatNum());
-            return;
+        List<Reservation> candidates;
+        try {
+            UUID storedTenantId = eventScopeLookup.findTenantId(reportScope.eventId()).orElse(null);
+            if (!reportScope.tenantId().equals(storedTenantId)) {
+                return logStatus(requestId, VlmVerificationStatus.UNVERIFIABLE);
+            }
+            candidates = reservationRepository
+                    .findTop2ByTenantIdAndEventIdAndPerformanceRefAndZoneAndRowNumAndSeatNum(
+                            reportScope.tenantId(), reportScope.eventId(), reportScope.performanceRef(),
+                            parsedData.zone(), parsedData.rowNum(), parsedData.seatNum());
+        } catch (DataAccessException lookupFailure) {
+            return logStatus(requestId, VlmVerificationStatus.LOOKUP_FAILED);
         }
 
-        Reservation suspect = reservationOpt.get();
+        if (candidates.isEmpty()) {
+            return logStatus(requestId, VlmVerificationStatus.NO_MATCH);
+        }
+        if (candidates.size() != 1) {
+            return logStatus(requestId, VlmVerificationStatus.UNVERIFIABLE);
+        }
 
+        Reservation candidate = candidates.getFirst();
         TicketAudit audit = TicketAudit.createVlmAudit(
-                suspect.getReservationNo(),
-                suspect.getAccountId(),
+                candidate.getReservationNo(),
+                candidate.getAccountId(),
                 parsedData.mappingScore(),
-                parsedData.reporterId() ,
+                parsedData.reporterId(),
                 parsedData.evidenceImageUrls(),
                 parsedData.reportReceivedAt()
         );
-
         ticketAuditRepository.save(audit);
+        return logStatus(requestId, VlmVerificationStatus.MATCH_CANDIDATE);
+    }
 
-        log.info("[적발 완료] 제보자({})의 증거로 계정({})이 암표상으로 적발되었습니다! (신뢰도: {})",
-                parsedData.reporterId(), suspect.getAccountId(), parsedData.mappingScore());
+    private boolean hasUsableSeat(VlmParsedData data) {
+        return data.mappingScore() != null && Double.isFinite(data.mappingScore())
+                && data.mappingScore() >= 0.85 && data.mappingScore() <= 1.0
+                && !isBlank(data.zone()) && !isBlank(data.rowNum()) && !isBlank(data.seatNum());
+    }
+
+    private boolean hasCompleteScope(ReportScope scope) {
+        return scope != null && scope.tenantId() != null && scope.eventId() != null
+                && !isBlank(scope.performanceRef());
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private VlmVerificationStatus logStatus(String requestId, VlmVerificationStatus status) {
+        if (status == VlmVerificationStatus.LOOKUP_FAILED || status == VlmVerificationStatus.EXTRACTION_FAILED) {
+            log.warn("Track 2 예매 후보 대조. 요청 ID: {}, 상태: {}", requestId, status);
+        } else {
+            log.info("Track 2 예매 후보 대조. 요청 ID: {}, 상태: {}", requestId, status);
+        }
+        return status;
     }
 }

@@ -40,11 +40,18 @@ public class TenantEvent {
     @Column(nullable = false, length = 24)
     private String status;
 
+    @Column(name = "public_intake_enabled", nullable = false)
+    private boolean publicIntakeEnabled;
+
     public TenantEvent(UUID id, UUID tenantId, String externalEventRef, String name, AccessRecordStatus status) {
         this.id = Objects.requireNonNull(id);
         this.tenantId = Objects.requireNonNull(tenantId);
         this.externalEventRef = Objects.requireNonNull(externalEventRef);
         this.name = Objects.requireNonNull(name);
         this.status = Objects.requireNonNull(status).name();
+    }
+
+    public void setPublicIntakeEnabled(boolean enabled) {
+        this.publicIntakeEnabled = enabled;
     }
 }

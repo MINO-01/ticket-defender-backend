@@ -14,6 +14,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -105,6 +106,46 @@ class FanReportIntakeServiceTest {
                 submission().performanceAt(), null, FanReport.ReportType.OTHER,
                 "A different synthetic report description", null, null, null, null), List.of(), KEY, RECOVERY_SECRET))
                 .isInstanceOf(FanReportApiException.class).hasMessage("IDEMPOTENCY_CONFLICT");
+        verify(persistence, times(1)).reserve(any(), anyList());
+    }
+
+    @Test
+    void completedReplaySurvivesClosedEventAndStorageOutageButNewIntakeDoesNot() {
+        MockMultipartFile file = new MockMultipartFile("evidence", "synthetic.png", "image/png", new byte[]{1});
+        List<MultipartFile> files = List.of(file);
+        when(images.validate(files)).thenReturn(List.of(new ValidatedImage(new byte[]{1}, "image/png", 1,
+                "a".repeat(64))));
+        when(storage.put(anyString(), any())).thenReturn("etag");
+        FanReportReceipt first = service.submit(submission(), files, KEY, RECOVERY_SECRET);
+        ArgumentCaptor<FanReport> saved = ArgumentCaptor.forClass(FanReport.class);
+        verify(persistence).reserve(saved.capture(), anyList());
+        saved.getValue().markReceived();
+        when(reports.findByIdempotencyKeyDigest(crypto.idempotencyDigest(KEY)))
+                .thenReturn(Optional.of(saved.getValue()));
+        clearInvocations(eventLookup, storage);
+        doThrow(new FanReportApiException(org.springframework.http.HttpStatus.NOT_FOUND, "EVENT_NOT_AVAILABLE"))
+                .when(eventLookup).requireOpenEvent(EVENT);
+        doThrow(new IllegalStateException("synthetic object store outage")).when(storage).checkReady();
+
+        FanReportReceipt replay = service.submit(submission(), files, KEY, RECOVERY_SECRET);
+        assertThat(replay.receiptNumber()).isEqualTo(first.receiptNumber());
+        assertThat(replay.lookupCode()).isEqualTo(first.lookupCode());
+        assertThat(replay.replayed()).isTrue();
+        assertThatThrownBy(() -> service.submit(submission(), files, KEY, OTHER_RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("REPORT_NOT_FOUND");
+        assertThatThrownBy(() -> service.submit(new FanReportSubmission(EVENT,
+                submission().performanceAt(), null, FanReport.ReportType.OTHER,
+                "A different synthetic report description", null, null, null, null), files, KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("IDEMPOTENCY_CONFLICT");
+        verifyNoInteractions(eventLookup, storage);
+
+        String newKey = "99999999-9999-4999-8999-999999999999";
+        assertThatThrownBy(() -> service.submit(submission(), files, newKey, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("EVENT_NOT_AVAILABLE");
+        doReturn(new TenantEvent(EVENT, TENANT, "ref", "Event", AccessRecordStatus.ACTIVE))
+                .when(eventLookup).requireOpenEvent(EVENT);
+        assertThatThrownBy(() -> service.submit(submission(), files, newKey, RECOVERY_SECRET))
+                .isInstanceOf(IllegalStateException.class).hasMessage("synthetic object store outage");
         verify(persistence, times(1)).reserve(any(), anyList());
     }
 

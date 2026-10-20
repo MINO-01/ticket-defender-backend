@@ -51,11 +51,9 @@ public class FanReportIntakeService {
             throw new FanReportApiException(HttpStatus.BAD_REQUEST, "INVALID_RECOVERY_SECRET");
         }
         String stableKey = suppliedKey.toLowerCase(Locale.ROOT);
-        TenantEvent event = eventLookup.requireOpenEvent(submission.eventId());
         List<ValidatedImage> images = imageValidator.validate(files);
         String keyDigest = crypto.idempotencyDigest(stableKey);
         String requestDigest = crypto.requestDigest(submission, images, recoveryKey);
-        storage.checkReady();
 
         FanReport existing = reports.findByIdempotencyKeyDigest(keyDigest).orElse(null);
         if (existing != null) return replay(existing, requestDigest, stableKey, recoveryKey);
@@ -63,6 +61,8 @@ public class FanReportIntakeService {
         // Reject the original key instead of creating a second report under the new digest format.
         if (reports.findByIdempotencyKeyDigest(crypto.legacyIdempotencyDigest(suppliedKey)).isPresent())
             throw new FanReportApiException(HttpStatus.CONFLICT, "LEGACY_RECOVERY_UNAVAILABLE");
+        TenantEvent event = eventLookup.requireOpenEvent(submission.eventId());
+        storage.checkReady();
 
         UUID id = UUID.randomUUID();
         String receipt = crypto.newReceiptNumber();

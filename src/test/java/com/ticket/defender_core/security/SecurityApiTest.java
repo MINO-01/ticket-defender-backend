@@ -258,6 +258,16 @@ class SecurityApiTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void publicFanReportRoutesStayClosedByDefault() throws Exception {
+        mvc.perform(post("/api/v1/fan-reports"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/fan-reports/lookup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"receiptNumber\":\"FR-synthetic\",\"lookupCode\":\"synthetic\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
     private static AdminMembership membership(Set<AdminRole> roles, Set<UUID> eventIds) {
         return new AdminMembership("admin-1", TENANT_A, roles, eventIds);
     }

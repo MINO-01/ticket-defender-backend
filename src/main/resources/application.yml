@@ -29,3 +29,20 @@ spring:
     properties:
       hibernate:
         format_sql: true
+
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 101MB
+
+ticket-defender:
+  fan-report:
+    enabled: ${FAN_REPORT_ENABLED:false}
+    hmac-key-base64: ${FAN_REPORT_HMAC_KEY_BASE64:}
+    retention-days: ${FAN_REPORT_RETENTION_DAYS:90}
+    storage:
+      endpoint: ${FAN_REPORT_S3_ENDPOINT:}
+      region: ${FAN_REPORT_S3_REGION:us-east-1}
+      bucket: ${FAN_REPORT_S3_BUCKET:}
+      access-key: ${FAN_REPORT_S3_ACCESS_KEY:}
+      secret-key: ${FAN_REPORT_S3_SECRET_KEY:}

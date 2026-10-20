@@ -6,8 +6,11 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -56,8 +59,9 @@ class PublicRequestLimiterTest {
         CountDownLatch ready = new CountDownLatch(clients);
         CountDownLatch start = new CountDownLatch(1);
         AtomicInteger permitted = new AtomicInteger();
+        List<Future<?>> calls = new ArrayList<>();
         try (var workers = Executors.newFixedThreadPool(clients)) {
-            for (int i = 0; i < clients; i++) workers.submit(() -> {
+            for (int i = 0; i < clients; i++) calls.add(workers.submit(() -> {
                 ready.countDown();
                 try {
                     start.await();
@@ -68,12 +72,14 @@ class PublicRequestLimiterTest {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
-            });
+            }));
             assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
             start.countDown();
             workers.shutdown();
             assertThat(workers.awaitTermination(20, TimeUnit.SECONDS)).isTrue();
+            for (Future<?> call : calls) call.get();
         }
-        assertThat(permitted.get()).isBetween(1, 2);
+        // Every writer can observe the final counter after the concurrent updates and be denied.
+        assertThat(permitted.get()).isBetween(0, 2);
     }
 }

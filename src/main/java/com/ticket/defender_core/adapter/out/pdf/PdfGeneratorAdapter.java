@@ -2,6 +2,7 @@ package com.ticket.defender_core.adapter.out.pdf;
 
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
 import com.ticket.defender_core.domain.AuditStatus;
+import com.ticket.defender_core.domain.EvidenceType;
 import com.ticket.defender_core.domain.TicketAudit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,15 +25,25 @@ public class PdfGeneratorAdapter {
      * TicketAudit 도메인 객체를 받아 암표 탐지 보고서 PDF 바이트 배열로 변환합니다.
      */
     public byte[] generateVlmReportPdf(TicketAudit audit) {
-        if (audit.getStatus() != AuditStatus.FRAUD_DETECTED || audit.getDetectedAt() == null) {
-            throw new IllegalStateException("부정거래로 확정되지 않은 팬 제보는 보고서로 렌더링할 수 없습니다.");
+        if (audit == null || audit.getStatus() != AuditStatus.FRAUD_DETECTED
+                || audit.getDetectedAt() == null || audit.getEvidenceType() != EvidenceType.FAN_REPORT) {
+            throw new IllegalStateException("팬 제보 PDF를 렌더링할 수 없는 감사 내역입니다.");
+        }
+        Double mappingScore = audit.getMappingScore();
+        if (mappingScore == null || !Double.isFinite(mappingScore)
+                || mappingScore < 0 || mappingScore > 1) {
+            throw new IllegalStateException("팬 제보 PDF에 유효한 매핑 점수가 없습니다.");
+        }
+        if (isBlank(audit.getReservationNo()) || isBlank(audit.getAccountId())
+                || isBlank(audit.getReporterId())) {
+            throw new IllegalStateException("팬 제보 PDF에 필요한 식별 정보가 없습니다.");
         }
 
         Context context = new Context();
         context.setVariable("reservationNo", audit.getReservationNo());
         context.setVariable("accountId", audit.getAccountId());
         context.setVariable("reporterId", audit.getReporterId());
-        context.setVariable("mappingScore", String.format("%.2f", audit.getMappingScore() * 100));
+        context.setVariable("mappingScore", String.format("%.2f", mappingScore * 100));
         context.setVariable("detectedAt", audit.getDetectedAt().toString());
         context.setVariable("evidenceImageUrls", audit.getEvidenceImageUrls());
 
@@ -63,5 +74,9 @@ public class PdfGeneratorAdapter {
             log.error("PDF 렌더링 중 오류 발생. 원인 유형: {}", e.getClass().getSimpleName());
             throw new RuntimeException("PDF 리포트 생성에 실패했습니다.", e);
         }
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

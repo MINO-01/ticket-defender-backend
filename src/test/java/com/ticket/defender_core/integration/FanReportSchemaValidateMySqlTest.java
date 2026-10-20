@@ -49,7 +49,8 @@ class FanReportSchemaValidateMySqlTest {
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", () -> System.getenv("TD_ISSUE32_MYSQL_URL"));
         registry.add("spring.datasource.username", () -> System.getenv("TD_ISSUE32_MYSQL_USER"));
-        registry.add("spring.datasource.password", () -> System.getenv("TD_ISSUE32_MYSQL_PASSWORD"));
+        registry.add("spring.datasource.password", () ->
+                System.getenv().getOrDefault("TD_ISSUE32_MYSQL_PASSWORD", ""));
         registry.add("spring.datasource.driver-class-name", () -> "com.mysql.cj.jdbc.Driver");
     }
 
@@ -85,7 +86,7 @@ class FanReportSchemaValidateMySqlTest {
                 calls.add(workers.submit(() -> {
                     ready.countDown();
                     start.await();
-                    try { return intake.submit(request, List.of(), "key-" + unique); }
+                    try { return intake.submit(request, List.of(), unique, "A".repeat(43)); }
                     catch (FanReportApiException inProgress) {
                         assertThat(inProgress.code()).isEqualTo("INTAKE_IN_PROGRESS");
                         return null;
@@ -98,9 +99,12 @@ class FanReportSchemaValidateMySqlTest {
         }
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fan_reports WHERE description=?", Integer.class,
                 description)).isEqualTo(1);
-        assertThat(calls.stream().map(call -> {
+        List<FanReportReceipt> completed = calls.stream().map(call -> {
             try { return call.get(); } catch (Exception error) { throw new RuntimeException(error); }
-        }).filter(receipt -> receipt != null && receipt.lookupCode() != null).count()).isEqualTo(1);
+        }).filter(receipt -> receipt != null).toList();
+        assertThat(completed).isNotEmpty();
+        assertThat(completed.stream().map(FanReportReceipt::lookupCode).distinct().count()).isEqualTo(1);
+        assertThat(completed.stream().filter(receipt -> !receipt.replayed()).count()).isEqualTo(1);
     }
 
     @Test

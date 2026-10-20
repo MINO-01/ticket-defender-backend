@@ -28,7 +28,9 @@ import static org.mockito.Mockito.*;
 class FanReportIntakeServiceTest {
     private static final UUID TENANT = UUID.randomUUID();
     private static final UUID EVENT = UUID.randomUUID();
-    private static final String KEY = "synthetic-key-123456";
+    private static final String KEY = "88888888-8888-4888-8888-888888888888";
+    private static final String RECOVERY_SECRET = "A".repeat(43);
+    private static final String OTHER_RECOVERY_SECRET = "B".repeat(42) + "A";
     private final PublicEventLookup eventLookup = mock(PublicEventLookup.class);
     private final EvidenceImageValidator images = mock(EvidenceImageValidator.class);
     private final FanReportRepository reports = mock(FanReportRepository.class);
@@ -48,7 +50,7 @@ class FanReportIntakeServiceTest {
 
     @Test
     void acceptsReportWithoutEvidenceAndNeverCreatesAudit() {
-        FanReportReceipt receipt = service.submit(submission(), List.of(), KEY);
+        FanReportReceipt receipt = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
         assertThat(receipt.intakeStatus()).isEqualTo(FanReport.IntakeStatus.RECEIVED);
         assertThat(receipt.lookupCode()).hasSizeGreaterThan(40);
         verify(persistence).reserve(any(), eq(List.of()));
@@ -63,7 +65,7 @@ class FanReportIntakeServiceTest {
         when(images.validate(anyList())).thenReturn(List.of(new ValidatedImage(new byte[]{1}, "image/png", 1, "a".repeat(64))));
         when(storage.put(anyString(), any())).thenReturn("etag-1");
 
-        FanReportReceipt receipt = service.submit(submission(), List.of(file), KEY);
+        FanReportReceipt receipt = service.submit(submission(), List.of(file), KEY, RECOVERY_SECRET);
         ArgumentCaptor<FanReport> capturedReport = ArgumentCaptor.forClass(FanReport.class);
         @SuppressWarnings("unchecked") ArgumentCaptor<List<EvidenceAsset>> capturedAssets = ArgumentCaptor.forClass(List.class);
         verify(persistence).reserve(capturedReport.capture(), capturedAssets.capture());
@@ -83,28 +85,79 @@ class FanReportIntakeServiceTest {
     }
 
     @Test
-    void identicalReplayReturnsReceiptWithoutReissuingSecretAndDifferentBodyConflicts() {
-        FanReportReceipt first = service.submit(submission(), List.of(), KEY);
+    void identicalReplayRecoversSameCodeWithoutNewReportAndDifferentBodyConflicts() {
+        FanReportReceipt first = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
         ArgumentCaptor<FanReport> saved = ArgumentCaptor.forClass(FanReport.class);
         verify(persistence).reserve(saved.capture(), anyList());
         saved.getValue().markReceived();
         when(reports.findByIdempotencyKeyDigest(anyString())).thenReturn(Optional.of(saved.getValue()));
 
-        FanReportReceipt replay = service.submit(submission(), List.of(), KEY);
+        FanReportReceipt replay = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
         assertThat(replay.receiptNumber()).isEqualTo(first.receiptNumber());
-        assertThat(replay.lookupCode()).isNull();
+        assertThat(replay.lookupCode()).isEqualTo(first.lookupCode());
+        assertThat(replay.replayed()).isTrue();
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, OTHER_RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("REPORT_NOT_FOUND");
+        when(reports.findByReceiptNumber(first.receiptNumber())).thenReturn(Optional.of(saved.getValue()));
+        assertThat(service.lookup(new FanReportLookupRequest(replay.receiptNumber(), replay.lookupCode()))
+                .intakeStatus()).isEqualTo(FanReport.IntakeStatus.RECEIVED);
         assertThatThrownBy(() -> service.submit(new FanReportSubmission(EVENT,
                 submission().performanceAt(), null, FanReport.ReportType.OTHER,
-                "A different synthetic report description", null, null, null, null), List.of(), KEY))
+                "A different synthetic report description", null, null, null, null), List.of(), KEY, RECOVERY_SECRET))
                 .isInstanceOf(FanReportApiException.class).hasMessage("IDEMPOTENCY_CONFLICT");
         verify(persistence, times(1)).reserve(any(), anyList());
+    }
+
+    @Test
+    void rejectsPredictableOrMalformedIdempotencyKey() {
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), "synthetic-key-123456", RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INVALID_IDEMPOTENCY_KEY");
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, "short"))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INVALID_RECOVERY_SECRET");
+        verifyNoInteractions(eventLookup, storage, persistence);
+    }
+
+    @Test
+    void anotherReportsCredentialsCannotRecoverReceiptOrLookupCode() {
+        String otherKey = "77777777-7777-4777-8777-777777777777";
+        FanReportReceipt first = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
+        FanReportReceipt second = service.submit(submission(), List.of(), otherKey, OTHER_RECOVERY_SECRET);
+        ArgumentCaptor<FanReport> saved = ArgumentCaptor.forClass(FanReport.class);
+        verify(persistence, times(2)).reserve(saved.capture(), anyList());
+        FanReport firstReport = saved.getAllValues().get(0);
+        FanReport secondReport = saved.getAllValues().get(1);
+        firstReport.markReceived();
+        secondReport.markReceived();
+        when(reports.findByIdempotencyKeyDigest(crypto.idempotencyDigest(KEY)))
+                .thenReturn(Optional.of(firstReport));
+        when(reports.findByIdempotencyKeyDigest(crypto.idempotencyDigest(otherKey)))
+                .thenReturn(Optional.of(secondReport));
+        when(reports.findByReceiptNumber(first.receiptNumber())).thenReturn(Optional.of(firstReport));
+
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, OTHER_RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("REPORT_NOT_FOUND");
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), otherKey, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("REPORT_NOT_FOUND");
+        assertThatThrownBy(() -> service.lookup(new FanReportLookupRequest(first.receiptNumber(),
+                second.lookupCode())))
+                .isInstanceOf(FanReportApiException.class).hasMessage("REPORT_NOT_FOUND");
+        verify(persistence, times(2)).reserve(any(), anyList());
+    }
+
+    @Test
+    void preChangeIdempotencyDigestCannotCreateDuplicateReport() {
+        when(reports.findByIdempotencyKeyDigest(crypto.legacyIdempotencyDigest(KEY)))
+                .thenReturn(Optional.of(mock(FanReport.class)));
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("LEGACY_RECOVERY_UNAVAILABLE");
+        verify(persistence, never()).reserve(any(), anyList());
     }
 
     @Test
     void databaseReservationFailureDoesNotUploadAndObjectFailureSchedulesCleanup() {
         doThrow(new DataAccessResourceFailureException("synthetic db outage"))
                 .when(persistence).reserve(any(), anyList());
-        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY))
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, RECOVERY_SECRET))
                 .isInstanceOf(DataAccessResourceFailureException.class);
         verify(storage, never()).put(anyString(), any());
 
@@ -112,7 +165,7 @@ class FanReportIntakeServiceTest {
         MockMultipartFile file = new MockMultipartFile("evidence", "synthetic.png", "image/png", new byte[]{1});
         when(images.validate(anyList())).thenReturn(List.of(new ValidatedImage(new byte[]{1}, "image/png", 1, "a".repeat(64))));
         when(storage.put(anyString(), any())).thenThrow(new IllegalStateException("synthetic storage outage"));
-        assertThatThrownBy(() -> service.submit(submission(), List.of(file), KEY))
+        assertThatThrownBy(() -> service.submit(submission(), List.of(file), KEY, RECOVERY_SECRET))
                 .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_STORAGE_UNAVAILABLE");
         verify(persistence).markStorageFailed(any());
         verify(storage).delete(anyString(), isNull());
@@ -126,7 +179,7 @@ class FanReportIntakeServiceTest {
         when(storage.put(anyString(), any())).thenReturn("etag");
         doThrow(new DataAccessResourceFailureException("synthetic db outage"))
                 .when(persistence).markReceived(any(), anyMap());
-        assertThatThrownBy(() -> service.submit(submission(), List.of(file), KEY))
+        assertThatThrownBy(() -> service.submit(submission(), List.of(file), KEY, RECOVERY_SECRET))
                 .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_STORAGE_UNAVAILABLE");
         verify(persistence).cleanStale(any(), any());
         verify(storage, never()).delete(anyString(), any());
@@ -134,7 +187,7 @@ class FanReportIntakeServiceTest {
 
     @Test
     void lookupRequiresCorrectSecretAndHidesOtherReportData() {
-        FanReportReceipt receipt = service.submit(submission(), List.of(), KEY);
+        FanReportReceipt receipt = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
         ArgumentCaptor<FanReport> saved = ArgumentCaptor.forClass(FanReport.class);
         verify(persistence).reserve(saved.capture(), anyList());
         saved.getValue().markReceived();

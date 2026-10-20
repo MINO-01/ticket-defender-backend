@@ -2,6 +2,7 @@ package com.ticket.defender_core.application.service;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -15,12 +16,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PublicRequestLimiterTest {
     private PublicRequestLimiter limiter;
+    private JdbcTemplate jdbc;
 
     @BeforeEach
     void setUp() {
         DriverManagerDataSource datasource = new DriverManagerDataSource(
                 "jdbc:h2:mem:public-quota;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
-        JdbcTemplate jdbc = new JdbcTemplate(datasource);
+        jdbc = new JdbcTemplate(datasource);
         jdbc.execute("DROP TABLE IF EXISTS public_request_quota");
         jdbc.execute("CREATE TABLE public_request_quota (scope VARCHAR(16) NOT NULL, "
                 + "actor_digest CHAR(64) NOT NULL, window_started_at TIMESTAMP NOT NULL, "
@@ -28,6 +30,13 @@ class PublicRequestLimiterTest {
         FanReportCrypto crypto = new FanReportCrypto(false, "");
         crypto.initialize();
         limiter = new PublicRequestLimiter(jdbc, crypto);
+    }
+
+    @Test
+    void quotaDatabaseFailureDoesNotPermitPublicIntake() {
+        jdbc.execute("DROP TABLE public_request_quota");
+        assertThatThrownBy(() -> limiter.checkIntake("192.0.2.15"))
+                .isInstanceOf(DataAccessException.class);
     }
 
     @Test

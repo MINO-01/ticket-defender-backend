@@ -50,6 +50,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 })
 @AutoConfigureMockMvc
 class FanReportIntakeHttpTest {
+    private static final String RECOVERY_SECRET = "A".repeat(43);
+    private static final String WRONG_SECRET = "B".repeat(42) + "A";
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
@@ -79,7 +81,8 @@ class FanReportIntakeHttpTest {
     void acceptsNoImageAndLooksUpOnlyReceiptState() throws Exception {
         long auditCount = audits.count();
         JsonNode receipt = json.readTree(mvc.perform(multipart("/api/v1/fan-reports")
-                        .file(reportPart(eventId, false)).header("Idempotency-Key", "synthetic-idempotency-001"))
+                        .file(reportPart(eventId, false)).header("Idempotency-Key", "11111111-1111-4111-8111-111111111111")
+                        .header("Report-Recovery-Secret", RECOVERY_SECRET))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
         assertThat(receipt.path("intakeStatus").asText()).isEqualTo("RECEIVED");
         assertThat(receipt.path("lookupCode").asText()).hasSizeGreaterThan(40);
@@ -103,18 +106,35 @@ class FanReportIntakeHttpTest {
     }
 
     @Test
-    void storesPngAndReplaysWithoutSecondLookupCode() throws Exception {
+    void storesPngAndReplaysWithSameRecoverableLookupCode() throws Exception {
         when(storage.put(anyString(), any())).thenReturn("etag-synthetic");
         JsonNode first = json.readTree(mvc.perform(multipart("/api/v1/fan-reports")
                         .file(reportPart(eventId, false)).file(png())
-                        .header("Idempotency-Key", "synthetic-idempotency-002"))
+                        .header("Idempotency-Key", "22222222-2222-4222-8222-222222222222")
+                        .header("Report-Recovery-Secret", RECOVERY_SECRET))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
         JsonNode replay = json.readTree(mvc.perform(multipart("/api/v1/fan-reports")
                         .file(reportPart(eventId, false)).file(png())
-                        .header("Idempotency-Key", "synthetic-idempotency-002"))
+                        .header("Idempotency-Key", "22222222-2222-4222-8222-222222222222")
+                        .header("Report-Recovery-Secret", RECOVERY_SECRET))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
         assertThat(replay.path("receiptNumber").asText()).isEqualTo(first.path("receiptNumber").asText());
-        assertThat(replay.path("lookupCode").isNull()).isTrue();
+        assertThat(replay.path("lookupCode").asText()).isEqualTo(first.path("lookupCode").asText());
+        assertThat(replay.has("replayed")).isFalse();
+        mvc.perform(multipart("/api/v1/fan-reports")
+                        .file(reportPart(eventId, false)).file(png())
+                        .header("Idempotency-Key", "22222222-2222-4222-8222-222222222222")
+                        .header("Report-Recovery-Secret", WRONG_SECRET)
+                        .with(request -> { request.setRemoteAddr("192.0.2.11"); return request; }))
+                .andExpect(status().isNotFound());
+        mvc.perform(multipart("/api/v1/fan-reports")
+                        .file(reportPart(eventId, false)).file(png())
+                        .header("Idempotency-Key", "22222222-2222-4222-8222-222222222222"))
+                .andExpect(status().isBadRequest());
+        String recoveredLookup = "{\"receiptNumber\":\"" + replay.path("receiptNumber").asText()
+                + "\",\"lookupCode\":\"" + replay.path("lookupCode").asText() + "\"}";
+        mvc.perform(post("/api/v1/fan-reports/lookup").contentType(MediaType.APPLICATION_JSON)
+                        .content(recoveredLookup)).andExpect(status().isOk());
         verify(storage, times(1)).put(anyString(), any());
         assertThat(reports.count()).isGreaterThanOrEqualTo(1);
     }
@@ -122,18 +142,21 @@ class FanReportIntakeHttpTest {
     @Test
     void missingOrClosedEventAndForgedTenantAreRejected() throws Exception {
         mvc.perform(multipart("/api/v1/fan-reports").file(reportPart(UUID.randomUUID(), false))
-                        .header("Idempotency-Key", "synthetic-idempotency-003"))
+                        .header("Idempotency-Key", "33333333-3333-4333-8333-333333333333")
+                        .header("Report-Recovery-Secret", RECOVERY_SECRET))
                 .andExpect(status().isNotFound());
         TenantEvent event = events.findById(eventId).orElseThrow();
         event.setPublicIntakeEnabled(false);
         events.saveAndFlush(event);
         mvc.perform(multipart("/api/v1/fan-reports").file(reportPart(eventId, false))
-                        .header("Idempotency-Key", "synthetic-idempotency-004"))
+                        .header("Idempotency-Key", "44444444-4444-4444-8444-444444444444")
+                        .header("Report-Recovery-Secret", RECOVERY_SECRET))
                 .andExpect(status().isNotFound());
         event.setPublicIntakeEnabled(true);
         events.saveAndFlush(event);
         mvc.perform(multipart("/api/v1/fan-reports").file(reportPart(eventId, true))
-                        .header("Idempotency-Key", "synthetic-idempotency-005"))
+                        .header("Idempotency-Key", "55555555-5555-4555-8555-555555555555")
+                        .header("Report-Recovery-Secret", RECOVERY_SECRET))
                 .andExpect(status().isBadRequest());
         verify(storage, never()).put(anyString(), any());
     }

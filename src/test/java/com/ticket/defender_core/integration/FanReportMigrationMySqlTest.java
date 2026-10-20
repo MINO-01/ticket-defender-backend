@@ -42,7 +42,8 @@ class FanReportMigrationMySqlTest {
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", () -> System.getenv("TD_ISSUE32_MYSQL_URL"));
         registry.add("spring.datasource.username", () -> System.getenv("TD_ISSUE32_MYSQL_USER"));
-        registry.add("spring.datasource.password", () -> System.getenv("TD_ISSUE32_MYSQL_PASSWORD"));
+        registry.add("spring.datasource.password", () ->
+                System.getenv().getOrDefault("TD_ISSUE32_MYSQL_PASSWORD", ""));
         registry.add("spring.datasource.driver-class-name", () -> "com.mysql.cj.jdbc.Driver");
     }
 

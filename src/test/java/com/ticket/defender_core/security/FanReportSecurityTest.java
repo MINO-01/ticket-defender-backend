@@ -52,7 +52,7 @@ class FanReportSecurityTest {
     @Test
     void onlyExactPublicPostPathsAreAnonymousAndResponsesHideInternalData() throws Exception {
         UUID id = UUID.randomUUID();
-        when(intake.submit(any(), nullable(java.util.List.class), anyString())).thenReturn(new FanReportReceipt(
+        when(intake.submit(any(), nullable(java.util.List.class), anyString(), anyString())).thenReturn(new FanReportReceipt(
                 id, "FR-synthetic", "one-time-synthetic-code", FanReport.IntakeStatus.RECEIVED,
                 LocalDateTime.parse("2026-10-20T12:00:00").atOffset(java.time.ZoneOffset.UTC)));
         MockMultipartFile report = new MockMultipartFile("report", "", MediaType.APPLICATION_JSON_VALUE,
@@ -60,7 +60,8 @@ class FanReportSecurityTest {
                         + "\"reportType\":\"OTHER\",\"description\":\"A synthetic suspected listing description\"}")
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         mvc.perform(multipart("/api/v1/fan-reports").file(report)
-                        .header("Idempotency-Key", "synthetic-key-123456"))
+                        .header("Idempotency-Key", "99999999-9999-4999-8999-999999999999")
+                        .header("Report-Recovery-Secret", "A".repeat(43)))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Cache-Control", containsString("no-store")))
                 .andExpect(jsonPath("$.receiptNumber").value("FR-synthetic"))
@@ -86,7 +87,8 @@ class FanReportSecurityTest {
                         + "\"description\":\"A synthetic suspected listing description\"}")
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         mvc.perform(multipart("/api/v1/fan-reports").file(report)
-                        .header("Idempotency-Key", "synthetic-key-123456"))
+                        .header("Idempotency-Key", "99999999-9999-4999-8999-999999999999")
+                        .header("Report-Recovery-Secret", "A".repeat(43)))
                 .andExpect(status().isBadRequest());
     }
 }

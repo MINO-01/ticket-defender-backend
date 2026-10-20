@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 25
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
         env:
           MYSQL_DATABASE: td_issue32_ci
           MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
@@ -82,7 +82,7 @@ jobs:
     timeout-minutes: 25
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
         env:
           MYSQL_DATABASE: td_track1_ci
           MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
@@ -118,7 +118,7 @@ jobs:
     timeout-minutes: 35
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
         env:
           MYSQL_DATABASE: td_issue32_minio_ci
           MYSQL_ROOT_PASSWORD: synthetic_ci_only_password

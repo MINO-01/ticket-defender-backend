@@ -32,11 +32,12 @@ public class FanReportController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<FanReportReceipt> submit(HttpServletRequest httpRequest,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader("Report-Recovery-Secret") String recoverySecret,
             @Valid @RequestPart("report") FanReportSubmission report,
             @RequestPart(value = "evidence", required = false) List<MultipartFile> evidence) {
         limiter.checkIntake(httpRequest.getRemoteAddr());
-        FanReportReceipt receipt = intake.submit(report, evidence, idempotencyKey);
-        return ResponseEntity.status(receipt.lookupCode() == null ? 200 : 201)
+        FanReportReceipt receipt = intake.submit(report, evidence, idempotencyKey, recoverySecret);
+        return ResponseEntity.status(receipt.replayed() ? 200 : 201)
                 .cacheControl(CacheControl.noStore()).body(receipt);
     }
 

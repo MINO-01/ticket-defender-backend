@@ -20,12 +20,16 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
 public class FanReportIntakeService {
+    private static final Pattern IDEMPOTENCY_KEY = Pattern.compile(
+            "(?i)[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}");
     private final PublicEventLookup eventLookup;
     private final EvidenceImageValidator imageValidator;
     private final FanReportCrypto crypto;
@@ -36,21 +40,33 @@ public class FanReportIntakeService {
     @Value("${ticket-defender.fan-report.retention-days:90}")
     private int retentionDays;
 
-    public FanReportReceipt submit(FanReportSubmission submission, List<MultipartFile> files, String suppliedKey) {
-        if (suppliedKey == null || !suppliedKey.matches("[A-Za-z0-9._-]{16,128}"))
+    public FanReportReceipt submit(FanReportSubmission submission, List<MultipartFile> files,
+                                   String suppliedKey, String suppliedRecoverySecret) {
+        if (suppliedKey == null || !IDEMPOTENCY_KEY.matcher(suppliedKey).matches())
             throw new FanReportApiException(HttpStatus.BAD_REQUEST, "INVALID_IDEMPOTENCY_KEY");
+        byte[] recoveryKey;
+        try {
+            recoveryKey = crypto.recoveryKey(suppliedRecoverySecret);
+        } catch (IllegalArgumentException invalid) {
+            throw new FanReportApiException(HttpStatus.BAD_REQUEST, "INVALID_RECOVERY_SECRET");
+        }
+        String stableKey = suppliedKey.toLowerCase(Locale.ROOT);
         TenantEvent event = eventLookup.requireOpenEvent(submission.eventId());
         List<ValidatedImage> images = imageValidator.validate(files);
-        String keyDigest = crypto.idempotencyDigest(suppliedKey);
-        String requestDigest = crypto.requestDigest(submission, images);
+        String keyDigest = crypto.idempotencyDigest(stableKey);
+        String requestDigest = crypto.requestDigest(submission, images, recoveryKey);
         storage.checkReady();
 
         FanReport existing = reports.findByIdempotencyKeyDigest(keyDigest).orElse(null);
-        if (existing != null) return replay(existing, requestDigest);
+        if (existing != null) return replay(existing, requestDigest, stableKey, recoveryKey);
+        // Older reports used the server HMAC for this column and issued a non-recoverable random code.
+        // Reject the original key instead of creating a second report under the new digest format.
+        if (reports.findByIdempotencyKeyDigest(crypto.legacyIdempotencyDigest(suppliedKey)).isPresent())
+            throw new FanReportApiException(HttpStatus.CONFLICT, "LEGACY_RECOVERY_UNAVAILABLE");
 
         UUID id = UUID.randomUUID();
         String receipt = crypto.newReceiptNumber();
-        String code = crypto.newLookupCode();
+        String code = crypto.lookupCode(recoveryKey, stableKey, receipt);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         if (retentionDays < 1 || retentionDays > 3650)
             throw new IllegalStateException("Fan report retention days must be between 1 and 3650");
@@ -71,7 +87,7 @@ public class FanReportIntakeService {
             persistence.reserve(report, evidence);
         } catch (DataIntegrityViolationException conflict) {
             FanReport raced = reports.findByIdempotencyKeyDigest(keyDigest).orElse(null);
-            if (raced != null) return replay(raced, requestDigest);
+            if (raced != null) return replay(raced, requestDigest, stableKey, recoveryKey);
             throw new FanReportApiException(HttpStatus.SERVICE_UNAVAILABLE, "INTAKE_STORAGE_UNAVAILABLE");
         }
 
@@ -108,16 +124,18 @@ public class FanReportIntakeService {
         }
     }
 
-    private FanReportReceipt replay(FanReport report, String requestDigest) {
+    private FanReportReceipt replay(FanReport report, String requestDigest, String stableKey, byte[] recoveryKey) {
+        String code = crypto.lookupCode(recoveryKey, stableKey, report.getReceiptNumber());
+        if (!crypto.verifyLookup(report.getReceiptNumber(), code, report.getLookupSecretDigest()))
+            throw new FanReportApiException(HttpStatus.NOT_FOUND, "REPORT_NOT_FOUND");
         if (!report.getRequestDigest().equals(requestDigest))
             throw new FanReportApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT");
         if (report.getIntakeStatus() == FanReport.IntakeStatus.PENDING_STORAGE)
             throw new FanReportApiException(HttpStatus.CONFLICT, "INTAKE_IN_PROGRESS");
         if (report.getIntakeStatus() == FanReport.IntakeStatus.STORAGE_FAILED)
             throw new FanReportApiException(HttpStatus.SERVICE_UNAVAILABLE, "INTAKE_STORAGE_UNAVAILABLE");
-        // The lookup code is deliberately not persisted or reconstructed on replay.
-        return new FanReportReceipt(report.getFanReportId(), report.getReceiptNumber(), null,
-                report.getIntakeStatus(), report.getReceivedAt().atOffset(ZoneOffset.UTC));
+        return new FanReportReceipt(report.getFanReportId(), report.getReceiptNumber(), code,
+                report.getIntakeStatus(), report.getReceivedAt().atOffset(ZoneOffset.UTC), true);
     }
 
     public FanReportLookupResponse lookup(FanReportLookupRequest request) {

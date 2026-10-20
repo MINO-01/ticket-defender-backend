@@ -46,7 +46,26 @@ public class FanReportCrypto {
     }
 
     public String newReceiptNumber() { return "FR-" + randomToken(18); }
-    public String newLookupCode() { return randomToken(32); }
+    /** The recovery secret is independent of the idempotency key and must be retained by the client. */
+    public byte[] recoveryKey(String suppliedSecret) {
+        if (suppliedSecret == null || !suppliedSecret.matches("[A-Za-z0-9_-]{43}"))
+            throw new IllegalArgumentException("Invalid recovery secret");
+        byte[] decoded;
+        try {
+            decoded = Base64.getUrlDecoder().decode(suppliedSecret);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Invalid recovery secret");
+        }
+        if (decoded.length != 32 || !Base64.getUrlEncoder().withoutPadding().encodeToString(decoded).equals(suppliedSecret))
+            throw new IllegalArgumentException("Invalid recovery secret");
+        return decoded;
+    }
+
+    public String lookupCode(byte[] recoveryKey, String idempotencyKey, String receipt) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                hmacBytes(recoveryKey, "lookup-code",
+                        (idempotencyKey + "\u0000" + receipt).getBytes(StandardCharsets.UTF_8)));
+    }
 
     private String randomToken(int bytes) {
         byte[] value = new byte[bytes];
@@ -54,17 +73,20 @@ public class FanReportCrypto {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
     }
 
-    public String idempotencyDigest(String suppliedKey) { return hmac("idempotency", suppliedKey); }
-    public String lookupDigest(String receipt, String code) { return hmac("lookup", receipt + "\u0000" + code); }
+    public String idempotencyDigest(String suppliedKey) { return sha256("idempotency", suppliedKey); }
+    public String lookupDigest(String receipt, String code) { return sha256("lookup", receipt + "\u0000" + code); }
     public String actorDigest(String value) { return hmac("quota", value); }
+    String legacyIdempotencyDigest(String suppliedKey) { return hmac("idempotency", suppliedKey); }
+    String legacyLookupDigest(String receipt, String code) { return hmac("lookup", receipt + "\u0000" + code); }
 
     public boolean verifyLookup(String receipt, String code, String storedDigest) {
         byte[] actual = HexFormat.of().parseHex(lookupDigest(receipt, code));
+        byte[] legacy = HexFormat.of().parseHex(legacyLookupDigest(receipt, code));
         byte[] stored = HexFormat.of().parseHex(storedDigest);
-        return MessageDigest.isEqual(actual, stored);
+        return MessageDigest.isEqual(actual, stored) | MessageDigest.isEqual(legacy, stored);
     }
 
-    public String requestDigest(FanReportSubmission request, List<ValidatedImage> images) {
+    public String requestDigest(FanReportSubmission request, List<ValidatedImage> images, byte[] recoveryKey) {
         try {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             DataOutputStream out = new DataOutputStream(buffer);
@@ -83,7 +105,7 @@ public class FanReportCrypto {
                 field(out, image.mediaType());
                 out.writeLong(image.byteSize());
             }
-            return hmac("request", Base64.getEncoder().encodeToString(buffer.toByteArray()));
+            return HexFormat.of().formatHex(hmacBytes(recoveryKey, "request", buffer.toByteArray()));
         } catch (IOException impossible) {
             throw new IllegalStateException(impossible);
         }
@@ -100,12 +122,27 @@ public class FanReportCrypto {
     }
 
     private String hmac(String domain, String input) {
+        return HexFormat.of().formatHex(hmacBytes(key, domain, input.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private static String sha256(String domain, String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(domain.getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            return HexFormat.of().formatHex(digest.digest(input.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to calculate request digest", error);
+        }
+    }
+
+    private static byte[] hmacBytes(byte[] secret, String domain, byte[] input) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(key, "HmacSHA256"));
+            mac.init(new SecretKeySpec(secret, "HmacSHA256"));
             mac.update(domain.getBytes(StandardCharsets.US_ASCII));
             mac.update((byte) 0);
-            return HexFormat.of().formatHex(mac.doFinal(input.getBytes(StandardCharsets.UTF_8)));
+            return mac.doFinal(input);
         } catch (Exception error) {
             throw new IllegalStateException("Unable to calculate request digest", error);
         }

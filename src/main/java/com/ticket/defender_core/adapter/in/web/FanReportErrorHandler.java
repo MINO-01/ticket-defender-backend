@@ -11,7 +11,6 @@ import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import software.amazon.awssdk.core.exception.SdkException;
 
 import java.util.UUID;
@@ -30,17 +29,12 @@ public class FanReportErrorHandler {
         return problem(HttpStatus.BAD_REQUEST, "INVALID_REPORT_REQUEST");
     }
 
-    @ExceptionHandler(MaxUploadSizeExceededException.class)
-    ResponseEntity<ProblemDetail> tooLarge(Exception ignored) {
-        return problem(HttpStatus.PAYLOAD_TOO_LARGE, "REQUEST_TOO_LARGE");
-    }
-
     @ExceptionHandler({DataAccessException.class, SdkException.class, IllegalStateException.class})
     ResponseEntity<ProblemDetail> unavailable(Exception ignored) {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "INTAKE_STORAGE_UNAVAILABLE");
     }
 
-    private ResponseEntity<ProblemDetail> problem(HttpStatus status, String code) {
+    static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code) {
         ProblemDetail detail = ProblemDetail.forStatus(status);
         detail.setTitle(status.getReasonPhrase());
         detail.setProperty("code", code);

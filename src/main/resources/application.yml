@@ -38,6 +38,7 @@ spring:
 ticket-defender:
   fan-report:
     enabled: ${FAN_REPORT_ENABLED:false}
+    max-concurrent-intakes: ${FAN_REPORT_MAX_CONCURRENT_INTAKES:0}
     hmac-key-base64: ${FAN_REPORT_HMAC_KEY_BASE64:}
     retention-days: ${FAN_REPORT_RETENTION_DAYS:90}
     storage:

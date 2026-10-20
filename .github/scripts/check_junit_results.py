@@ -31,10 +31,10 @@ CORE_SKIPS = {
         5, "Runs in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.S3EvidenceObjectStorageMinioTest": (
-        3, "Requires an initialized private MinIO bucket; CI automation pending"
+        3, "Runs in the isolated MinIO and MySQL CI job"
     ),
     "com.ticket.defender_core.integration.FanReportMinioMySqlTest": (
-        3, "Requires MinIO and migrated MySQL; CI automation pending"
+        3, "Runs in the isolated MinIO and MySQL CI job"
     ),
 }
 
@@ -50,6 +50,12 @@ MYSQL_SUITES = {
     ),
     "track1-migration": (
         "com.ticket.defender_core.integration.Track1TenantMigrationMySqlTest", 1
+    ),
+    "minio-storage": (
+        "com.ticket.defender_core.integration.S3EvidenceObjectStorageMinioTest", 3
+    ),
+    "minio-mysql": (
+        "com.ticket.defender_core.integration.FanReportMinioMySqlTest", 3
     ),
 }
 

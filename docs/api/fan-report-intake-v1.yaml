@@ -1,0 +1,195 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender public fan report intake
+  version: 1.0.0
+  description: >-
+    Public intake is disabled by default. This contract creates a report only; it does not
+    run image analysis, reservation matching, fraud confirmation, Case creation or PDF issuance.
+servers:
+  - url: /
+paths:
+  /api/v1/fan-reports:
+    post:
+      operationId: submitFanReport
+      summary: Submit a fan report and optional private evidence images
+      description: >-
+        The eventId must identify an active, server registered, public-intake-enabled event.
+        tenantId, performanceRef and storage keys are never accepted from the client.
+        Generate a random UUIDv4 Idempotency-Key and an independent 32-byte CSPRNG secret
+        before the first request. Send the secret as unpadded base64url in Report-Recovery-Secret.
+        Retain both privately until the receipt and lookup code are safely saved. Identical
+        replay with both credentials returns 200 with the same receipt and lookupCode after
+        a lost first response. The idempotency key alone cannot recover either value.
+        Replay requires identical metadata and image bytes in the same order. A wrong recovery
+        secret returns the same 404 as an unknown report. Never log either header or the response code.
+        A completed replay remains available after public intake closes or object storage becomes unavailable.
+        New reports still require an open event and a reachable private bucket.
+        A pending same-key request returns 409; a failed request returns 503 and requires a new key.
+        A saturated intake admission limit returns 503 INTAKE_BUSY before multipart parsing.
+        A report stored before this recovery contract returns 409 on replay and needs a controlled
+        migration; it is never duplicated or returned with a null lookup code.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            format: uuid
+            minLength: 36
+            maxLength: 36
+            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        - in: header
+          name: Report-Recovery-Secret
+          required: true
+          description: Independent client-generated 32-byte CSPRNG value encoded as canonical unpadded base64url; never put it in a URL or general logs.
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+            pattern: '^[A-Za-z0-9_-]{43}$'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [report]
+              properties:
+                report: {$ref: '#/components/schemas/FanReportSubmission'}
+                evidence:
+                  type: array
+                  maxItems: 5
+                  items: {type: string, format: binary}
+            encoding:
+              report: {contentType: application/json}
+              evidence: {contentType: 'image/jpeg, image/png'}
+            examples:
+              metadata:
+                summary: Synthetic metadata; attach evidence parts separately
+                value:
+                  report:
+                    eventId: 33333333-3333-4333-8333-333333333333
+                    performanceAt: '2026-11-01T19:30:00'
+                    seatArea: VIP
+                    reportType: PREMIUM_RESALE
+                    description: A synthetic listing observation with no real personal data.
+                    listingUrl: https://example.test/listing
+                    platform: example
+                    seller: synthetic-name
+                    askingPrice: '450000'
+      responses:
+        '201':
+          description: New report accepted with its lookupCode
+          headers:
+            Cache-Control: {schema: {type: string, example: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FanReportReceipt'}
+        '200':
+          description: Identical completed replay with both original credentials; lookupCode is recovered
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FanReportReceipt'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/EventUnavailable'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedImage'}
+        '422': {$ref: '#/components/responses/InvalidImage'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/fan-reports/lookup:
+    post:
+      operationId: lookupFanReport
+      summary: Check only the report intake state
+      description: >-
+        The lookup code is sent in the JSON body, never in a URL. Incorrect receipt and
+        incorrect code both return the same 404. This endpoint does not return tenant, event,
+        reservation, account or object storage information.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FanReportLookupRequest'}
+      responses:
+        '200':
+          description: Limited receipt state
+          headers:
+            Cache-Control: {schema: {type: string, example: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FanReportLookupResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/ReportNotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+components:
+  schemas:
+    FanReportSubmission:
+      type: object
+      additionalProperties: false
+      required: [eventId, performanceAt, reportType, description]
+      properties:
+        eventId: {type: string, format: uuid, description: Server registered public event UUID}
+        performanceAt: {type: string, example: '2026-11-01T19:30:00', description: ISO local date-time entered by fan; not a verified performanceRef}
+        seatArea: {type: string, maxLength: 160}
+        reportType: {type: string, enum: [PREMIUM_RESALE, AUTOMATION_OFFER, FAKE_TICKET, OTHER]}
+        description: {type: string, minLength: 20, maxLength: 1000}
+        listingUrl: {type: string, maxLength: 2048, pattern: '^https?://'}
+        platform: {type: string, maxLength: 160}
+        seller: {type: string, maxLength: 160}
+        askingPrice: {type: string, pattern: '^[1-9][0-9]{0,11}$'}
+    FanReportReceipt:
+      type: object
+      additionalProperties: false
+      required: [fanReportId, receiptNumber, lookupCode, intakeStatus, receivedAt]
+      properties:
+        fanReportId: {type: string, format: uuid, description: Persistent Case source ID}
+        receiptNumber: {type: string}
+        lookupCode: {type: string, description: Secret status lookup code. Store privately; the server keeps only its digest.}
+        intakeStatus: {$ref: '#/components/schemas/IntakeStatus'}
+        receivedAt: {type: string, format: date-time, description: UTC server time}
+    FanReportLookupRequest:
+      type: object
+      additionalProperties: false
+      required: [receiptNumber, lookupCode]
+      properties:
+        receiptNumber: {type: string, maxLength: 40}
+        lookupCode: {type: string, maxLength: 64, writeOnly: true}
+    FanReportLookupResponse:
+      type: object
+      additionalProperties: false
+      required: [intakeStatus, receivedAt]
+      properties:
+        intakeStatus: {$ref: '#/components/schemas/IntakeStatus'}
+        receivedAt: {type: string, format: date-time}
+    IntakeStatus:
+      type: string
+      enum: [RECEIVED, ANALYSIS_PENDING, ANALYSIS_FAILED, UNVERIFIABLE]
+      description: >-
+        RECEIVED means intake only. Other states are reserved for later server-owned workflow;
+        this API never starts analysis. PENDING_STORAGE and STORAGE_FAILED are internal only.
+    Problem:
+      type: object
+      required: [type, title, status, code, requestId]
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        code: {type: string}
+        requestId: {type: string}
+  responses:
+    InvalidRequest: {description: Invalid structure or fields, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    EventUnavailable: {description: Event missing, inactive, or closed to public intake, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    ReportNotFound: {description: Receipt or secret invalid, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Conflict: {description: Same key with different content or in-progress request, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    TooLarge: {description: File or request too large, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    UnsupportedImage: {description: Unsupported or mismatched image type, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    InvalidImage: {description: Empty, corrupt, or oversized image dimensions, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    RateLimited:
+      description: Shared MySQL request quota exceeded
+      headers:
+        Retry-After: {schema: {type: integer, example: 60}}
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Unavailable: {description: Database or private object store unavailable, or intake concurrency saturated with code INTAKE_BUSY; no new success receipt, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}

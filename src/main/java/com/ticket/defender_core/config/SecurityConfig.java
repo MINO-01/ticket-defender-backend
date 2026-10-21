@@ -50,6 +50,22 @@ public class SecurityConfig {
     }
 
     @Bean
+    @Order(2)
+    SecurityFilterChain publicFanReportSecurity(HttpSecurity http,
+            @Value("${ticket-defender.fan-report.enabled:false}") boolean enabled) throws Exception {
+        return common(http)
+                .securityMatcher("/api/v1/fan-reports", "/api/v1/fan-reports/lookup")
+                .authorizeHttpRequests(requests -> {
+                    if (enabled) {
+                        requests.requestMatchers(HttpMethod.POST, "/api/v1/fan-reports",
+                                "/api/v1/fan-reports/lookup").permitAll();
+                    }
+                    requests.anyRequest().denyAll();
+                })
+                .build();
+    }
+
+    @Bean
     @Order(3)
     SecurityFilterChain adminSecurity(HttpSecurity http,
             @Qualifier("adminJwtDecoder") JwtDecoder decoder) throws Exception {

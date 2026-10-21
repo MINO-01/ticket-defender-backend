@@ -1,0 +1,169 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java21-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+      - name: Build and run default regression tests
+        run: bash ./gradlew build --rerun-tasks --no-daemon
+      - name: Check skipped tests and reasons
+        run: python3 .github/scripts/check_junit_results.py core
+
+  mysql8-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+        env:
+          MYSQL_DATABASE: td_issue32_ci
+          MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
+        ports:
+          - 13307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      TD_ISSUE32_MYSQL_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_ci?useSSL=false&allowPublicKeyRetrieval=true
+      TD_ISSUE32_MYSQL_USER: root
+      TD_ISSUE32_MYSQL_PASSWORD: synthetic_ci_only_password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+      - name: Apply migration to fresh MySQL 8 schema
+        run: bash ./gradlew test --tests '*FanReportMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm migration test ran
+        run: python3 .github/scripts/check_junit_results.py mysql-migration
+      - name: Validate JPA schema and MySQL behavior
+        run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm schema tests ran
+        run: python3 .github/scripts/check_junit_results.py mysql-schema
+      - name: Verify Track 1 concurrent MySQL writes
+        env:
+          TD_MYSQL_MIGRATION_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_ci?useSSL=false&allowPublicKeyRetrieval=true
+          TD_MYSQL_MIGRATION_USER: root
+          TD_MYSQL_MIGRATION_PASSWORD: synthetic_ci_only_password
+        run: bash ./gradlew test --tests '*Track1ConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 1 concurrency test ran
+        run: python3 .github/scripts/check_junit_results.py track1-concurrency
+
+  mysql8-track1-legacy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+        env:
+          MYSQL_DATABASE: td_track1_ci
+          MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
+        ports:
+          - 13307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      TD_MYSQL_MIGRATION_URL: jdbc:mysql://127.0.0.1:13307/td_track1_ci?useSSL=false&allowPublicKeyRetrieval=true
+      TD_MYSQL_MIGRATION_USER: root
+      TD_MYSQL_MIGRATION_PASSWORD: synthetic_ci_only_password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+      - name: Verify Track 1 legacy migration
+        run: bash ./gradlew test --tests '*Track1TenantMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 1 migration test ran
+        run: python3 .github/scripts/check_junit_results.py track1-migration
+
+  minio-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      mysql:
+        image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+        env:
+          MYSQL_DATABASE: td_issue32_minio_ci
+          MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
+        ports:
+          - 13307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      TD_ISSUE32_MYSQL_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_minio_ci?useSSL=false&allowPublicKeyRetrieval=true
+      TD_ISSUE32_MYSQL_USER: root
+      TD_ISSUE32_MYSQL_PASSWORD: synthetic_ci_only_password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+      - name: Build pinned MinIO test image
+        run: docker build --file .github/docker/minio-ci.Dockerfile --tag td-issue32-minio-ci:local .
+      - name: Start private MinIO test bucket
+        run: bash .github/scripts/start_minio_ci.sh
+      - name: Apply migration to fresh MySQL 8 schema
+        run: bash ./gradlew test --tests '*FanReportMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm migration test ran
+        run: python3 .github/scripts/check_junit_results.py mysql-migration
+      - name: Validate JPA schema
+        run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm schema tests ran
+        run: python3 .github/scripts/check_junit_results.py mysql-schema
+      - name: Verify private MinIO object storage
+        run: bash ./gradlew test --tests '*S3EvidenceObjectStorageMinioTest' --rerun-tasks --no-daemon
+      - name: Confirm all object storage tests ran
+        run: python3 .github/scripts/check_junit_results.py minio-storage
+      - name: Verify MinIO and MySQL recovery
+        run: bash ./gradlew test --tests '*FanReportMinioMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm all recovery tests ran
+        run: python3 .github/scripts/check_junit_results.py minio-mysql
+      - name: Remove only this job's MinIO container
+        if: always()
+        run: docker rm -f td-issue32-ci-minio 2>/dev/null || true

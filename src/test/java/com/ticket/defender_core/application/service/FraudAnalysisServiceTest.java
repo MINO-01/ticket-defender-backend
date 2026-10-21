@@ -17,7 +17,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.CannotAcquireLockException;
 
+import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -137,6 +140,101 @@ class FraudAnalysisServiceTest {
         assertEquals(FraudAnalysisStatus.COMPLETED, status);
         verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
                 .persistDetectedAudits(any(MacroAnalysisResponse.class), any(MacroAnalysisRequest.class), eq(scope));
+    }
+
+    @Test
+    void deadlockRetriesOnlyPersistenceAndDoesNotRepeatAnalysis() {
+        stubCompletedAnalysis();
+        doThrow(lockFailure(1213, "40001")).doNothing().when(macroAuditPersistenceService)
+                .persistDetectedAudits(any(), any(), eq(scope));
+
+        assertEquals(FraudAnalysisStatus.COMPLETED, fraudAnalysisService.processAgentData(retryInput()));
+
+        verify(fastApiAdapter).requestMacroAnalysis(any());
+        verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
+                .persistDetectedAudits(any(), any(), eq(scope));
+    }
+
+    @Test
+    void mysqlLockWaitTimeoutAlsoRetriesPersistence() {
+        stubCompletedAnalysis();
+        doThrow(lockFailure(1205, "40001")).doNothing().when(macroAuditPersistenceService)
+                .persistDetectedAudits(any(), any(), eq(scope));
+
+        assertEquals(FraudAnalysisStatus.COMPLETED, fraudAnalysisService.processAgentData(retryInput()));
+        verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
+                .persistDetectedAudits(any(), any(), eq(scope));
+        verify(fastApiAdapter).requestMacroAnalysis(any());
+    }
+
+    @Test
+    void lockWaitTimeoutWithWrongSqlStateIsNotRetried() {
+        stubCompletedAnalysis();
+        CannotAcquireLockException failure = lockFailure(1205, "HY000");
+        doThrow(failure).when(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+
+        assertSame(failure, assertThrows(CannotAcquireLockException.class,
+                () -> fraudAnalysisService.processAgentData(retryInput())));
+        verify(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+    }
+
+    @Test
+    void unrelatedLockErrorIsNotRetried() {
+        stubCompletedAnalysis();
+        CannotAcquireLockException failure = lockFailure(1049, "40001");
+        doThrow(failure).when(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+
+        assertSame(failure, assertThrows(CannotAcquireLockException.class,
+                () -> fraudAnalysisService.processAgentData(retryInput())));
+        verify(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+    }
+
+    @Test
+    void repeatedDeadlocksFailAfterThreeTransactions() {
+        stubCompletedAnalysis();
+        CannotAcquireLockException failure = lockFailure(1213, "40001");
+        doThrow(failure).when(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+
+        assertSame(failure, assertThrows(CannotAcquireLockException.class,
+                () -> fraudAnalysisService.processAgentData(retryInput())));
+        verify(macroAuditPersistenceService, org.mockito.Mockito.times(3))
+                .persistDetectedAudits(any(), any(), eq(scope));
+        verify(fastApiAdapter).requestMacroAnalysis(any());
+    }
+
+    @Test
+    void interruptedRetryDoesNotReturnSuccess() {
+        stubCompletedAnalysis();
+        doThrow(lockFailure(1213, "40001")).when(macroAuditPersistenceService)
+                .persistDetectedAudits(any(), any(), eq(scope));
+        Thread.currentThread().interrupt();
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> fraudAnalysisService.processAgentData(retryInput()));
+            org.junit.jupiter.api.Assertions.assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+        verify(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+    }
+
+    private void stubCompletedAnalysis() {
+        given(fastApiAdapter.requestMacroAnalysis(any(MacroAnalysisRequest.class)))
+                .willAnswer(invocation -> completedResponse(
+                        ((MacroAnalysisRequest) invocation.getArgument(0)).requestId()));
+    }
+
+    private AgentAnalysisRequest retryInput() {
+        return new AgentAnalysisRequest(List.of(
+                new AgentAnalysisRequest.TicketData("uid-1", "res-1", "event-1",
+                        PAYMENT_HASH, null, DEVICE_HASH, null),
+                new AgentAnalysisRequest.TicketData("uid-2", "res-2", "event-1",
+                        PAYMENT_HASH, ADDRESS_HASH, null, IP_HASH)));
+    }
+
+    private CannotAcquireLockException lockFailure(int errorCode, String sqlState) {
+        return new CannotAcquireLockException("Synthetic MySQL lock error",
+                new SQLException("Synthetic lock error", sqlState, errorCode));
     }
 
     /** 분석을 완료하지 못하면 결과를 저장하지 않습니다. */

@@ -158,18 +158,30 @@ class FraudAnalysisServiceTest {
     @Test
     void mysqlLockWaitTimeoutAlsoRetriesPersistence() {
         stubCompletedAnalysis();
-        doThrow(lockFailure(1205, "HY000")).doNothing().when(macroAuditPersistenceService)
+        doThrow(lockFailure(1205, "40001")).doNothing().when(macroAuditPersistenceService)
                 .persistDetectedAudits(any(), any(), eq(scope));
 
         assertEquals(FraudAnalysisStatus.COMPLETED, fraudAnalysisService.processAgentData(retryInput()));
         verify(macroAuditPersistenceService, org.mockito.Mockito.times(2))
                 .persistDetectedAudits(any(), any(), eq(scope));
+        verify(fastApiAdapter).requestMacroAnalysis(any());
+    }
+
+    @Test
+    void lockWaitTimeoutWithWrongSqlStateIsNotRetried() {
+        stubCompletedAnalysis();
+        CannotAcquireLockException failure = lockFailure(1205, "HY000");
+        doThrow(failure).when(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
+
+        assertSame(failure, assertThrows(CannotAcquireLockException.class,
+                () -> fraudAnalysisService.processAgentData(retryInput())));
+        verify(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
     }
 
     @Test
     void unrelatedLockErrorIsNotRetried() {
         stubCompletedAnalysis();
-        CannotAcquireLockException failure = lockFailure(1049, "42000");
+        CannotAcquireLockException failure = lockFailure(1049, "40001");
         doThrow(failure).when(macroAuditPersistenceService).persistDetectedAudits(any(), any(), eq(scope));
 
         assertSame(failure, assertThrows(CannotAcquireLockException.class,

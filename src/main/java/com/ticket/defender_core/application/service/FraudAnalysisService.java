@@ -104,7 +104,7 @@ public class FraudAnalysisService {
                     if (candidate.getErrorCode() == MYSQL_DEADLOCK
                             && "40001".equals(candidate.getSQLState())) return MYSQL_DEADLOCK;
                     if (candidate.getErrorCode() == MYSQL_LOCK_WAIT_TIMEOUT
-                            && "HY000".equals(candidate.getSQLState())) return MYSQL_LOCK_WAIT_TIMEOUT;
+                            && "40001".equals(candidate.getSQLState())) return MYSQL_LOCK_WAIT_TIMEOUT;
                 }
             }
         }

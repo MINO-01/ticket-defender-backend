@@ -1,0 +1,238 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender W04 Case foundation API
+  version: 1.0.0
+  description: Human investigation records only. This API does not approve reports or issue PDFs.
+security:
+  - adminBearer: []
+paths:
+  /api/v1/cases:
+    post:
+      summary: Open a Case with server-verified sources
+      x-roles: [ANALYST, REVIEWER]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCase' }
+      responses:
+        '201': { description: Created or an authorized identical replay, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    get:
+      summary: List Cases in one granted event
+      description: ANALYST sees only Cases they created or were assigned to. REVIEWER and TENANT_ADMIN see granted-event Cases.
+      x-roles: [ANALYST, REVIEWER, TENANT_ADMIN]
+      parameters:
+        - { name: eventId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CaseStatus' } }
+        - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Scoped page, content: { application/json: { schema: { $ref: '#/components/schemas/CasePage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+  /api/v1/cases/{caseId}:
+    get:
+      summary: Read a Case in the current membership scope
+      x-roles: [ANALYST, REVIEWER, TENANT_ADMIN]
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '200': { description: Case, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+  /api/v1/cases/{caseId}/sources:
+    get:
+      summary: Read server-verified source references
+      x-roles: [ANALYST, REVIEWER, TENANT_ADMIN]
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '200': { description: Stored source references, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CaseSource' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+  /api/v1/cases/{caseId}/activities:
+    get:
+      summary: Read append-only Case activities
+      x-roles: [ANALYST, REVIEWER, TENANT_ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Activity page, content: { application/json: { schema: { $ref: '#/components/schemas/ActivityPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+  /api/v1/cases/{caseId}/transitions:
+    post:
+      summary: Execute one of the five W04 state transitions
+      x-roles: [REVIEWER]
+      parameters: [{ $ref: '#/components/parameters/CaseId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Transition' } } }
+      responses:
+        '200': { description: Updated or identical replay, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+  /api/v1/cases/{caseId}/assignee:
+    put:
+      summary: Assign an active and event-granted ANALYST or REVIEWER membership
+      x-roles: [REVIEWER]
+      parameters: [{ $ref: '#/components/parameters/CaseId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Assign' } } }
+      responses:
+        '200': { description: Updated or identical replay, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/Hidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    CaseId: { name: caseId, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated random UUID version 4. Reuse only for an identical operation and body.
+      schema: { type: string, format: uuid }
+  schemas:
+    CaseStatus:
+      type: string
+      enum: [OPEN, TRIAGED, IN_REVIEW, NEEDS_EVIDENCE, READY_FOR_APPROVAL, APPROVED_FOR_REPORT, DISMISSED, CLOSED]
+      description: W04 commands cannot enter approval, closure or reopen states.
+    GraphCluster:
+      type: object
+      required: [analysisRequestId, clusterId]
+      properties:
+        analysisRequestId: { type: string, format: uuid }
+        clusterId: { type: string, maxLength: 191 }
+    CreateCase:
+      type: object
+      required: [eventId, type, reason]
+      properties:
+        eventId: { type: string, format: uuid }
+        type: { type: string, enum: [GRAPH_CLUSTER, FAN_REPORT, COMBINED] }
+        graphClusters: { type: array, items: { $ref: '#/components/schemas/GraphCluster' } }
+        fanReportIds: { type: array, items: { type: string, format: uuid } }
+        evidenceIds: { type: array, items: { type: string, format: uuid } }
+        reason: { type: string, minLength: 3, maxLength: 2000 }
+        relatedCaseId: { type: string, format: uuid }
+        relationReason: { type: string, minLength: 3, maxLength: 2000 }
+      description: A follow-up requires both relatedCaseId and relationReason. Sources must be verified in the same event.
+    Transition:
+      type: object
+      required: [toStatus, expectedCaseVersion, reason]
+      properties:
+        toStatus: { type: string, enum: [TRIAGED, IN_REVIEW, NEEDS_EVIDENCE, DISMISSED] }
+        expectedCaseVersion: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 3, maxLength: 2000 }
+        classification: { type: string, maxLength: 160 }
+        unassignedReason: { type: string, maxLength: 500 }
+        missingEvidence: { type: string, maxLength: 500 }
+        requestedAction: { type: string, maxLength: 500 }
+        unavailableReason: { type: string, maxLength: 500 }
+        dismissalBasis: { type: string, enum: [EVIDENCE_REFUTES_ALLEGATION, NO_VIOLATION_FOUND_AFTER_REVIEW] }
+      description: Fields required depend on the source and target state; see case-w04-contract.md.
+    Assign:
+      type: object
+      required: [assigneeMembershipId, expectedCaseVersion, reason]
+      properties:
+        assigneeMembershipId: { type: string, format: uuid }
+        expectedCaseVersion: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 3, maxLength: 2000 }
+    Case:
+      type: object
+      required: [caseId, eventId, type, status, caseVersion, evidenceRevision, createdAt, updatedAt]
+      properties:
+        caseId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        type: { type: string, enum: [GRAPH_CLUSTER, FAN_REPORT, COMBINED] }
+        status: { $ref: '#/components/schemas/CaseStatus' }
+        caseVersion: { type: integer }
+        evidenceRevision: { type: integer }
+        createdByMembershipId: { type: string, format: uuid }
+        assigneeMembershipId: { type: [string, 'null'], format: uuid }
+        relatedCaseId: { type: [string, 'null'], format: uuid }
+        relationReason: { type: [string, 'null'] }
+        classification: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CasePage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Case' } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasNext: { type: boolean }
+    CaseSource:
+      type: object
+      description: STORED_CLUSTER_EVIDENCE represents persisted members only; no object key or tenant ID is exposed.
+      properties:
+        sourceReferenceId: { type: string, format: uuid }
+        sourceType: { type: string, enum: [STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET] }
+        analysisRequestId: { type: [string, 'null'] }
+        clusterId: { type: [string, 'null'] }
+        storedMemberCount: { type: [integer, 'null'] }
+        analysisAlgorithm: { type: [string, 'null'] }
+        analysisAlgorithmVersion: { type: [string, 'null'] }
+        analysisCompletedAt: { type: [string, 'null'], format: date-time }
+        riskScore: { type: [number, 'null'] }
+        fanReportId: { type: [string, 'null'], format: uuid }
+        evidenceId: { type: [string, 'null'], format: uuid }
+        linkedAt: { type: string, format: date-time }
+    ActivityPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CaseActivity' } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasNext: { type: boolean }
+    CaseActivity:
+      type: object
+      properties:
+        activityId: { type: string, format: uuid }
+        eventType: { type: string }
+        actorMembershipId: { type: string, format: uuid }
+        actorRole: { type: string, enum: [ANALYST, REVIEWER] }
+        reason: { type: string }
+        fromStatus: { type: [string, 'null'] }
+        toStatus: { type: [string, 'null'] }
+        versionBefore: { type: [integer, 'null'] }
+        versionAfter: { type: integer }
+        evidenceRevision: { type: integer }
+        sourceReferenceId: { type: [string, 'null'], format: uuid }
+        previousAssigneeMembershipId: { type: [string, 'null'], format: uuid }
+        newAssigneeMembershipId: { type: [string, 'null'], format: uuid }
+        occurredAt: { type: string, format: date-time }
+    Problem:
+      type: object
+      properties:
+        status: { type: integer }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+  responses:
+    Invalid: { description: Malformed request, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Unauthorized: { description: Missing or invalid administrator JWT }
+    Forbidden: { description: Current scope has insufficient role, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Hidden: { description: Resource absent or outside current tenant/event/analyst scope, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Conflict: { description: State, version, duplicate source or idempotency conflict, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Unprocessable: { description: Source unavailable or business validation failed, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Unavailable: { description: Database or private object storage unavailable, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }

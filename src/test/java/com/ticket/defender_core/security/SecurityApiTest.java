@@ -252,7 +252,8 @@ class SecurityApiTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
                 .andExpect(status().isConflict())
                 .andExpect(content().string(not(containsString("%PDF-"))));
-        mvc.perform(get("/api/v1/cases").header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
+        mvc.perform(get("/api/v1/cases/unimplemented/route")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/error").header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
                 .andExpect(status().isForbidden());

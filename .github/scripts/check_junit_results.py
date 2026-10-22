@@ -31,10 +31,16 @@ CORE_SKIPS = {
         5, "Runs in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.S3EvidenceObjectStorageMinioTest": (
-        3, "Runs in the isolated MinIO and MySQL CI job"
+        4, "Runs in the isolated MinIO and MySQL CI job"
     ),
     "com.ticket.defender_core.integration.FanReportMinioMySqlTest": (
         3, "Runs in the isolated MinIO and MySQL CI job"
+    ),
+    "com.ticket.defender_core.integration.CaseMigrationMySqlTest": (
+        1, "Runs after W02 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseConcurrentMySqlTest": (
+        2, "Runs after W04 migration on the isolated MySQL CI schema"
     ),
 }
 
@@ -45,6 +51,12 @@ MYSQL_SUITES = {
     "mysql-schema": (
         "com.ticket.defender_core.integration.FanReportSchemaValidateMySqlTest", 5
     ),
+    "case-migration": (
+        "com.ticket.defender_core.integration.CaseMigrationMySqlTest", 1
+    ),
+    "case-concurrency": (
+        "com.ticket.defender_core.integration.CaseConcurrentMySqlTest", 2
+    ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1
     ),
@@ -52,7 +64,7 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.Track1TenantMigrationMySqlTest", 1
     ),
     "minio-storage": (
-        "com.ticket.defender_core.integration.S3EvidenceObjectStorageMinioTest", 3
+        "com.ticket.defender_core.integration.S3EvidenceObjectStorageMinioTest", 4
     ),
     "minio-mysql": (
         "com.ticket.defender_core.integration.FanReportMinioMySqlTest", 3

@@ -6,26 +6,37 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 
 public class S3EvidenceObjectStorage implements EvidenceObjectStorage {
-    private final S3Client client;
+    private final S3Client writeClient;
+    private final S3Client headClient;
     private final String bucket;
 
     public S3EvidenceObjectStorage(S3Client client, String bucket) {
-        this.client = client;
+        this(client, client, bucket);
+    }
+
+    public S3EvidenceObjectStorage(S3Client writeClient, S3Client headClient, String bucket) {
+        this.writeClient = writeClient;
+        this.headClient = headClient;
         this.bucket = bucket;
     }
 
     @Override
     public void checkReady() {
+        S3Client client = writeClient != null ? writeClient : headClient;
+        if (client == null) throw new IllegalStateException("Private storage credentials are not configured");
         client.headBucket(HeadBucketRequest.builder().bucket(bucket).build());
     }
 
     @Override
     public String put(String key, ValidatedImage image) {
-        PutObjectResponse response = client.putObject(PutObjectRequest.builder()
+        if (writeClient == null) throw new IllegalStateException("Private storage write is disabled");
+        PutObjectResponse response = writeClient.putObject(PutObjectRequest.builder()
                         .bucket(bucket).key(key).contentType(image.mediaType())
                         .ifNoneMatch("*").build(),
                 RequestBody.fromBytes(image.bytes()));
@@ -35,6 +46,16 @@ public class S3EvidenceObjectStorage implements EvidenceObjectStorage {
     @Override
     public void delete(String key, String version) {
         // The dedicated intake bucket is required to have versioning disabled.
-        client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+        if (writeClient == null) throw new IllegalStateException("Private storage write is disabled");
+        writeClient.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+    }
+
+    @Override
+    public ObjectMetadata head(String key) {
+        if (headClient == null) throw new IllegalStateException("Private storage metadata credentials are not configured");
+        HeadObjectResponse response = headClient.headObject(HeadObjectRequest.builder()
+                .bucket(bucket).key(key).build());
+        String marker = response.versionId() == null ? response.eTag() : response.versionId();
+        return new ObjectMetadata(response.contentLength(), response.contentType(), marker);
     }
 }

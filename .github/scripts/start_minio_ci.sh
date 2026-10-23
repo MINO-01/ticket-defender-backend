@@ -26,12 +26,16 @@ root_user="td32root$(openssl rand -hex 8)"
 root_password="$(openssl rand -hex 24)"
 app_user="td32app$(openssl rand -hex 8)"
 app_password="$(openssl rand -hex 24)"
+head_user="td32head$(openssl rand -hex 8)"
+head_password="$(openssl rand -hex 24)"
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf '::add-mask::%s\n' "$root_user"
   printf '::add-mask::%s\n' "$root_password"
   printf '::add-mask::%s\n' "$app_user"
   printf '::add-mask::%s\n' "$app_password"
+  printf '::add-mask::%s\n' "$head_user"
+  printf '::add-mask::%s\n' "$head_password"
 fi
 
 started=false
@@ -68,17 +72,23 @@ if [[ "$ready" != true ]]; then
 fi
 
 docker cp .github/scripts/minio-ci-policy.json "$container:/tmp/minio-ci-policy.json" >/dev/null
+docker cp .github/scripts/minio-ci-head-policy.json "$container:/tmp/minio-ci-head-policy.json" >/dev/null
 docker exec "$container" mc mb "ci/$bucket" >/dev/null
 docker exec "$container" mc anonymous set none "ci/$bucket" >/dev/null
 docker exec "$container" mc admin policy create ci td-issue32-ci /tmp/minio-ci-policy.json >/dev/null
 docker exec "$container" mc admin user add ci "$app_user" "$app_password" >/dev/null
 docker exec "$container" mc admin policy attach ci td-issue32-ci --user "$app_user" >/dev/null
+docker exec "$container" mc admin policy create ci td-issue32-ci-head /tmp/minio-ci-head-policy.json >/dev/null
+docker exec "$container" mc admin user add ci "$head_user" "$head_password" >/dev/null
+docker exec "$container" mc admin policy attach ci td-issue32-ci-head --user "$head_user" >/dev/null
 
 {
   printf 'TD_ISSUE32_MINIO_ENDPOINT=http://127.0.0.1:19000\n'
   printf 'TD_ISSUE32_MINIO_BUCKET=%s\n' "$bucket"
   printf 'TD_ISSUE32_MINIO_ACCESS_KEY=%s\n' "$app_user"
   printf 'TD_ISSUE32_MINIO_SECRET_KEY=%s\n' "$app_password"
+  printf 'TD_ISSUE32_MINIO_HEAD_ACCESS_KEY=%s\n' "$head_user"
+  printf 'TD_ISSUE32_MINIO_HEAD_SECRET_KEY=%s\n' "$head_password"
   printf 'TD_ISSUE32_MINIO_ADMIN_ACCESS_KEY=%s\n' "$root_user"
   printf 'TD_ISSUE32_MINIO_ADMIN_SECRET_KEY=%s\n' "$root_password"
 } >> "$output_file"

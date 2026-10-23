@@ -43,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class S3EvidenceObjectStorageMinioTest {
     private final List<String> keys = new ArrayList<>();
     private S3Client app;
+    private S3Client head;
     private S3Client admin;
     private S3EvidenceObjectStorage storage;
     private String endpoint;
@@ -55,9 +56,11 @@ class S3EvidenceObjectStorageMinioTest {
         endpoint = required("TD_ISSUE32_MINIO_ENDPOINT");
         bucket = required("TD_ISSUE32_MINIO_BUCKET");
         app = client(required("TD_ISSUE32_MINIO_ACCESS_KEY"), required("TD_ISSUE32_MINIO_SECRET_KEY"));
+        head = client(required("TD_ISSUE32_MINIO_HEAD_ACCESS_KEY"),
+                required("TD_ISSUE32_MINIO_HEAD_SECRET_KEY"));
         admin = client(required("TD_ISSUE32_MINIO_ADMIN_ACCESS_KEY"),
                 required("TD_ISSUE32_MINIO_ADMIN_SECRET_KEY"));
-        storage = new S3EvidenceObjectStorage(app, bucket);
+        storage = new S3EvidenceObjectStorage(app, head, bucket);
         otherBucket = bucket + "-other";
         try {
             admin.headBucket(HeadBucketRequest.builder().bucket(otherBucket).build());
@@ -78,6 +81,7 @@ class S3EvidenceObjectStorageMinioTest {
             admin.close();
         }
         if (app != null) app.close();
+        if (head != null) head.close();
     }
 
     @Test
@@ -141,6 +145,22 @@ class S3EvidenceObjectStorageMinioTest {
         storage.delete(key, null);
         assertThatThrownBy(() -> admin.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build()))
                 .isInstanceOfSatisfying(S3Exception.class, error -> assertThat(error.statusCode()).isEqualTo(404));
+    }
+
+    @Test
+    void privateHeadReturnsStoredMetadataAndMissingObjectFails() throws Exception {
+        String key = key();
+        byte[] bytes = image("png");
+        String marker = storage.put(key, validated(bytes, "image/png"));
+        var found = storage.head(key);
+        assertThat(found.byteSize()).isEqualTo(bytes.length);
+        assertThat(found.mediaType()).isEqualTo("image/png");
+        assertThat(found.opaqueMarker()).isEqualTo(marker);
+        assertThatThrownBy(() -> app.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build()))
+                .isInstanceOfSatisfying(S3Exception.class, error -> assertThat(error.statusCode()).isEqualTo(403));
+        storage.delete(key, marker);
+        assertThatThrownBy(() -> storage.head(key)).isInstanceOfSatisfying(S3Exception.class,
+                error -> assertThat(error.statusCode()).isEqualTo(404));
     }
 
     private String key() {

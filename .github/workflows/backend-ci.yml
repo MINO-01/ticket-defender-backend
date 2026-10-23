@@ -64,10 +64,18 @@ jobs:
         run: bash ./gradlew test --tests '*FanReportMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm migration test ran
         run: python3 .github/scripts/check_junit_results.py mysql-migration
+      - name: Apply W04 Case migration to existing MySQL data
+        run: bash ./gradlew test --tests '*CaseMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W04 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-migration
       - name: Validate JPA schema and MySQL behavior
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
         run: python3 .github/scripts/check_junit_results.py mysql-schema
+      - name: Verify W04 optimistic locking on MySQL
+        run: bash ./gradlew test --tests '*CaseConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W04 concurrency test ran
+        run: python3 .github/scripts/check_junit_results.py case-concurrency
       - name: Verify Track 1 concurrent MySQL writes
         env:
           TD_MYSQL_MIGRATION_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_ci?useSSL=false&allowPublicKeyRetrieval=true
@@ -152,6 +160,10 @@ jobs:
         run: bash ./gradlew test --tests '*FanReportMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm migration test ran
         run: python3 .github/scripts/check_junit_results.py mysql-migration
+      - name: Apply W04 Case migration to existing MySQL data
+        run: bash ./gradlew test --tests '*CaseMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W04 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-migration
       - name: Validate JPA schema
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran

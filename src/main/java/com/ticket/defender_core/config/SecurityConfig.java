@@ -75,6 +75,12 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/track1/clusters",
                                 "/api/v1/admin/track1/clusters/detail").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/cases",
+                                "/api/v1/cases/*/transitions").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/cases",
+                                "/api/v1/cases/*", "/api/v1/cases/*/sources",
+                                "/api/v1/cases/*/activities").authenticated()
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/cases/*/assignee").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))
                 .build();

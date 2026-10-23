@@ -25,15 +25,21 @@ public class FanReportStorageConfig {
             @Value("${ticket-defender.fan-report.storage.region:us-east-1}") String region,
             @Value("${ticket-defender.fan-report.storage.bucket:}") String bucket,
             @Value("${ticket-defender.fan-report.storage.access-key:}") String accessKey,
-            @Value("${ticket-defender.fan-report.storage.secret-key:}") String secretKey) {
-        if (!enabled) return new EvidenceObjectStorage() {
+            @Value("${ticket-defender.fan-report.storage.secret-key:}") String secretKey,
+            @Value("${ticket-defender.fan-report.storage.head-access-key:}") String headAccessKey,
+            @Value("${ticket-defender.fan-report.storage.head-secret-key:}") String headSecretKey) {
+        boolean headConfigured = !headAccessKey.isBlank() && !headSecretKey.isBlank();
+        if (headAccessKey.isBlank() != headSecretKey.isBlank())
+            throw new IllegalStateException("Private storage metadata credentials are incomplete");
+        if (!enabled && !headConfigured) return new EvidenceObjectStorage() {
             @Override public void checkReady() { throw new IllegalStateException("Public intake is disabled"); }
             @Override public String put(String key, com.ticket.defender_core.application.service.ValidatedImage image) {
                 throw new IllegalStateException("Public intake is disabled");
             }
             @Override public void delete(String key, String version) { throw new IllegalStateException("Public intake is disabled"); }
         };
-        if (endpoint.isBlank() || bucket.isBlank() || accessKey.isBlank() || secretKey.isBlank())
+        if (endpoint.isBlank() || bucket.isBlank()
+                || (enabled && (accessKey.isBlank() || secretKey.isBlank())))
             throw new IllegalStateException("Private fan report storage configuration is incomplete");
         URI uri = URI.create(endpoint);
         if (!"http".equals(uri.getScheme()) && !"https".equals(uri.getScheme()))
@@ -41,12 +47,17 @@ public class FanReportStorageConfig {
         if ("http".equals(uri.getScheme()) && !"127.0.0.1".equals(uri.getHost())
                 && !"localhost".equalsIgnoreCase(uri.getHost()))
             throw new IllegalStateException("Non-loopback object storage endpoint must use HTTPS");
-        S3Client client = S3Client.builder()
+        S3Client writeClient = enabled ? client(uri, region, accessKey, secretKey) : null;
+        S3Client headClient = headConfigured ? client(uri, region, headAccessKey, headSecretKey) : null;
+        return new S3EvidenceObjectStorage(writeClient, headClient, bucket);
+    }
+
+    private static S3Client client(URI uri, String region, String accessKey, String secretKey) {
+        return S3Client.builder()
                 .endpointOverride(uri).region(Region.of(region)).forcePathStyle(true)
                 .overrideConfiguration(ClientOverrideConfiguration.builder()
                         .apiCallTimeout(Duration.ofMinutes(2)).apiCallAttemptTimeout(Duration.ofMinutes(1)).build())
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
                 .build();
-        return new S3EvidenceObjectStorage(client, bucket);
     }
 }

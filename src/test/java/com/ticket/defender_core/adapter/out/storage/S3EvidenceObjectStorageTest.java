@@ -7,6 +7,8 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 
@@ -15,6 +17,24 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class S3EvidenceObjectStorageTest {
+    @Test
+    void privateMetadataUsesDedicatedReadClientWithoutBroadeningWriter() {
+        S3Client writer = mock(S3Client.class);
+        S3Client reader = mock(S3Client.class);
+        String key = "fan-reports/server-id/server-asset-id";
+        when(reader.headObject(any(HeadObjectRequest.class))).thenReturn(HeadObjectResponse.builder()
+                .contentLength(17L).contentType("image/png").eTag("opaque-etag").build());
+        S3EvidenceObjectStorage storage = new S3EvidenceObjectStorage(writer, reader, "private-evidence");
+
+        var metadata = storage.head(key);
+
+        assertThat(metadata.byteSize()).isEqualTo(17);
+        assertThat(metadata.mediaType()).isEqualTo("image/png");
+        assertThat(metadata.opaqueMarker()).isEqualTo("opaque-etag");
+        verify(reader).headObject(HeadObjectRequest.builder().bucket("private-evidence").key(key).build());
+        verifyNoInteractions(writer);
+    }
+
     @Test
     void writesOnlyServerKeyIntoPrivateBucketWithoutOverwriteOrPublicAcl() throws Exception {
         S3Client client = mock(S3Client.class);

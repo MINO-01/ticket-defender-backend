@@ -281,7 +281,8 @@ class AdminTrack1ClusterApiTest {
 
     @Test
     void otherRoutesStillUseDefaultDenyAndOfficialPdfIsBlocked() throws Exception {
-        mvc.perform(get("/api/v1/cases").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+        mvc.perform(get("/api/v1/cases/unimplemented/route")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/admin/track1/clusters")
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))

@@ -3,7 +3,7 @@ name: Backend CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'feat/#36-evidence-snapshot-report-version']
   workflow_dispatch:
 
 permissions:
@@ -68,10 +68,22 @@ jobs:
         run: bash ./gradlew test --tests '*CaseMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W04 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-migration
+      - name: Apply W05 snapshot and draft migration
+        run: bash ./gradlew test --tests '*CaseW05MigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W05 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w05-migration
       - name: Validate JPA schema and MySQL behavior
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
         run: python3 .github/scripts/check_junit_results.py mysql-schema
+      - name: Validate W05 JPA mappings
+        run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W05 schema test ran
+        run: python3 .github/scripts/check_junit_results.py case-w05-schema
+      - name: Verify W05 snapshot and draft concurrency
+        run: bash ./gradlew test --tests '*CaseW05ConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W05 concurrency tests ran
+        run: python3 .github/scripts/check_junit_results.py case-w05-concurrency
       - name: Verify W04 optimistic locking on MySQL
         run: bash ./gradlew test --tests '*CaseConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W04 concurrency test ran
@@ -164,10 +176,18 @@ jobs:
         run: bash ./gradlew test --tests '*CaseMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W04 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-migration
+      - name: Apply W05 snapshot and draft migration
+        run: bash ./gradlew test --tests '*CaseW05MigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W05 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w05-migration
       - name: Validate JPA schema
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
         run: python3 .github/scripts/check_junit_results.py mysql-schema
+      - name: Validate W05 JPA mappings
+        run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W05 schema test ran
+        run: python3 .github/scripts/check_junit_results.py case-w05-schema
       - name: Verify private MinIO object storage
         run: bash ./gradlew test --tests '*S3EvidenceObjectStorageMinioTest' --rerun-tasks --no-daemon
       - name: Confirm all object storage tests ran
@@ -176,6 +196,10 @@ jobs:
         run: bash ./gradlew test --tests '*FanReportMinioMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm all recovery tests ran
         run: python3 .github/scripts/check_junit_results.py minio-mysql
+      - name: Verify W05 private evidence capture on MinIO and MySQL
+        run: bash ./gradlew test --tests '*CaseW05MinioMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W05 private evidence tests ran
+        run: python3 .github/scripts/check_junit_results.py case-w05-minio
       - name: Remove only this job's MinIO container
         if: always()
         run: docker rm -f td-issue32-ci-minio 2>/dev/null || true

@@ -42,6 +42,18 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.CaseConcurrentMySqlTest": (
         2, "Runs after W04 migration on the isolated MySQL CI schema"
     ),
+    "com.ticket.defender_core.integration.CaseW05MigrationMySqlTest": (
+        1, "Runs after W04 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW05SchemaValidateMySqlTest": (
+        1, "Runs after W05 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW05ConcurrentMySqlTest": (
+        6, "Runs after W05 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW05MinioMySqlTest": (
+        2, "Runs with private MinIO and isolated MySQL in the integration CI job"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -56,6 +68,18 @@ MYSQL_SUITES = {
     ),
     "case-concurrency": (
         "com.ticket.defender_core.integration.CaseConcurrentMySqlTest", 2
+    ),
+    "case-w05-migration": (
+        "com.ticket.defender_core.integration.CaseW05MigrationMySqlTest", 1
+    ),
+    "case-w05-schema": (
+        "com.ticket.defender_core.integration.CaseW05SchemaValidateMySqlTest", 1
+    ),
+    "case-w05-concurrency": (
+        "com.ticket.defender_core.integration.CaseW05ConcurrentMySqlTest", 6
+    ),
+    "case-w05-minio": (
+        "com.ticket.defender_core.integration.CaseW05MinioMySqlTest", 2
     ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1

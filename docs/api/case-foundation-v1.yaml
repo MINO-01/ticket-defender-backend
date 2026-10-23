@@ -36,6 +36,7 @@ paths:
         - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
       responses:
         '200': { description: Scoped page, content: { application/json: { schema: { $ref: '#/components/schemas/CasePage' } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Hidden' }
@@ -46,6 +47,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CaseId' }]
       responses:
         '200': { description: Case, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Hidden' }
@@ -56,6 +58,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CaseId' }]
       responses:
         '200': { description: Stored source references, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CaseSource' } } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Hidden' }
@@ -69,6 +72,7 @@ paths:
         - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
       responses:
         '200': { description: Activity page, content: { application/json: { schema: { $ref: '#/components/schemas/ActivityPage' } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Hidden' }
@@ -82,6 +86,7 @@ paths:
         content: { application/json: { schema: { $ref: '#/components/schemas/Transition' } } }
       responses:
         '200': { description: Updated or identical replay, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Hidden' }
@@ -97,6 +102,7 @@ paths:
         content: { application/json: { schema: { $ref: '#/components/schemas/Assign' } } }
       responses:
         '200': { description: Updated or identical replay, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '400': { $ref: '#/components/responses/Invalid' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Hidden' }

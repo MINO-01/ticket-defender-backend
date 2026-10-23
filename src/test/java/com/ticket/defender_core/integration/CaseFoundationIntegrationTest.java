@@ -55,6 +55,7 @@ class CaseFoundationIntegrationTest {
     private static final UUID SECOND_ANALYST = UUID.fromString("77777777-7777-4777-8777-777777777777");
     @Autowired private CaseService service;
     @Autowired private CaseRepository cases;
+    @Autowired private CaseSourceReferenceRepository sources;
     @Autowired private CaseActivityRepository activities;
     @Autowired private TenantRepository tenants;
     @Autowired private TenantEventRepository events;
@@ -326,6 +327,147 @@ class CaseFoundationIntegrationTest {
         CaseDto.View reopened = service.create(followUp, UUID.randomUUID().toString());
         assertThat(reopened.relatedCaseId()).isEqualTo(first.caseId());
         assertThat(cases.count()).isEqualTo(2);
+    }
+
+    @Test
+    void terminalFollowUpChainCanReuseSourceWithoutChangingPriorCases() {
+        UUID reportId = report(TENANT, EVENT).getFanReportId();
+        CaseDto.View first = service.create(createInput(reportId), UUID.randomUUID().toString());
+        CaseDto.View dismissedFirst = dismissThroughReviewer(first);
+        CaseDto.Create secondInput = followUpInput(reportId, first.caseId());
+        CaseDto.View second = service.create(secondInput, UUID.randomUUID().toString());
+        CaseDto.View dismissedSecond = dismissThroughReviewer(second);
+        long firstActivities = activities.findByCaseId(first.caseId(),
+                org.springframework.data.domain.Pageable.unpaged()).getTotalElements();
+        long secondActivities = activities.findByCaseId(second.caseId(),
+                org.springframework.data.domain.Pageable.unpaged()).getTotalElements();
+
+        CaseDto.Create thirdInput = followUpInput(reportId, second.caseId());
+        String thirdKey = UUID.randomUUID().toString();
+        CaseDto.View third = service.create(thirdInput, thirdKey);
+
+        assertThat(List.of(first.caseId(), second.caseId(), third.caseId())).doesNotHaveDuplicates();
+        assertThat(second.relatedCaseId()).isEqualTo(first.caseId());
+        assertThat(third.relatedCaseId()).isEqualTo(second.caseId());
+        assertThat(cases.findById(first.caseId()).orElseThrow().getStatus()).isEqualTo(Case.Status.DISMISSED);
+        assertThat(cases.findById(second.caseId()).orElseThrow().getStatus()).isEqualTo(Case.Status.DISMISSED);
+        assertThat(cases.findById(first.caseId()).orElseThrow().getCaseVersion())
+                .isEqualTo(dismissedFirst.caseVersion());
+        assertThat(cases.findById(second.caseId()).orElseThrow().getCaseVersion())
+                .isEqualTo(dismissedSecond.caseVersion());
+        assertThat(activities.findByCaseId(first.caseId(),
+                org.springframework.data.domain.Pageable.unpaged()).getTotalElements()).isEqualTo(firstActivities);
+        assertThat(activities.findByCaseId(second.caseId(),
+                org.springframework.data.domain.Pageable.unpaged()).getTotalElements()).isEqualTo(secondActivities);
+        assertThat(service.create(thirdInput, thirdKey).caseId()).isEqualTo(third.caseId());
+        assertThatThrownBy(() -> service.create(new CaseDto.Create(EVENT, Case.Type.FAN_REPORT,
+                List.of(), List.of(reportId), List.of(), "Changed follow-up reason", second.caseId(),
+                "New report details require a separate review"), thirdKey))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(cases.count()).isEqualTo(3);
+    }
+
+    @Test
+    void activeFollowUpPreventsAnotherCaseFromReusingTheSource() {
+        UUID reportId = report(TENANT, EVENT).getFanReportId();
+        CaseDto.View first = service.create(createInput(reportId), UUID.randomUUID().toString());
+        assertThatThrownBy(() -> service.create(followUpInput(reportId, first.caseId()),
+                UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("CASE_STATE_CONFLICT"));
+        dismissThroughReviewer(first);
+        CaseDto.View activeSecond = service.create(followUpInput(reportId, first.caseId()),
+                UUID.randomUUID().toString());
+        long caseCount = cases.count();
+        long sourceCount = sources.count();
+        long activityCount = activities.count();
+
+        assertThatThrownBy(() -> service.create(followUpInput(reportId, first.caseId()),
+                UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("SOURCE_ALREADY_LINKED"));
+        assertThat(cases.findById(activeSecond.caseId()).orElseThrow().getStatus()).isEqualTo(Case.Status.OPEN);
+        assertThat(cases.count()).isEqualTo(caseCount);
+        assertThat(sources.count()).isEqualTo(sourceCount);
+        assertThat(activities.count()).isEqualTo(activityCount);
+    }
+
+    @Test
+    void unrelatedTerminalCaseCannotAuthorizeReusedSource() {
+        UUID reportId = report(TENANT, EVENT).getFanReportId();
+        UUID unrelatedReportId = report(TENANT, EVENT).getFanReportId();
+        CaseDto.View first = service.create(createInput(reportId), UUID.randomUUID().toString());
+        dismissThroughReviewer(first);
+        CaseDto.View unrelated = service.create(createInput(unrelatedReportId), UUID.randomUUID().toString());
+        dismissThroughReviewer(unrelated);
+        long caseCount = cases.count();
+        long sourceCount = sources.count();
+        long activityCount = activities.count();
+
+        assertThatThrownBy(() -> service.create(followUpInput(reportId, unrelated.caseId()),
+                UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("SOURCE_ALREADY_LINKED"));
+        assertThat(cases.count()).isEqualTo(caseCount);
+        assertThat(sources.count()).isEqualTo(sourceCount);
+        assertThat(activities.count()).isEqualTo(activityCount);
+    }
+
+    @Test
+    void followUpRejectsRelatedCasesFromAnotherTenantOrEvent() {
+        UUID reportId = report(TENANT, EVENT).getFanReportId();
+        UUID otherTenantMember = UUID.randomUUID();
+        memberships.save(new AdminMembershipEntity(otherTenantMember, OTHER_TENANT,
+                "other-tenant-member", AccessRecordStatus.ACTIVE));
+        Case otherTenantCase = new Case(UUID.randomUUID(), OTHER_TENANT, OTHER_EVENT,
+                otherTenantMember, Case.Type.FAN_REPORT, null, null, LocalDateTime.now());
+        otherTenantCase.transition(Case.Status.DISMISSED, null, LocalDateTime.now());
+        cases.saveAndFlush(otherTenantCase);
+        UUID sameTenantOtherEvent = UUID.randomUUID();
+        events.save(new TenantEvent(sameTenantOtherEvent, TENANT, "second-event", "Second event",
+                AccessRecordStatus.ACTIVE));
+        Case otherEventCase = new Case(UUID.randomUUID(), TENANT, sameTenantOtherEvent,
+                ANALYST, Case.Type.FAN_REPORT, null, null, LocalDateTime.now());
+        otherEventCase.transition(Case.Status.DISMISSED, null, LocalDateTime.now());
+        cases.saveAndFlush(otherEventCase);
+        long caseCount = cases.count();
+        long sourceCount = sources.count();
+        long activityCount = activities.count();
+
+        for (UUID relatedId : List.of(otherTenantCase.getId(), otherEventCase.getId())) {
+            assertThatThrownBy(() -> service.create(followUpInput(reportId, relatedId),
+                    UUID.randomUUID().toString()))
+                    .isInstanceOfSatisfying(CaseApiException.class,
+                            error -> assertThat(error.code()).isEqualTo("RESOURCE_NOT_FOUND"));
+        }
+        assertThat(cases.count()).isEqualTo(caseCount);
+        assertThat(sources.count()).isEqualTo(sourceCount);
+        assertThat(activities.count()).isEqualTo(activityCount);
+    }
+
+    private CaseDto.Create followUpInput(UUID reportId, UUID relatedCaseId) {
+        return new CaseDto.Create(EVENT, Case.Type.FAN_REPORT, List.of(), List.of(reportId), List.of(),
+                "Investigate new synthetic information", relatedCaseId,
+                "New report details require a separate review");
+    }
+
+    private CaseDto.View dismissThroughReviewer(CaseDto.View created) {
+        as("reviewer");
+        CaseDto.View assigned = service.assign(created.caseId(),
+                new CaseDto.Assign(ANALYST, created.caseVersion(), "Assign for human review"),
+                UUID.randomUUID().toString());
+        CaseDto.View triaged = service.transition(created.caseId(), new CaseDto.Transition(
+                Case.Status.TRIAGED, assigned.caseVersion(), "Classify the report",
+                "Synthetic listing", null, null, null, null, null), UUID.randomUUID().toString());
+        CaseDto.View reviewing = service.transition(created.caseId(), new CaseDto.Transition(
+                Case.Status.IN_REVIEW, triaged.caseVersion(), "Start human review",
+                null, null, null, null, null, null), UUID.randomUUID().toString());
+        return service.transition(created.caseId(), new CaseDto.Transition(
+                Case.Status.DISMISSED, reviewing.caseVersion(),
+                "Reviewed the synthetic listing and found no violation", null, null,
+                null, null, null, CaseDto.DismissalBasis.NO_VIOLATION_FOUND_AFTER_REVIEW),
+                UUID.randomUUID().toString());
     }
 
     @Test

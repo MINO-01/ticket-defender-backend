@@ -64,14 +64,17 @@ public class CaseWriteService {
                 input.type(), input.relatedCaseId(), input.relationReason(), now);
         List<CaseSourceReference> verified = sourceVerifier.verify(target, input, now);
         for (CaseSourceReference reference : verified) {
-            for (CaseSourceReference existing : sources.findByTenantIdAndEventIdAndSourceKeyDigest(
-                    actor.tenantId(), actor.eventId(), reference.getSourceKeyDigest())) {
+            List<CaseSourceReference> existingReferences = sources.findByTenantIdAndEventIdAndSourceKeyDigest(
+                    actor.tenantId(), actor.eventId(), reference.getSourceKeyDigest());
+            boolean relatedCaseReferencesSource = false;
+            for (CaseSourceReference existing : existingReferences) {
                 Case other = cases.findById(existing.getCaseId()).orElseThrow(CaseWriteService::notFound);
-                if (!Objects.equals(input.relatedCaseId(), other.getId())
-                        || (other.getStatus() != Case.Status.DISMISSED
-                        && other.getStatus() != Case.Status.CLOSED))
+                if (other.getStatus() != Case.Status.DISMISSED && other.getStatus() != Case.Status.CLOSED)
                     throw conflict("SOURCE_ALREADY_LINKED");
+                if (Objects.equals(input.relatedCaseId(), other.getId())) relatedCaseReferencesSource = true;
             }
+            if (!existingReferences.isEmpty() && !relatedCaseReferencesSource)
+                throw conflict("SOURCE_ALREADY_LINKED");
         }
         cases.saveAndFlush(target);
         sources.saveAllAndFlush(verified);

@@ -28,6 +28,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -213,14 +214,17 @@ class CaseW05ConcurrentMySqlTest {
     private List<String> race(String subject, Action action) throws Exception {
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
+        AtomicBoolean run = new AtomicBoolean();
         List<Future<String>> results = new ArrayList<>();
-        try (var workers = Executors.newFixedThreadPool(2)) {
+        var workers = Executors.newFixedThreadPool(2, Thread.ofPlatform().daemon(true).factory());
+        try {
             for (int i = 0; i < 2; i++) {
                 results.add(workers.submit(() -> {
-                    authenticate(subject);
-                    ready.countDown();
-                    start.await();
                     try {
+                        authenticate(subject);
+                        ready.countDown();
+                        start.await();
+                        if (!run.get()) return "ABORTED";
                         return "OK:" + action.execute();
                     } catch (CaseApiException conflict) {
                         return conflict.code();
@@ -229,11 +233,25 @@ class CaseW05ConcurrentMySqlTest {
                     }
                 }));
             }
-            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
-            start.countDown();
+            awaitReadyAndRelease(ready, start, run, 5, TimeUnit.SECONDS);
             List<String> outcomes = new ArrayList<>();
             for (Future<String> result : results) outcomes.add(result.get(30, TimeUnit.SECONDS));
             return outcomes;
+        } finally {
+            start.countDown();
+            results.forEach(result -> result.cancel(true));
+            workers.shutdownNow();
+            assertThat(workers.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    static void awaitReadyAndRelease(CountDownLatch ready, CountDownLatch start,
+            AtomicBoolean run, long timeout, TimeUnit unit) throws InterruptedException {
+        try {
+            assertThat(ready.await(timeout, unit)).isTrue();
+            run.set(true);
+        } finally {
+            start.countDown();
         }
     }
 

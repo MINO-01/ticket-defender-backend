@@ -47,6 +47,20 @@ capturing. Asset HEAD is performed against a server-owned key only; a missing ob
 from a storage outage. There is a time-of-check/time-of-use interval between HEAD and the
 database commit. Snapshot row immutability does not make a referenced W02 object immutable.
 
+For W05 writes, the authenticated reviewer and Case scope are checked before a private
+object HEAD. Source verification and HEAD run before the write transaction. The write
+transaction reloads the Case and DB sources, compares the expected Case version,
+evidence revision, canonical source manifest and asset storage identity, then commits
+the version change, snapshot or draft, activity and idempotency result together.
+The DB recheck performs no storage request and rejects expired or changed sources.
+Spring JPA Open EntityManager in View is disabled so an HTTP request cannot keep a
+persistence context and its checked-out connection across the storage call. The two
+alternatives were keeping HEAD inside the write transaction with shorter timeouts,
+which still occupies a transaction, or relying on source key digests alone, which
+misses report and file metadata changes. Neither was sufficient. Concurrent source
+changes after the DB recheck and object changes after HEAD remain possible without
+shared locking or immutable object versions. `approvalEligible` stays false.
+
 Snapshot and draft DTOs omit a standalone tenant ID, object keys, source PII, private URLs,
 and storage credentials. The snapshot manifest contains the authorized tenant and event IDs
 to bind its digest to the verified scope. Idempotency records contain result IDs only, not a

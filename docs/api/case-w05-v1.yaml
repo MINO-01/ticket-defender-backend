@@ -1,0 +1,292 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender W05 Case preparation API
+  version: 1.0.0
+  description: Private EvidenceSnapshot and ReportVersion DRAFT preparation. No approval or PDF issuance.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+paths:
+  /api/v1/cases/{caseId}/evidence-snapshots:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      operationId: captureCaseEvidenceSnapshot
+      description: REVIEWER only. The Case must be IN_REVIEW. Exactly one snapshot per evidence revision.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Capture' }
+      responses:
+        '201':
+          description: Immutable snapshot metadata and canonical manifest
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Snapshot' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    get:
+      operationId: listCaseEvidenceSnapshots
+      description: Same current Case view permissions as W04. No original image bytes or download URL.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Snapshots, newest revision first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SnapshotPage' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/cases/{caseId}/evidence-snapshots/{snapshotId}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/SnapshotId'
+    get:
+      operationId: getCaseEvidenceSnapshot
+      responses:
+        '200':
+          description: Scoped snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Snapshot' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/cases/{caseId}/report-versions:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      operationId: createCaseReportDraft
+      description: REVIEWER only. Creates a new immutable DRAFT input revision for the current snapshot.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DraftInput' }
+      responses:
+        '201':
+          description: New draft revision. This cannot be rendered or approved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Draft' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    get:
+      operationId: listCaseReportDrafts
+      description: Same current Case view permissions as W04.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Drafts, newest revision first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DraftPage' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-versions/{reportVersionId}:
+    parameters:
+      - $ref: '#/components/parameters/ReportVersionId'
+    get:
+      operationId: getCaseReportDraft
+      responses:
+        '200':
+          description: Scoped immutable draft input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Draft' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SnapshotId:
+      name: snapshotId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReportVersionId:
+      name: reportVersionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+  schemas:
+    Problem:
+      type: object
+      required: [status, code, requestId]
+      properties:
+        status: { type: integer }
+        title: { type: string }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+    Capture:
+      type: object
+      required: [expectedCaseVersion, reason]
+      properties:
+        expectedCaseVersion: { type: integer, minimum: 0, format: int64 }
+        reason: { type: string, minLength: 3, maxLength: 1800 }
+    Snapshot:
+      type: object
+      required: [evidenceSnapshotId, caseId, eventId, evidenceRevision, caseVersionAtCapture,
+                 manifestSchemaVersion, manifestSha256, manifestJson, sourceIntegrity,
+                 approvalEligible, createdByMembershipId, capturedAt]
+      properties:
+        evidenceSnapshotId: { type: string, format: uuid }
+        caseId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        evidenceRevision: { type: integer, format: int64 }
+        caseVersionAtCapture: { type: integer, format: int64 }
+        manifestSchemaVersion: { type: integer, const: 1 }
+        manifestSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        manifestJson: { type: string, description: Canonical UTF-8 JSON. Contains IDs and metadata, never object keys or image bytes. }
+        sourceIntegrity: { type: string, enum: [NO_FILE, METADATA_ONLY] }
+        approvalEligible: { type: boolean, const: false }
+        createdByMembershipId: { type: string, format: uuid }
+        capturedAt: { type: string, format: date-time }
+    SnapshotPage:
+      type: object
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Snapshot' }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasNext: { type: boolean }
+    DraftInput:
+      type: object
+      required: [expectedCaseVersion, evidenceSnapshotId, title, assessment, limitations, conclusion, reason]
+      properties:
+        expectedCaseVersion: { type: integer, minimum: 0, format: int64 }
+        evidenceSnapshotId: { type: string, format: uuid }
+        title: { type: string, minLength: 3, maxLength: 160 }
+        assessment: { type: string, minLength: 10, maxLength: 6000 }
+        limitations: { type: string, minLength: 3, maxLength: 3000 }
+        conclusion: { type: string, minLength: 3, maxLength: 3000 }
+        reason: { type: string, minLength: 3, maxLength: 1800 }
+    Draft:
+      type: object
+      required: [reportVersionId, caseId, eventId, evidenceSnapshotId, evidenceRevision, revision, version,
+                 templateVersion, contentSha256, contentJson, status, renderable,
+                 approvalEligible, createdByMembershipId, createdAt]
+      properties:
+        reportVersionId: { type: string, format: uuid }
+        caseId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        evidenceSnapshotId: { type: string, format: uuid }
+        evidenceRevision: { type: integer, minimum: 1, format: int64 }
+        revision: { type: integer, minimum: 1, format: int64 }
+        version: { type: integer, minimum: 0, format: int64, description: Reserved for future status locking. }
+        templateVersion: { type: string, const: draft-input-v1, description: Logical input schema, not a PDF template artifact. }
+        contentSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        contentJson: { type: string, description: Server sealed draft input. Private to authorized Case viewers. }
+        status: { type: string, const: DRAFT }
+        renderable: { type: boolean, const: false }
+        approvalEligible: { type: boolean, const: false }
+        createdByMembershipId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    DraftPage:
+      type: object
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Draft' }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasNext: { type: boolean }
+  responses:
+    Invalid:
+      description: INVALID_REQUEST or INVALID_IDEMPOTENCY_KEY
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthenticated: { description: Admin JWT required }
+    Forbidden:
+      description: FORBIDDEN within an accessible event
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: RESOURCE_NOT_FOUND, including inaccessible tenant or event
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: CASE_VERSION_CONFLICT, CASE_STATE_CONFLICT, SNAPSHOT_ALREADY_EXISTS, SOURCE_CHANGED, REPORT_CONTENT_UNCHANGED, EVIDENCE_VERSION_MISMATCH, or IDEMPOTENCY_KEY_REUSED
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unprocessable:
+      description: VALIDATION_FAILED, SOURCE_NOT_AVAILABLE, SOURCE_OBJECT_MISSING, or SOURCE_OBJECT_MISMATCH
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: DEPENDENCY_UNAVAILABLE for a database or private object storage outage
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

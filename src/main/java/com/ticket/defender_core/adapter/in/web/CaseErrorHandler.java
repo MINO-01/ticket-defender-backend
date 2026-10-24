@@ -18,7 +18,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.UUID;
 
-@RestControllerAdvice(assignableTypes = CaseController.class)
+@RestControllerAdvice(assignableTypes = {CaseController.class, CasePreparationController.class,
+        ReportDraftController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)
     ResponseEntity<ProblemDetail> api(CaseApiException error) {

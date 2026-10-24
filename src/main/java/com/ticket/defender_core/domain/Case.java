@@ -87,4 +87,8 @@ public class Case {
         this.assigneeMembershipId = membershipId;
         this.updatedAt = Objects.requireNonNull(now);
     }
+
+    public void recordPreparation(LocalDateTime now) {
+        this.updatedAt = Objects.requireNonNull(now);
+    }
 }

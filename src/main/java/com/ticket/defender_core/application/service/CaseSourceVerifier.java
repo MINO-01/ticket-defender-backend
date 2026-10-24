@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -35,6 +36,16 @@ public class CaseSourceVerifier {
     private final EvidenceObjectStorage storage;
 
     public List<CaseSourceReference> verify(Case target, CaseDto.Create input, LocalDateTime now) {
+        return verify(target, input, now, null);
+    }
+
+    List<CaseSourceReference> verifyDatabase(Case target, CaseDto.Create input, LocalDateTime now,
+            Map<UUID, String> checkedMarkers) {
+        return verify(target, input, now, checkedMarkers);
+    }
+
+    private List<CaseSourceReference> verify(Case target, CaseDto.Create input, LocalDateTime now,
+            Map<UUID, String> checkedMarkers) {
         List<CaseDto.GraphCluster> graphInputs = input.graphClusters() == null ? List.of() : input.graphClusters();
         List<UUID> reportIds = input.fanReportIds() == null ? List.of() : input.fanReportIds();
         List<UUID> assetIds = input.evidenceIds() == null ? List.of() : input.evidenceIds();
@@ -89,37 +100,46 @@ public class CaseSourceVerifier {
             if (asset.getStorageStatus() != EvidenceAsset.StorageStatus.STORED
                     || !asset.getRetentionUntil().isAfter(now))
                 throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_NOT_AVAILABLE");
-            EvidenceObjectStorage.ObjectMetadata metadata;
-            try {
-                metadata = storage.head(asset.getObjectKey());
-            } catch (S3Exception unavailable) {
-                if (unavailable.statusCode() == 404) {
-                    // A 404 can also mean that the bucket itself is gone. Confirm its
-                    // availability before classifying this as an absent object.
-                    try {
-                        storage.checkReady();
-                    } catch (RuntimeException bucketUnavailable) {
-                        throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
-                    }
-                    throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_OBJECT_MISSING");
-                }
-                throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
-            } catch (RuntimeException unavailable) {
-                throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+            String marker;
+            if (checkedMarkers == null) {
+                EvidenceObjectStorage.ObjectMetadata metadata = head(asset);
+                if (metadata == null)
+                    throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+                if (metadata.byteSize() != asset.getByteSize()
+                        || !Objects.equals(metadata.mediaType(), asset.getMediaType())
+                        || (asset.getObjectVersion() != null
+                        && !Objects.equals(asset.getObjectVersion(), metadata.opaqueMarker())))
+                    throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_OBJECT_MISMATCH");
+                marker = metadata.opaqueMarker();
+            } else {
+                if (!checkedMarkers.containsKey(evidenceId))
+                    throw new CaseApiException(HttpStatus.CONFLICT, "SOURCE_CHANGED");
+                marker = checkedMarkers.get(evidenceId);
             }
-            if (metadata == null)
-                throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
-            if (metadata.byteSize() != asset.getByteSize()
-                    || !Objects.equals(metadata.mediaType(), asset.getMediaType())
-                    || (asset.getObjectVersion() != null
-                    && !Objects.equals(asset.getObjectVersion(), metadata.opaqueMarker())))
-                throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_OBJECT_MISMATCH");
             String digest = digest(target, "ASSET", evidenceId.toString());
             unique(keys, digest);
             result.add(CaseSourceReference.asset(target, digest, asset.getFanReportId(),
-                    evidenceId, metadata.opaqueMarker(), now));
+                    evidenceId, marker, now));
         }
         return result;
+    }
+
+    private EvidenceObjectStorage.ObjectMetadata head(EvidenceAsset asset) {
+        try {
+            return storage.head(asset.getObjectKey());
+        } catch (S3Exception unavailable) {
+            if (unavailable.statusCode() == 404) {
+                try {
+                    storage.checkReady();
+                } catch (RuntimeException bucketUnavailable) {
+                    throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+                }
+                throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_OBJECT_MISSING");
+            }
+            throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+        } catch (RuntimeException unavailable) {
+            throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+        }
     }
 
     private FanReport verifiedReport(Case target, UUID id, LocalDateTime now) {

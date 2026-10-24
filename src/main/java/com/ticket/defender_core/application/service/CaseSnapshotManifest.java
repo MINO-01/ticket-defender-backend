@@ -21,11 +21,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -37,6 +39,18 @@ public class CaseSnapshotManifest {
     private final ObjectMapper json;
 
     public Captured capture(Case target, List<CaseSourceReference> references, LocalDateTime now) {
+        return capture(target, references, now, null);
+    }
+
+    public void recheckDatabase(Case target, List<CaseSourceReference> references,
+            Captured prepared, LocalDateTime now) {
+        Captured current = capture(target, references, now, prepared.assets());
+        if (!prepared.sha256().equals(current.sha256())
+                || !prepared.assets().equals(current.assets())) throw changed();
+    }
+
+    private Captured capture(Case target, List<CaseSourceReference> references, LocalDateTime now,
+            Map<UUID, AssetState> checkedAssets) {
         if (references.isEmpty() || references.size() > 30 || references.stream().anyMatch(ref ->
                 !target.getId().equals(ref.getCaseId()) || !target.getTenantId().equals(ref.getTenantId())
                         || !target.getEventId().equals(ref.getEventId()))) throw changed();
@@ -50,12 +64,17 @@ public class CaseSnapshotManifest {
                 ordered.stream().filter(ref -> ref.getSourceType() == CaseSourceReference.Type.EVIDENCE_ASSET)
                         .map(CaseSourceReference::getEvidenceId).toList(),
                 "Snapshot capture", null, null);
-        List<CaseSourceReference> current = verifier.verify(target, sourceInput, now);
+        Map<UUID, String> markers = new HashMap<>();
+        if (checkedAssets != null) checkedAssets.forEach((id, asset) -> markers.put(id, asset.checkedMarker()));
+        List<CaseSourceReference> current = checkedAssets == null
+                ? verifier.verify(target, sourceInput, now)
+                : verifier.verifyDatabase(target, sourceInput, now, markers);
         Map<String, CaseSourceReference> byDigest = new java.util.HashMap<>();
         current.forEach(ref -> byDigest.put(ref.getSourceKeyDigest(), ref));
         if (byDigest.size() != ordered.size()) throw changed();
 
         List<Map<String, Object>> items = new ArrayList<>();
+        Map<UUID, AssetState> assetStates = new HashMap<>();
         boolean hasFile = false;
         for (CaseSourceReference prior : ordered) {
             CaseSourceReference fresh = byDigest.get(prior.getSourceKeyDigest());
@@ -107,6 +126,8 @@ public class CaseSnapshotManifest {
                             || asset.getStorageStatus() != EvidenceAsset.StorageStatus.STORED
                             || !asset.getRetentionUntil().isAfter(now)
                             || !Objects.equals(prior.getObjectMarker(), fresh.getObjectMarker())) throw changed();
+                    assetStates.put(asset.getEvidenceId(),
+                            new AssetState(asset.getObjectKey(), asset.getObjectVersion(), fresh.getObjectMarker()));
                     hasFile = true;
                     item.put("evidenceId", asset.getEvidenceId().toString());
                     item.put("fanReportId", asset.getFanReportId().toString());
@@ -129,7 +150,8 @@ public class CaseSnapshotManifest {
         manifest.put("sources", items);
         String serialized = json.writeValueAsString(manifest);
         if (serialized.getBytes(StandardCharsets.UTF_8).length > 60000) throw changed();
-        return new Captured(serialized, sha256(serialized), hasFile ? "METADATA_ONLY" : "NO_FILE");
+        return new Captured(serialized, sha256(serialized), hasFile ? "METADATA_ONLY" : "NO_FILE",
+                Map.copyOf(assetStates));
     }
 
     private static boolean scope(Case target, FanReport report) {
@@ -154,5 +176,8 @@ public class CaseSnapshotManifest {
         return new CaseApiException(HttpStatus.CONFLICT, "SOURCE_CHANGED");
     }
 
-    public record Captured(String json, String sha256, String sourceIntegrity) { }
+    public record Captured(String json, String sha256, String sourceIntegrity,
+                           Map<UUID, AssetState> assets) { }
+
+    public record AssetState(String objectKey, String objectVersion, String checkedMarker) { }
 }

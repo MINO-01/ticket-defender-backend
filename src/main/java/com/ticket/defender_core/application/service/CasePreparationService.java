@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.in.web.dto.CasePreparationDto;
 import com.ticket.defender_core.adapter.out.persistence.CaseIdempotencyRepository;
 import com.ticket.defender_core.adapter.out.persistence.CaseRepository;
+import com.ticket.defender_core.adapter.out.persistence.CaseSourceReferenceRepository;
 import com.ticket.defender_core.adapter.out.persistence.EvidenceSnapshotRepository;
 import com.ticket.defender_core.adapter.out.persistence.ReportVersionRepository;
 import com.ticket.defender_core.domain.Case;
@@ -22,6 +23,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -38,6 +42,8 @@ public class CasePreparationService {
     private final CaseMembershipAccess memberships;
     private final CasePreparationWriteService writer;
     private final CaseRepository cases;
+    private final CaseSourceReferenceRepository sources;
+    private final CaseSnapshotManifest manifests;
     private final EvidenceSnapshotRepository snapshots;
     private final ReportVersionRepository drafts;
     private final CaseIdempotencyRepository idempotency;
@@ -50,16 +56,27 @@ public class CasePreparationService {
         CasePreparationDto.Snapshot previous = replaySnapshot(caseId, actor, prepared);
         if (previous != null) return previous;
         try {
-            return writer.capture(caseId, input, actor.memberId(), prepared.keyDigest(), prepared.requestDigest());
+            CasePreparationWriteService.validate(input.reason(), 3, 1800);
+            Case target = preflightCase(caseId, actor, input.expectedCaseVersion());
+            if (snapshots.findByCaseIdAndEvidenceRevision(caseId, target.getEvidenceRevision()).isPresent())
+                throw conflict("SNAPSHOT_ALREADY_EXISTS");
+            CaseSnapshotManifest.Captured manifest = manifests.capture(target,
+                    sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), LocalDateTime.now(ZoneOffset.UTC));
+            return writer.capture(caseId, input, actor.memberId(), prepared.keyDigest(),
+                    prepared.requestDigest(), manifest);
+        } catch (CaseApiException collision) {
+            CasePreparationDto.Snapshot committed = replaySnapshot(caseId, reviewer(caseId), prepared);
+            if (committed != null) return committed;
+            throw collision;
         } catch (DataIntegrityViolationException collision) {
-            CasePreparationDto.Snapshot committed = replaySnapshot(caseId, actor, prepared);
+            CasePreparationDto.Snapshot committed = replaySnapshot(caseId, reviewer(caseId), prepared);
             if (committed != null) return committed;
             Case current = cases.findById(caseId).orElseThrow(CasePreparationService::notFound);
             if (snapshots.findByCaseIdAndEvidenceRevision(caseId, current.getEvidenceRevision()).isPresent())
                 throw conflict("SNAPSHOT_ALREADY_EXISTS");
             throw collision;
         } catch (OptimisticLockingFailureException collision) {
-            CasePreparationDto.Snapshot committed = replaySnapshot(caseId, actor, prepared);
+            CasePreparationDto.Snapshot committed = replaySnapshot(caseId, reviewer(caseId), prepared);
             if (committed != null) return committed;
             throw conflict("CASE_VERSION_CONFLICT");
         }
@@ -73,16 +90,37 @@ public class CasePreparationService {
         CasePreparationDto.Draft previous = replayDraft(caseId, actor, prepared);
         if (previous != null) return previous;
         try {
-            return writer.draft(caseId, input, actor.memberId(), prepared.keyDigest(), prepared.requestDigest());
+            CasePreparationWriteService.validate(input.title(), 3, 160);
+            CasePreparationWriteService.validate(input.assessment(), 10, 6000);
+            CasePreparationWriteService.validate(input.limitations(), 3, 3000);
+            CasePreparationWriteService.validate(input.conclusion(), 3, 3000);
+            CasePreparationWriteService.validate(input.reason(), 3, 1800);
+            Case target = preflightCase(caseId, actor, input.expectedCaseVersion());
+            EvidenceSnapshot snapshot = snapshots.findById(input.evidenceSnapshotId())
+                    .orElseThrow(CasePreparationService::notFound);
+            if (!target.getTenantId().equals(snapshot.getTenantId())
+                    || !target.getEventId().equals(snapshot.getEventId())
+                    || !caseId.equals(snapshot.getCaseId())) throw notFound();
+            if (snapshot.getEvidenceRevision() != target.getEvidenceRevision())
+                throw conflict("EVIDENCE_VERSION_MISMATCH");
+            CaseSnapshotManifest.Captured manifest = manifests.capture(target,
+                    sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), LocalDateTime.now(ZoneOffset.UTC));
+            if (!manifest.sha256().equals(snapshot.getManifestSha256())) throw conflict("SOURCE_CHANGED");
+            return writer.draft(caseId, input, actor.memberId(), prepared.keyDigest(),
+                    prepared.requestDigest(), manifest);
+        } catch (CaseApiException collision) {
+            CasePreparationDto.Draft committed = replayDraft(caseId, reviewer(caseId), prepared);
+            if (committed != null) return committed;
+            throw collision;
         } catch (DataIntegrityViolationException collision) {
-            CasePreparationDto.Draft committed = replayDraft(caseId, actor, prepared);
+            CasePreparationDto.Draft committed = replayDraft(caseId, reviewer(caseId), prepared);
             if (committed != null) return committed;
             Case current = cases.findById(caseId).orElseThrow(CasePreparationService::notFound);
             if (!input.expectedCaseVersion().equals(current.getCaseVersion()))
                 throw conflict("CASE_VERSION_CONFLICT");
             throw collision;
         } catch (OptimisticLockingFailureException collision) {
-            CasePreparationDto.Draft committed = replayDraft(caseId, actor, prepared);
+            CasePreparationDto.Draft committed = replayDraft(caseId, reviewer(caseId), prepared);
             if (committed != null) return committed;
             throw conflict("CASE_VERSION_CONFLICT");
         }
@@ -131,6 +169,15 @@ public class CasePreparationService {
         var actor = access.requireResourceAccess(
                 new AdminResourceScope(target.getTenantId(), target.getEventId()), null, REVIEWER);
         return new Authorized(target.getTenantId(), target.getEventId(), memberships.actor(actor).getId());
+    }
+
+    private Case preflightCase(UUID caseId, Authorized actor, Long expected) {
+        Case target = cases.findById(caseId).orElseThrow(CasePreparationService::notFound);
+        if (!actor.tenantId().equals(target.getTenantId())
+                || !actor.eventId().equals(target.getEventId())) throw notFound();
+        if (!Objects.equals(expected, target.getCaseVersion())) throw conflict("CASE_VERSION_CONFLICT");
+        if (target.getStatus() != Case.Status.IN_REVIEW) throw conflict("CASE_STATE_CONFLICT");
+        return target;
     }
 
     private Prepared prepare(String key, Object request) {

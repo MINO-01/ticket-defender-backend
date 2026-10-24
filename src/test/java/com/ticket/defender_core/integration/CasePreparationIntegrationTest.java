@@ -5,6 +5,7 @@ import com.ticket.defender_core.adapter.in.web.dto.CasePreparationDto;
 import com.ticket.defender_core.adapter.out.persistence.*;
 import com.ticket.defender_core.application.service.CaseApiException;
 import com.ticket.defender_core.application.service.CasePreparationService;
+import com.ticket.defender_core.application.service.CasePreparationWriteService;
 import com.ticket.defender_core.application.service.CaseService;
 import com.ticket.defender_core.application.service.CaseSnapshotManifest;
 import com.ticket.defender_core.application.service.EvidenceObjectStorage;
@@ -21,19 +22,26 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -56,6 +64,7 @@ class CasePreparationIntegrationTest {
 
     @Autowired private CaseService caseService;
     @Autowired private CasePreparationService preparation;
+    @Autowired private CasePreparationWriteService writer;
     @Autowired private CaseSnapshotManifest manifests;
     @Autowired private CaseRepository cases;
     @Autowired private CaseSourceReferenceRepository sources;
@@ -73,6 +82,7 @@ class CasePreparationIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private jakarta.persistence.EntityManager entityManager;
+    @Autowired private javax.sql.DataSource dataSource;
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
     @MockitoBean private EvidenceObjectStorage storage;
 
@@ -270,6 +280,132 @@ class CasePreparationIntegrationTest {
         assertThat(snapshot.sourceIntegrity()).isEqualTo("METADATA_ONLY");
         assertThat(snapshot.approvalEligible()).isFalse();
         assertThat(snapshot.manifestJson()).contains("a".repeat(64)).doesNotContain(objectKey);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.AFTER_METHOD)
+    void evidenceHeadRunsOutsideWriteTransactionAndWithoutCheckedOutConnection() throws Exception {
+        FanReport report = report();
+        UUID evidenceId = UUID.randomUUID();
+        String key = "fan-reports/synthetic/" + evidenceId;
+        EvidenceAsset asset = new EvidenceAsset(evidenceId, report.getFanReportId(), key,
+                "image/png", 4, "a".repeat(64), LocalDateTime.now(), report.getRetentionUntil());
+        asset.markStored("opaque-v1");
+        assets.saveAndFlush(asset);
+        when(storage.head(key)).thenReturn(new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "opaque-v1"));
+        CaseDto.View target = reviewingAssetCase(report, evidenceId);
+        AtomicInteger headCalls = new AtomicInteger();
+        when(storage.head(key)).thenAnswer(call -> {
+            headCalls.incrementAndGet();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(((com.zaxxer.hikari.HikariDataSource) dataSource)
+                    .getHikariPoolMXBean().getActiveConnections()).isZero();
+            return new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "opaque-v1");
+        });
+        var result = mvc.perform(post("/api/v1/cases/" + target.caseId() + "/evidence-snapshots")
+                        .header("Authorization", "Bearer reviewer")
+                        .header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new CasePreparationDto.Capture(
+                                target.caseVersion(), "Capture stored file"))))
+                .andExpect(status().isCreated()).andReturn();
+        var snapshot = json.readValue(result.getResponse().getContentAsString(), CasePreparationDto.Snapshot.class);
+        long currentVersion = cases.findById(target.caseId()).orElseThrow().getCaseVersion();
+        mvc.perform(post("/api/v1/cases/" + target.caseId() + "/report-versions")
+                        .header("Authorization", "Bearer reviewer")
+                        .header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new CasePreparationDto.DraftInput(currentVersion,
+                                snapshot.evidenceSnapshotId(), "Synthetic title", "Synthetic assessment for reviewer",
+                                "Metadata only", "Further review needed", "Prepare draft"))))
+                .andExpect(status().isCreated());
+        assertThat(headCalls).hasValue(2);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.AFTER_METHOD)
+    void caseVersionChangeAfterPreflightLeavesNoPartialSnapshot() {
+        CaseDto.View target = reviewingCase(report());
+        Case entity = cases.findById(target.caseId()).orElseThrow();
+        var checked = manifests.capture(entity, sources.findByCaseIdOrderByLinkedAtAscIdAsc(target.caseId()),
+                LocalDateTime.now(java.time.ZoneOffset.UTC));
+        entity.transition(Case.Status.NEEDS_EVIDENCE, null, LocalDateTime.now(java.time.ZoneOffset.UTC));
+        cases.saveAndFlush(entity);
+        String key = UUID.randomUUID().toString();
+        assertThatThrownBy(() -> writer.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"), REVIEWER,
+                CaseSnapshotManifest.sha256(key), "d".repeat(64), checked))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("CASE_VERSION_CONFLICT"));
+        assertThat(snapshots.findByCaseIdOrderByEvidenceRevisionDesc(target.caseId())).isEmpty();
+        assertThat(activities.findByCaseId(target.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .stream().filter(activity -> activity.getEventType().equals("EVIDENCE_SNAPSHOT_CAPTURED"))).isEmpty();
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                TENANT, REVIEWER, "SNAPSHOT_CREATE", target.caseId(), CaseSnapshotManifest.sha256(key))).isEmpty();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.AFTER_METHOD)
+    void changedAssetMetadataAfterPreflightIsRejectedWithoutAnotherHead() {
+        FanReport report = report();
+        UUID evidenceId = UUID.randomUUID();
+        String objectKey = "fan-reports/synthetic/" + evidenceId;
+        EvidenceAsset asset = new EvidenceAsset(evidenceId, report.getFanReportId(), objectKey,
+                "image/png", 4, "a".repeat(64), LocalDateTime.now(), report.getRetentionUntil());
+        asset.markStored("opaque-v1");
+        assets.saveAndFlush(asset);
+        when(storage.head(objectKey)).thenReturn(new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "opaque-v1"));
+        CaseDto.View target = reviewingAssetCase(report, evidenceId);
+        var checked = manifests.capture(cases.findById(target.caseId()).orElseThrow(),
+                sources.findByCaseIdOrderByLinkedAtAscIdAsc(target.caseId()),
+                LocalDateTime.now(java.time.ZoneOffset.UTC));
+        org.springframework.test.util.ReflectionTestUtils.setField(asset, "sha256", "b".repeat(64));
+        assets.saveAndFlush(asset);
+        clearInvocations(storage);
+        assertThatThrownBy(() -> writer.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"), REVIEWER,
+                CaseSnapshotManifest.sha256(UUID.randomUUID().toString()), "d".repeat(64), checked))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("SOURCE_CHANGED"));
+        org.springframework.test.util.ReflectionTestUtils.setField(asset, "sha256", "a".repeat(64));
+        org.springframework.test.util.ReflectionTestUtils.setField(asset, "objectKey", objectKey + "-changed");
+        assets.saveAndFlush(asset);
+        assertThatThrownBy(() -> writer.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"), REVIEWER,
+                CaseSnapshotManifest.sha256(UUID.randomUUID().toString()), "d".repeat(64), checked))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("SOURCE_CHANGED"));
+        verify(storage, never()).head(objectKey);
+        assertThat(snapshots.findByCaseIdOrderByEvidenceRevisionDesc(target.caseId())).isEmpty();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.AFTER_METHOD)
+    void expiredReportAfterDraftPreflightDoesNotCreateRevisionOrActivity() {
+        FanReport report = report();
+        CaseDto.View target = reviewingCase(report);
+        var snapshot = preparation.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"),
+                UUID.randomUUID().toString());
+        var current = cases.findById(target.caseId()).orElseThrow();
+        var checked = manifests.capture(current, sources.findByCaseIdOrderByLinkedAtAscIdAsc(target.caseId()),
+                LocalDateTime.now(java.time.ZoneOffset.UTC));
+        report.setRetentionUntil(LocalDateTime.now(java.time.ZoneOffset.UTC).minusHours(1));
+        reports.saveAndFlush(report);
+        assertThatThrownBy(() -> writer.draft(target.caseId(), new CasePreparationDto.DraftInput(
+                current.getCaseVersion(), snapshot.evidenceSnapshotId(), "Synthetic title",
+                "Synthetic assessment for reviewer", "Metadata only", "Further review needed",
+                "Prepare draft"), REVIEWER, CaseSnapshotManifest.sha256(UUID.randomUUID().toString()),
+                "d".repeat(64), checked))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("SOURCE_NOT_AVAILABLE"));
+        assertThat(drafts.findByCaseIdOrderByRevisionDesc(target.caseId())).isEmpty();
+        assertThat(activities.findByCaseId(target.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .stream().filter(activity -> activity.getEventType().equals("REPORT_DRAFT_CREATED"))).isEmpty();
     }
 
     @Test

@@ -49,15 +49,14 @@ public class CasePreparationWriteService {
 
     @Transactional
     public CasePreparationDto.Snapshot capture(UUID caseId, CasePreparationDto.Capture input,
-            UUID memberId, String keyDigest, String requestDigest) {
+            UUID memberId, String keyDigest, String requestDigest, CaseSnapshotManifest.Captured manifest) {
         Case target = reviewerCase(caseId, memberId, input.expectedCaseVersion());
         if (target.getStatus() != Case.Status.IN_REVIEW) throw conflict("CASE_STATE_CONFLICT");
         validate(input.reason(), 3, 1800);
         if (snapshots.findByCaseIdAndEvidenceRevision(caseId, target.getEvidenceRevision()).isPresent())
             throw conflict("SNAPSHOT_ALREADY_EXISTS");
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        CaseSnapshotManifest.Captured manifest = manifests.capture(target,
-                sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), now);
+        manifests.recheckDatabase(target, sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), manifest, now);
         long before = target.getCaseVersion();
         target.recordPreparation(now);
         cases.saveAndFlush(target);
@@ -75,7 +74,7 @@ public class CasePreparationWriteService {
 
     @Transactional
     public CasePreparationDto.Draft draft(UUID caseId, CasePreparationDto.DraftInput input,
-            UUID memberId, String keyDigest, String requestDigest) {
+            UUID memberId, String keyDigest, String requestDigest, CaseSnapshotManifest.Captured prepared) {
         Case target = reviewerCase(caseId, memberId, input.expectedCaseVersion());
         if (target.getStatus() != Case.Status.IN_REVIEW) throw conflict("CASE_STATE_CONFLICT");
         validate(input.title(), 3, 160);
@@ -91,9 +90,8 @@ public class CasePreparationWriteService {
         if (snapshot.getEvidenceRevision() != target.getEvidenceRevision())
             throw conflict("EVIDENCE_VERSION_MISMATCH");
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        CaseSnapshotManifest.Captured current = manifests.capture(target,
-                sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), now);
-        if (!current.sha256().equals(snapshot.getManifestSha256())) throw conflict("SOURCE_CHANGED");
+        manifests.recheckDatabase(target, sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), prepared, now);
+        if (!prepared.sha256().equals(snapshot.getManifestSha256())) throw conflict("SOURCE_CHANGED");
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("contentSchemaVersion", 1);
         content.put("templateVersion", DRAFT_INPUT_VERSION);
@@ -135,7 +133,7 @@ public class CasePreparationWriteService {
         return target;
     }
 
-    private static void validate(String value, int min, int max) {
+    static void validate(String value, int min, int max) {
         if (value == null || value.trim().length() < min || value.length() > max) throw invalid();
     }
 

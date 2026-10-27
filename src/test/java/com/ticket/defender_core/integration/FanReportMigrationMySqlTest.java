@@ -65,6 +65,7 @@ class FanReportMigrationMySqlTest {
         jdbc.execute("DROP TABLE evidence_assets");
         jdbc.execute("DROP TABLE fan_reports");
         jdbc.execute("ALTER TABLE events DROP COLUMN public_intake_enabled");
+        jdbc.execute("ALTER TABLE tenants MODIFY id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL");
         jdbc.execute("ALTER TABLE events MODIFY id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, "
                 + "MODIFY tenant_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL");
         try (Connection connection = datasource.getConnection()) {

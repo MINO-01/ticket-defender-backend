@@ -3,6 +3,7 @@ package com.ticket.defender_core.integration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -65,7 +66,8 @@ class CaseW07MigrationMySqlTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> insertAttempt(jdbc, UUID.randomUUID().toString(), scope,
                 POLICY_ID, 1L, null, "VERIFIED", "IMMUTABLE_VERIFIED", now))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasRootCauseInstanceOf(java.sql.SQLException.class);
 
         String otherEvidence = UUID.randomUUID().toString();
         jdbc.update("INSERT INTO evidence_assets (id,fan_report_id,object_key,media_type,byte_size,sha256,"

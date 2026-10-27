@@ -36,6 +36,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
@@ -118,6 +121,49 @@ class CaseW06ConcurrentMySqlTest {
         } finally {
             jdbc.execute("DROP TRIGGER IF EXISTS " + trigger);
         }
+    }
+
+    @Test
+    void storageOutageOmitsIdempotencyAndSameKeyCanRetryAfterRecovery() {
+        Fixture f = fixture();
+        EvidenceAsset asset = assets.findById(f.evidenceId()).orElseThrow();
+        when(storage.verifyBytes(asset.getObjectKey(), "etag", 20L * 1024 * 1024))
+                .thenThrow(new IllegalStateException("synthetic storage outage"));
+        String key = UUID.randomUUID().toString();
+        EvidenceIntegrityDto.VerifyInput unavailableInput = input(f);
+
+        assertThatThrownBy(() -> integrity.verify(f.caseId(), unavailableInput, key))
+                .isInstanceOfSatisfying(CaseApiException.class, error -> {
+                    assertThat(error.code()).isEqualTo("DEPENDENCY_UNAVAILABLE");
+                    assertThat(error.status()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+                });
+        assertThat(records.findByCaseId(f.caseId(), org.springframework.data.domain.Pageable.unpaged()))
+                .singleElement().satisfies(record -> assertThat(record.getVerificationStatus())
+                        .isEqualTo(EvidenceVerificationRecord.Status.STORAGE_UNAVAILABLE));
+        assertThat(activityCount(f.caseId())).isEqualTo(1);
+        long unavailableVersion = cases.findById(f.caseId()).orElseThrow().getCaseVersion();
+        assertThat(unavailableVersion).isEqualTo(unavailableInput.expectedCaseVersion() + 1);
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                TENANT, f.memberId(), "EVIDENCE_VERIFY", f.caseId(),
+                com.ticket.defender_core.application.service.CaseSnapshotManifest.sha256(key))).isEmpty();
+
+        doReturn(new EvidenceObjectStorage.ByteVerification(4, "image/png", "a".repeat(64),
+                "etag", EvidenceObjectStorage.MarkerKind.ETAG)).when(storage)
+                .verifyBytes(asset.getObjectKey(), "etag", 20L * 1024 * 1024);
+        EvidenceIntegrityDto.VerifyInput recoveredInput = new EvidenceIntegrityDto.VerifyInput(
+                unavailableVersion, f.snapshotId(), f.sourceId(), f.evidenceId(), unavailableInput.reason());
+        EvidenceIntegrityDto.Verification recovered = integrity.verify(f.caseId(), recoveredInput, key);
+        assertThat(integrity.verify(f.caseId(), recoveredInput, key)).isEqualTo(recovered);
+
+        assertThat(records.findByCaseId(f.caseId(), org.springframework.data.domain.Pageable.unpaged()))
+                .hasSize(2);
+        assertThat(activityCount(f.caseId())).isEqualTo(2);
+        assertThat(cases.findById(f.caseId()).orElseThrow().getCaseVersion())
+                .isEqualTo(unavailableVersion + 1);
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                TENANT, f.memberId(), "EVIDENCE_VERIFY", f.caseId(),
+                com.ticket.defender_core.application.service.CaseSnapshotManifest.sha256(key))).isPresent();
+        verify(storage, times(2)).verifyBytes(asset.getObjectKey(), "etag", 20L * 1024 * 1024);
     }
 
     private long activityCount(UUID caseId) {

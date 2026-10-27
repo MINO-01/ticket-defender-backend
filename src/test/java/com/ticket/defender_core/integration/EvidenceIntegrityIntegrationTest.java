@@ -159,28 +159,105 @@ class EvidenceIntegrityIntegrationTest {
     }
 
     @Test
-    void digestMismatchAndStorageOutageHaveDifferentRecordedOutcomes() {
+    void digestMismatchIsRecordedAndReplayed() {
         Fixture mismatch = fixture();
         when(storage.verifyBytes(mismatch.key(), "etag", 20L * 1024 * 1024))
                 .thenReturn(bytes("b".repeat(64)));
-        assertThatThrownBy(() -> integrity.verify(mismatch.caseId(), input(mismatch), UUID.randomUUID().toString()))
+        EvidenceIntegrityDto.VerifyInput mismatchInput = input(mismatch);
+        String key = UUID.randomUUID().toString();
+        assertThatThrownBy(() -> integrity.verify(mismatch.caseId(), mismatchInput, key))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("HASH_MISMATCH"));
+        assertThatThrownBy(() -> integrity.verify(mismatch.caseId(), mismatchInput, key))
                 .isInstanceOfSatisfying(CaseApiException.class,
                         error -> assertThat(error.code()).isEqualTo("HASH_MISMATCH"));
         assertThat(records.findByCaseId(mismatch.caseId(), org.springframework.data.domain.Pageable.unpaged())
                 .getContent().getFirst().getVerificationStatus())
                 .isEqualTo(EvidenceVerificationRecord.Status.HASH_MISMATCH);
+        assertThat(records.findByCaseId(mismatch.caseId(), org.springframework.data.domain.Pageable.unpaged()))
+                .hasSize(1);
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                TENANT, REVIEWER, "EVIDENCE_VERIFY", mismatch.caseId(), CaseSnapshotManifest.sha256(key)))
+                .isPresent();
+        verify(storage, times(1)).verifyBytes(mismatch.key(), "etag", 20L * 1024 * 1024);
+    }
 
+    @Test
+    void storageOutageCanRetrySameKeyWithLatestCaseVersionAndThenReplaySuccess() throws Exception {
         Fixture outage = fixture();
         when(storage.verifyBytes(outage.key(), "etag", 20L * 1024 * 1024))
                 .thenThrow(new IllegalStateException("synthetic storage outage"));
-        assertThatThrownBy(() -> integrity.verify(outage.caseId(), input(outage), UUID.randomUUID().toString()))
-                .isInstanceOfSatisfying(CaseApiException.class, error -> {
-                    assertThat(error.code()).isEqualTo("DEPENDENCY_UNAVAILABLE");
-                    assertThat(error.status()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
-                });
-        assertThat(records.findByCaseId(outage.caseId(), org.springframework.data.domain.Pageable.unpaged())
-                .getContent().getFirst().getVerificationStatus())
+        EvidenceIntegrityDto.VerifyInput unavailableInput = input(outage);
+        String key = UUID.randomUUID().toString();
+        String url = "/api/v1/cases/" + outage.caseId() + "/evidence-verifications";
+
+        mvc.perform(post(url).header("Authorization", "Bearer reviewer")
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(unavailableInput)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("DEPENDENCY_UNAVAILABLE"));
+
+        var unavailableRecords = records.findByCaseId(
+                outage.caseId(), org.springframework.data.domain.Pageable.unpaged()).getContent();
+        assertThat(unavailableRecords).hasSize(1);
+        assertThat(unavailableRecords.getFirst().getVerificationStatus())
                 .isEqualTo(EvidenceVerificationRecord.Status.STORAGE_UNAVAILABLE);
+        UUID unavailableRecordId = unavailableRecords.getFirst().getId();
+        assertThat(activities.findByCaseId(outage.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .stream().filter(activity -> activity.getEventType().equals("EVIDENCE_BYTES_CHECKED")))
+                .hasSize(1);
+        long unavailableVersion = cases.findById(outage.caseId()).orElseThrow().getCaseVersion();
+        assertThat(unavailableVersion).isEqualTo(unavailableInput.expectedCaseVersion() + 1);
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                TENANT, REVIEWER, "EVIDENCE_VERIFY", outage.caseId(), CaseSnapshotManifest.sha256(key)))
+                .isEmpty();
+
+        doReturn(bytes(outage.originalSha256())).when(storage)
+                .verifyBytes(outage.key(), "etag", 20L * 1024 * 1024);
+        EvidenceIntegrityDto.VerifyInput recoveredInput = new EvidenceIntegrityDto.VerifyInput(
+                unavailableVersion, outage.snapshotId(), outage.sourceId(), outage.evidenceId(),
+                unavailableInput.reason());
+        String recoveredBody = json.writeValueAsString(recoveredInput);
+        var recovered = mvc.perform(post(url).header("Authorization", "Bearer reviewer")
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content(recoveredBody))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.verificationStatus").value("MATCH"))
+                .andReturn();
+        UUID recoveredRecordId = UUID.fromString(json.readTree(
+                recovered.getResponse().getContentAsString()).get("recordId").asText());
+
+        var recoveredRecords = records.findByCaseId(
+                outage.caseId(), org.springframework.data.domain.Pageable.unpaged()).getContent();
+        assertThat(recoveredRecords).hasSize(2);
+        assertThat(recoveredRecords).extracting(EvidenceVerificationRecord::getId)
+                .containsExactlyInAnyOrder(unavailableRecordId, recoveredRecordId);
+        assertThat(recoveredRecords).extracting(EvidenceVerificationRecord::getVerificationStatus)
+                .containsExactlyInAnyOrder(EvidenceVerificationRecord.Status.STORAGE_UNAVAILABLE,
+                        EvidenceVerificationRecord.Status.MATCH);
+        assertThat(activities.findByCaseId(outage.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .stream().filter(activity -> activity.getEventType().equals("EVIDENCE_BYTES_CHECKED")))
+                .hasSize(2);
+        long recoveredVersion = cases.findById(outage.caseId()).orElseThrow().getCaseVersion();
+        assertThat(recoveredVersion).isEqualTo(unavailableVersion + 1);
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                TENANT, REVIEWER, "EVIDENCE_VERIFY", outage.caseId(), CaseSnapshotManifest.sha256(key)))
+                .isPresent();
+        verify(storage, times(2)).verifyBytes(outage.key(), "etag", 20L * 1024 * 1024);
+
+        mvc.perform(post(url).header("Authorization", "Bearer reviewer")
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content(recoveredBody))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.recordId").value(recoveredRecordId.toString()));
+
+        assertThat(records.findByCaseId(outage.caseId(), org.springframework.data.domain.Pageable.unpaged()))
+                .hasSize(2);
+        assertThat(activities.findByCaseId(outage.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .stream().filter(activity -> activity.getEventType().equals("EVIDENCE_BYTES_CHECKED")))
+                .hasSize(2);
+        assertThat(cases.findById(outage.caseId()).orElseThrow().getCaseVersion()).isEqualTo(recoveredVersion);
+        verify(storage, times(2)).verifyBytes(outage.key(), "etag", 20L * 1024 * 1024);
     }
 
     @Test

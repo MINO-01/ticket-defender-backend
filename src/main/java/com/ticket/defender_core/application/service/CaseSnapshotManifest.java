@@ -7,6 +7,7 @@ import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceReadRe
 import com.ticket.defender_core.domain.Case;
 import com.ticket.defender_core.domain.CaseSourceReference;
 import com.ticket.defender_core.domain.EvidenceAsset;
+import com.ticket.defender_core.domain.EvidenceSnapshot;
 import com.ticket.defender_core.domain.FanReport;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
 import lombok.RequiredArgsConstructor;
@@ -47,6 +48,23 @@ public class CaseSnapshotManifest {
         Captured current = capture(target, references, now, prepared.assets());
         if (!prepared.sha256().equals(current.sha256())
                 || !prepared.assets().equals(current.assets())) throw changed();
+    }
+
+    public void recheckStoredDatabase(Case target, List<CaseSourceReference> references,
+            EvidenceSnapshot snapshot, LocalDateTime now) {
+        Map<UUID, AssetState> states = new HashMap<>();
+        for (CaseSourceReference reference : references) {
+            if (reference.getSourceType() != CaseSourceReference.Type.EVIDENCE_ASSET) continue;
+            EvidenceAsset asset = assets.findById(reference.getEvidenceId()).orElseThrow(CaseSnapshotManifest::changed);
+            if (!Objects.equals(reference.getFanReportId(), asset.getFanReportId())
+                    || !Objects.equals(reference.getObjectMarker(), asset.getObjectVersion())
+                    || !Objects.equals(asset.getObjectKey(),
+                    "fan-reports/" + asset.getFanReportId() + "/" + asset.getEvidenceId())) throw changed();
+            states.put(asset.getEvidenceId(),
+                    new AssetState(asset.getObjectKey(), asset.getObjectVersion(), reference.getObjectMarker()));
+        }
+        Captured current = capture(target, references, now, states);
+        if (!snapshot.getManifestSha256().equals(current.sha256())) throw changed();
     }
 
     private Captured capture(Case target, List<CaseSourceReference> references, LocalDateTime now,

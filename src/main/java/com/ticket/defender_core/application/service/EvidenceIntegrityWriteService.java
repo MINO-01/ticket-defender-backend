@@ -57,9 +57,11 @@ public class EvidenceIntegrityWriteService {
                 + result.getVerificationStatus() + "; " + input.reason().trim(),
                 target.getStatus(), target.getStatus(), before, target.getCaseVersion(),
                 current.source().getId(), now));
-        idempotency.saveAndFlush(new CaseIdempotencyRecord(target.getTenantId(), current.actorMembershipId(),
-                "EVIDENCE_VERIFY", caseId, keyDigest, requestDigest, caseId,
-                json.writeValueAsString(Map.of("recordId", result.getId())), now));
+        if (outcome.status() != EvidenceVerificationRecord.Status.STORAGE_UNAVAILABLE) {
+            idempotency.saveAndFlush(new CaseIdempotencyRecord(target.getTenantId(), current.actorMembershipId(),
+                    "EVIDENCE_VERIFY", caseId, keyDigest, requestDigest, caseId,
+                    json.writeValueAsString(Map.of("recordId", result.getId())), now));
+        }
         return result;
     }
 }

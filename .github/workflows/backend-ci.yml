@@ -3,7 +3,7 @@ name: Backend CI
 on:
   pull_request:
   push:
-    branches: [main, 'feat/#38-evidence-integrity-gate']
+    branches: [main, 'feat/#38-evidence-integrity-gate', 'feat/#40-evidence-preservation-gate']
   workflow_dispatch:
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
 
   mysql8-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     services:
       mysql:
         image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
@@ -76,6 +76,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW06MigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W06 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-w06-migration
+      - name: Apply W07 preservation migration
+        run: bash ./gradlew test --tests '*CaseW07MigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-migration
       - name: Validate JPA schema and MySQL behavior
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
@@ -92,10 +96,18 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW06SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W06 schema test ran
         run: python3 .github/scripts/check_junit_results.py case-w06-schema
+      - name: Validate W07 preservation JPA mappings
+        run: bash ./gradlew test --tests '*CaseW07SchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 schema test ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-schema
       - name: Verify W06 idempotency and activity rollback on MySQL
         run: bash ./gradlew test --tests '*CaseW06ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W06 MySQL concurrency tests ran
         run: python3 .github/scripts/check_junit_results.py case-w06-concurrency
+      - name: Verify W07 idempotency policy race and rollback on MySQL
+        run: bash ./gradlew test --tests '*CaseW07ConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 MySQL concurrency tests ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-concurrency
       - name: Validate W05 mappings after concurrency data
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm order-independent W05 schema test ran
@@ -151,7 +163,7 @@ jobs:
 
   minio-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     services:
       mysql:
         image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
@@ -200,6 +212,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW06MigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W06 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-w06-migration
+      - name: Apply W07 preservation migration
+        run: bash ./gradlew test --tests '*CaseW07MigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-migration
       - name: Validate JPA schema
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
@@ -208,6 +224,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 schema test ran
         run: python3 .github/scripts/check_junit_results.py case-w05-schema
+      - name: Validate W07 preservation JPA mappings
+        run: bash ./gradlew test --tests '*CaseW07SchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 schema test ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-schema
       - name: Verify private MinIO object storage
         run: bash ./gradlew test --tests '*S3EvidenceObjectStorageMinioTest' --rerun-tasks --no-daemon
       - name: Confirm all object storage tests ran
@@ -228,6 +248,14 @@ jobs:
         run: bash ./gradlew test --tests '*S3EvidenceIntegrityVersionedMinioTest' --rerun-tasks --no-daemon
       - name: Confirm W06 versioned MinIO test ran
         run: python3 .github/scripts/check_junit_results.py case-w06-versioned-minio
+      - name: Verify W07 Object Lock and version deletion controls
+        run: bash ./gradlew test --tests '*S3EvidencePreservationObjectLockMinioTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 Object Lock tests ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-object-lock-minio
+      - name: Verify W07 locked object proof on MinIO and MySQL
+        run: bash ./gradlew test --tests '*CaseW07MinioMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W07 MinIO and MySQL test ran
+        run: python3 .github/scripts/check_junit_results.py case-w07-minio-mysql
       - name: Remove only this job's MinIO container
         if: always()
         run: docker rm -f td-issue32-ci-minio 2>/dev/null || true

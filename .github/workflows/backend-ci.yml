@@ -3,7 +3,7 @@ name: Backend CI
 on:
   pull_request:
   push:
-    branches: [main, 'feat/#36-evidence-snapshot-report-version']
+    branches: [main, 'feat/#38-evidence-integrity-gate']
   workflow_dispatch:
 
 permissions:
@@ -72,6 +72,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW05MigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-w05-migration
+      - name: Apply W06 evidence verification migration
+        run: bash ./gradlew test --tests '*CaseW06MigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W06 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w06-migration
       - name: Validate JPA schema and MySQL behavior
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
@@ -84,6 +88,14 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW05ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 concurrency tests ran
         run: python3 .github/scripts/check_junit_results.py case-w05-concurrency
+      - name: Validate W06 verification JPA mapping
+        run: bash ./gradlew test --tests '*CaseW06SchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W06 schema test ran
+        run: python3 .github/scripts/check_junit_results.py case-w06-schema
+      - name: Verify W06 idempotency and activity rollback on MySQL
+        run: bash ./gradlew test --tests '*CaseW06ConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W06 MySQL concurrency tests ran
+        run: python3 .github/scripts/check_junit_results.py case-w06-concurrency
       - name: Validate W05 mappings after concurrency data
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm order-independent W05 schema test ran
@@ -184,6 +196,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW05MigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-w05-migration
+      - name: Apply W06 evidence verification migration
+        run: bash ./gradlew test --tests '*CaseW06MigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W06 migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w06-migration
       - name: Validate JPA schema
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
@@ -204,6 +220,14 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW05MinioMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 private evidence tests ran
         run: python3 .github/scripts/check_junit_results.py case-w05-minio
+      - name: Verify W06 original bytes and replacement on MinIO and MySQL
+        run: bash ./gradlew test --tests '*CaseW06MinioMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W06 MinIO and MySQL test ran
+        run: python3 .github/scripts/check_junit_results.py case-w06-minio-mysql
+      - name: Verify W06 historical version access in isolated MinIO bucket
+        run: bash ./gradlew test --tests '*S3EvidenceIntegrityVersionedMinioTest' --rerun-tasks --no-daemon
+      - name: Confirm W06 versioned MinIO test ran
+        run: python3 .github/scripts/check_junit_results.py case-w06-versioned-minio
       - name: Remove only this job's MinIO container
         if: always()
         run: docker rm -f td-issue32-ci-minio 2>/dev/null || true

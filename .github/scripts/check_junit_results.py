@@ -54,6 +54,21 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.CaseW05MinioMySqlTest": (
         2, "Runs with private MinIO and isolated MySQL in the integration CI job"
     ),
+    "com.ticket.defender_core.integration.CaseW06MigrationMySqlTest": (
+        1, "Runs after W05 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW06SchemaValidateMySqlTest": (
+        1, "Runs after W06 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW06ConcurrentMySqlTest": (
+        3, "Runs after W06 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW06MinioMySqlTest": (
+        1, "Runs with private MinIO and isolated MySQL in the integration CI job"
+    ),
+    "com.ticket.defender_core.integration.S3EvidenceIntegrityVersionedMinioTest": (
+        1, "Runs against a disposable versioned MinIO bucket in the integration CI job"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -80,6 +95,21 @@ MYSQL_SUITES = {
     ),
     "case-w05-minio": (
         "com.ticket.defender_core.integration.CaseW05MinioMySqlTest", 2
+    ),
+    "case-w06-migration": (
+        "com.ticket.defender_core.integration.CaseW06MigrationMySqlTest", 1
+    ),
+    "case-w06-schema": (
+        "com.ticket.defender_core.integration.CaseW06SchemaValidateMySqlTest", 1
+    ),
+    "case-w06-concurrency": (
+        "com.ticket.defender_core.integration.CaseW06ConcurrentMySqlTest", 3
+    ),
+    "case-w06-minio-mysql": (
+        "com.ticket.defender_core.integration.CaseW06MinioMySqlTest", 1
+    ),
+    "case-w06-versioned-minio": (
+        "com.ticket.defender_core.integration.S3EvidenceIntegrityVersionedMinioTest", 1
     ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1

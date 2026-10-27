@@ -12,6 +12,7 @@ import com.ticket.defender_core.security.AdminAccessService;
 import com.ticket.defender_core.security.AdminResourceScope;
 import com.ticket.defender_core.security.AdminRole;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
@@ -120,6 +121,9 @@ public class EvidencePreservationService {
             if (committed != null) return Result.from(committed);
             throw audited(checked, input, policy, prepared, outcome(collision),
                     collision.status(), collision.code());
+        } catch (DataAccessException failure) {
+            throw audited(checked, input, policy, prepared, EvidencePreservationAttempt.Outcome.CONFLICT,
+                    HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
         }
     }
 

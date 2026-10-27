@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -129,7 +130,10 @@ class CaseW07ConcurrentMySqlTest {
         String key = UUID.randomUUID().toString();
         try {
             assertThatThrownBy(() -> preservation.preserve(fixture.caseId(), command(fixture), key))
-                    .isInstanceOf(CaseApiException.class);
+                    .isInstanceOfSatisfying(CaseApiException.class, error -> {
+                        assertThat(error.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                        assertThat(error.code()).isEqualTo("DEPENDENCY_UNAVAILABLE");
+                    });
             assertThat(preservationRecords.findByCaseIdOrderByVerifiedAtAscIdAsc(fixture.caseId())).isEmpty();
             assertThat(preservationActivityCount(fixture.caseId())).isZero();
             assertThat(cases.findById(fixture.caseId()).orElseThrow().getCaseVersion()).isEqualTo(before);

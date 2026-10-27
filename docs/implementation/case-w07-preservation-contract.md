@@ -88,7 +88,7 @@ CI는 기존 W02 버킷과 별도로 `td-issue40-ci-preservation`을 `--with-loc
 
 ## 트랜잭션, 멱등성과 장애 복구
 
-객체 HEAD, retention 조회와 GET은 DB 쓰기 트랜잭션 밖에서 실행한다. 성공 직전의 짧은 DB 트랜잭션에서 Case 낙관적 version 증가, 보존 성공 기록, `EVIDENCE_PRESERVATION_VERIFIED` CaseActivity, 성공 시도 감사와 멱등 결과를 함께 커밋한다. 어느 INSERT든 실패하면 이 성공 묶음은 전부 롤백된다.
+객체 HEAD, retention 조회와 GET은 DB 쓰기 트랜잭션 밖에서 실행한다. 성공 직전의 짧은 DB 트랜잭션에서 Case 낙관적 version 증가, 보존 성공 기록, `EVIDENCE_PRESERVATION_VERIFIED` CaseActivity, 성공 시도 감사와 멱등 결과를 함께 커밋한다. 어느 INSERT든 실패하면 이 성공 묶음은 전부 롤백되고, DB 접근 실패는 `DEPENDENCY_UNAVAILABLE`로 반환한 뒤 별도 트랜잭션의 `CONFLICT` 실패 시도로 감사한다.
 
 멱등 key는 tenant, actor, operation, Case 범위에서 digest로 저장한다. 성공한 같은 요청은 저장소를 다시 읽지 않고 같은 보존 기록을 반환한다. 같은 key와 다른 본문은 `IDEMPOTENCY_KEY_REUSED`로 거절한다. 정책 또는 저장소 실패에는 재사용 가능한 멱등 결과를 남기지 않으므로, 원인이 해소되고 Case version이 그대로라면 같은 key로 재시도할 수 있다. 실패 시도 감사는 별도 짧은 트랜잭션으로 남고 성공으로 가장되지 않는다.
 

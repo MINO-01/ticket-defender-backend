@@ -14,13 +14,17 @@ paths:
     post:
       operationId: verifyCaseEvidenceBytes
       description: >-
-        REVIEWER only. The current IN_REVIEW Case and stored snapshot must bind the file. A missing,
-        changed, expired or unreadable object creates a failure record and a 422 or 503 response. When
-        the byte-read outcome is STORAGE_UNAVAILABLE, its verification record and CaseActivity are
-        committed and the Case version increases, but no reusable idempotency result is stored. After
-        loading the latest Case version, the client may retry the same Idempotency-Key with the updated
-        expectedCaseVersion. Other dependency failures can return 503 without committing this state, so
-        a 503 response alone does not imply that the Case version changed. No image bytes are returned.
+        REVIEWER only. The current IN_REVIEW Case and stored snapshot must bind the file. Missing or
+        changed objects, digest or size mismatches, and other determinate read outcomes create a failure
+        record and a 422 response. Retention expiry detected before the object read can be stored as
+        RETENTION_EXPIRED and return 422. If retention expires during or after the read, the pre-commit
+        recheck can return 422 without committing a verification record, CaseActivity, Case version
+        change, or idempotency result for that request. When the byte-read outcome is STORAGE_UNAVAILABLE,
+        its verification record and CaseActivity are committed and the Case version increases, but no
+        reusable idempotency result is stored. After loading the latest Case version, the client may retry
+        the same Idempotency-Key with the updated expectedCaseVersion. Other failures can return 422 or
+        503 without committing this state, so either response alone does not imply that the Case version
+        changed. No image bytes are returned.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:

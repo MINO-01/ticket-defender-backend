@@ -10,5 +10,12 @@ public interface EvidenceObjectStorage {
         throw new IllegalStateException("Private object metadata lookup is unavailable");
     }
 
+    default ByteVerification verifyBytes(String objectKey, String storedMarker, long maximumBytes) {
+        throw new IllegalStateException("Private object byte verification is unavailable");
+    }
+
     record ObjectMetadata(long byteSize, String mediaType, String opaqueMarker) { }
+    record ByteVerification(long byteSize, String mediaType, String sha256,
+                            String marker, MarkerKind markerKind) { }
+    enum MarkerKind { VERSION_ID, ETAG }
 }

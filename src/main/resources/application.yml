@@ -37,6 +37,16 @@ spring:
       max-request-size: 101MB
 
 ticket-defender:
+  evidence-preservation:
+    enabled: ${EVIDENCE_PRESERVATION_ENABLED:false}
+    max-bytes: ${EVIDENCE_PRESERVATION_MAX_BYTES:20971520}
+    storage:
+      profile: ${EVIDENCE_PRESERVATION_STORAGE_PROFILE:UNCONFIGURED}
+      endpoint: ${EVIDENCE_PRESERVATION_S3_ENDPOINT:}
+      region: ${EVIDENCE_PRESERVATION_S3_REGION:us-east-1}
+      bucket: ${EVIDENCE_PRESERVATION_S3_BUCKET:}
+      access-key: ${EVIDENCE_PRESERVATION_S3_ACCESS_KEY:}
+      secret-key: ${EVIDENCE_PRESERVATION_S3_SECRET_KEY:}
   evidence-integrity:
     max-bytes: ${EVIDENCE_INTEGRITY_MAX_BYTES:20971520}
   fan-report:

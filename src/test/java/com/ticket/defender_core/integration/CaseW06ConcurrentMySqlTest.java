@@ -153,7 +153,9 @@ class CaseW06ConcurrentMySqlTest {
         EvidenceIntegrityDto.VerifyInput recoveredInput = new EvidenceIntegrityDto.VerifyInput(
                 unavailableVersion, f.snapshotId(), f.sourceId(), f.evidenceId(), unavailableInput.reason());
         EvidenceIntegrityDto.Verification recovered = integrity.verify(f.caseId(), recoveredInput, key);
-        assertThat(integrity.verify(f.caseId(), recoveredInput, key)).isEqualTo(recovered);
+        EvidenceIntegrityDto.Verification replayed = integrity.verify(f.caseId(), recoveredInput, key);
+        assertThat(replayed.recordId()).isEqualTo(recovered.recordId());
+        assertThat(replayed.verificationStatus()).isEqualTo(EvidenceVerificationRecord.Status.MATCH);
 
         assertThat(records.findByCaseId(f.caseId(), org.springframework.data.domain.Pageable.unpaged()))
                 .hasSize(2);

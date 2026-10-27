@@ -1,0 +1,178 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender W06 evidence integrity API
+  version: 1.0.0
+  description: Private byte verification and technical readiness assessment. Approval and PDF issuance remain unavailable.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+paths:
+  /api/v1/cases/{caseId}/evidence-verifications:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      operationId: verifyCaseEvidenceBytes
+      description: >-
+        REVIEWER only. The current IN_REVIEW Case and stored snapshot must bind the file. Missing or
+        changed objects, digest or size mismatches, and other determinate read outcomes create a failure
+        record and a 422 response. Retention expiry detected before the object read can be stored as
+        RETENTION_EXPIRED and return 422. If retention expires during or after the read, the pre-commit
+        recheck can return 422 without committing a verification record, CaseActivity, Case version
+        change, or idempotency result for that request. When the byte-read outcome is STORAGE_UNAVAILABLE,
+        its verification record and CaseActivity are committed and the Case version increases, but no
+        reusable idempotency result is stored. After loading the latest Case version, the client may retry
+        the same Idempotency-Key with the updated expectedCaseVersion. Other failures can return 422 or
+        503 without committing this state, so either response alone does not imply that the Case version
+        changed. No image bytes are returned.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyInput' }
+      responses:
+        '201':
+          description: Bytes matched the stored SHA-256 at verification time. This is not immutable preservation or approval.
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Verification' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    get:
+      operationId: listCaseEvidenceVerifications
+      description: Current W04 Case view policy. Returns bounded history without object keys or raw bytes.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Newest verification attempts first
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationPage' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/cases/{caseId}/integrity-evaluation:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      operationId: evaluateCaseEvidenceIntegrity
+      description: Read-only technical assessment of the current Case, Snapshot and DRAFT. The approval eligibility result remains BLOCKED. A storage outage is reported as UNAVAILABLE, never as missing evidence.
+      parameters:
+        - name: reportVersionId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Technical result and explicit blocking reason codes
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Evaluation' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+  schemas:
+    VerifyInput:
+      type: object
+      required: [expectedCaseVersion, evidenceSnapshotId, sourceReferenceId, evidenceId, reason]
+      properties:
+        expectedCaseVersion: { type: integer, format: int64, minimum: 0 }
+        evidenceSnapshotId: { type: string, format: uuid }
+        sourceReferenceId: { type: string, format: uuid }
+        evidenceId: { type: string, format: uuid }
+        reason: { type: string, minLength: 3, maxLength: 1800 }
+    Verification:
+      type: object
+      required: [recordId, caseId, evidenceSnapshotId, sourceReferenceId, evidenceId, verificationStatus, preservationStatus, markerKind, verificationMethod, verifiedAt]
+      properties:
+        recordId: { type: string, format: uuid }
+        caseId: { type: string, format: uuid }
+        evidenceSnapshotId: { type: string, format: uuid }
+        sourceReferenceId: { type: string, format: uuid }
+        evidenceId: { type: string, format: uuid }
+        verificationStatus:
+          type: string
+          enum: [MATCH, HASH_MISMATCH, SIZE_MISMATCH, OBJECT_MISSING, OBJECT_CHANGED, STORAGE_UNAVAILABLE, TOO_LARGE, RETENTION_EXPIRED]
+        preservationStatus: { type: string, enum: [UNPROTECTED, VERSIONED_MUTABLE, UNKNOWN] }
+        markerKind: { type: string, enum: [VERSION_ID, ETAG, NONE] }
+        verificationMethod: { type: string, enum: [STREAMED_SHA256, NOT_READ] }
+        verifiedByteSize: { type: [integer, 'null'], format: int64 }
+        verifiedAt: { type: string, format: date-time }
+    VerificationPage:
+      type: object
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Verification' } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasNext: { type: boolean }
+    Evaluation:
+      type: object
+      required: [caseId, evidenceSnapshotId, reportVersionId, technicalIntegrity, approvalEligibility, reasons]
+      properties:
+        caseId: { type: string, format: uuid }
+        evidenceSnapshotId: { type: string, format: uuid }
+        reportVersionId: { type: string, format: uuid }
+        technicalIntegrity: { type: string, enum: [VERIFIED_AT_TIME, METADATA_VALID, BLOCKED, UNAVAILABLE] }
+        approvalEligibility: { type: string, enum: [BLOCKED] }
+        reasons: { type: array, items: { type: string } }
+    Problem:
+      type: object
+      required: [status, code, requestId]
+      properties:
+        status: { type: integer }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+  responses:
+    Invalid: { description: Invalid request, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Unauthenticated: { description: Admin JWT required; Spring Security may reject before controller advice }
+    Forbidden: { description: Insufficient role, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    NotFound: { description: Resource outside current scope or absent, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Conflict: { description: Case version, source or idempotency conflict, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Unprocessable: { description: Verification failed or retention expired, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Unavailable: { description: Storage or database dependency unavailable, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }

@@ -38,7 +38,7 @@ class CaseMigrationMySqlTest {
         assertThat(reports).isGreaterThan(0);
 
         // The first test initializes the pre-W04 schema with JPA. Remove only its empty W04 tables.
-        for (String table : new String[]{"report_versions", "evidence_snapshots",
+        for (String table : new String[]{"evidence_verification_records", "report_versions", "evidence_snapshots",
                 "case_idempotency_records", "case_activities",
                 "case_source_references", "cases"}) {
             int exists = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables "

@@ -61,6 +61,7 @@ class FanReportMigrationMySqlTest {
         int oldAudits = jdbc.queryForObject("SELECT COUNT(*) FROM ticket_audit", Integer.class);
 
         // Current JPA generated baseline minus the additions in this migration models the pre-issue schema.
+        jdbc.execute("DROP TABLE evidence_verification_records");
         jdbc.execute("DROP TABLE evidence_assets");
         jdbc.execute("DROP TABLE fan_reports");
         jdbc.execute("ALTER TABLE events DROP COLUMN public_intake_enabled");

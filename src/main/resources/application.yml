@@ -37,6 +37,8 @@ spring:
       max-request-size: 101MB
 
 ticket-defender:
+  evidence-integrity:
+    max-bytes: ${EVIDENCE_INTEGRITY_MAX_BYTES:20971520}
   fan-report:
     enabled: ${FAN_REPORT_ENABLED:false}
     max-concurrent-intakes: ${FAN_REPORT_MAX_CONCURRENT_INTAKES:0}

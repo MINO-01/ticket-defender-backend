@@ -13,6 +13,7 @@ import software.amazon.awssdk.services.s3.model.GetObjectRetentionRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ObjectLockEnabled;
+import software.amazon.awssdk.services.s3.model.ObjectLockRetention;
 import software.amazon.awssdk.services.s3.model.ObjectLockRetentionMode;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
@@ -57,8 +58,14 @@ public class S3EvidencePreservationStorage implements EvidencePreservationStorag
             if (versionId == null || (requested != null && !requested.equals(versionId))
                     || Boolean.TRUE.equals(head.deleteMarker()))
                 throw new ObjectLockNotVerifiedException();
-            var retention = client.getObjectRetention(GetObjectRetentionRequest.builder()
-                    .bucket(bucket).key(key).versionId(versionId).build()).retention();
+            ObjectLockRetention retention;
+            try {
+                retention = client.getObjectRetention(GetObjectRetentionRequest.builder()
+                        .bucket(bucket).key(key).versionId(versionId).build()).retention();
+            } catch (S3Exception error) {
+                if (retentionMissing(error)) throw new ObjectLockNotVerifiedException();
+                throw error;
+            }
             if (retention == null || retention.mode() == null || retention.retainUntilDate() == null)
                 throw new ObjectLockNotVerifiedException();
             if (head.contentLength() == null || head.contentLength() != expectedSize
@@ -132,6 +139,12 @@ public class S3EvidencePreservationStorage implements EvidencePreservationStorag
         } catch (RuntimeException malformed) {
             return false;
         }
+    }
+
+    private static boolean retentionMissing(S3Exception error) {
+        if (error.statusCode() == 404) return true;
+        return error.statusCode() == 400 && error.awsErrorDetails() != null
+                && "NoSuchObjectLockConfiguration".equals(error.awsErrorDetails().errorCode());
     }
 
     private static String usableVersion(String versionId) {

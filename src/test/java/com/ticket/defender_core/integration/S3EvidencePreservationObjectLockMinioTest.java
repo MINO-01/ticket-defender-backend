@@ -54,30 +54,21 @@ class S3EvidencePreservationObjectLockMinioTest {
 
             S3EvidencePreservationStorage storage = new S3EvidencePreservationStorage(verifier, bucket,
                     required("TD_ISSUE40_MINIO_PROFILE"));
-            EvidencePreservationStorage.LockedObject locked = storage.verifyLocked(
-                    key, versionId, digest, bytes.length, 1024);
-            assertThat(locked.versionId()).isEqualTo(versionId);
-            assertThat(locked.sha256()).isEqualTo(digest);
-            assertThat(locked.byteSize()).isEqualTo(bytes.length);
-            assertThat(locked.lockMode()).isEqualTo(EvidencePreservationPolicy.Mode.GOVERNANCE);
-            assertThat(locked.retainUntil()).isAfter(LocalDateTime.now(ZoneOffset.UTC));
-            assertThat(locked.retainUntil()).isBeforeOrEqualTo(
-                    LocalDateTime.ofInstant(retainUntil.plusSeconds(1), ZoneOffset.UTC));
-
-            assertThat(reader.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket).key(key)
-                    .versionId(versionId).build()).asByteArray()).isEqualTo(bytes);
+            assertProtectedVersion(storage, reader, bucket, key, versionId, digest, bytes, retainUntil);
             assertThatThrownBy(() -> reader.getObjectRetention(GetObjectRetentionRequest.builder()
                     .bucket(bucket).key(key).versionId(versionId).build()))
                     .isInstanceOfSatisfying(S3Exception.class,
-                            error -> assertThat(error.statusCode()).isEqualTo(403));
+                            error -> assertS3Error(error, 403, "AccessDenied"));
             assertThatThrownBy(() -> deleter.deleteObject(DeleteObjectRequest.builder().bucket(bucket)
                     .key(key).versionId(versionId).build()))
                     .isInstanceOfSatisfying(S3Exception.class,
-                            error -> assertThat(error.statusCode()).isEqualTo(403));
+                            error -> assertS3Error(error, 400, "InvalidRequest"));
+            assertProtectedVersion(storage, reader, bucket, key, versionId, digest, bytes, retainUntil);
             assertThatThrownBy(() -> deleter.deleteObject(DeleteObjectRequest.builder().bucket(bucket)
                     .key(key).versionId(versionId).bypassGovernanceRetention(true).build()))
                     .isInstanceOfSatisfying(S3Exception.class,
-                            error -> assertThat(error.statusCode()).isEqualTo(403));
+                            error -> assertS3Error(error, 403, "AccessDenied"));
+            assertProtectedVersion(storage, reader, bucket, key, versionId, digest, bytes, retainUntil);
 
             DeleteObjectResponse marker = deleter.deleteObject(DeleteObjectRequest.builder()
                     .bucket(bucket).key(key).build());
@@ -93,8 +84,7 @@ class S3EvidencePreservationObjectLockMinioTest {
                 assertThat(deleteMarker.key()).isEqualTo(key);
                 assertThat(deleteMarker.versionId()).isEqualTo(marker.versionId());
             });
-            assertThat(storage.verifyLocked(key, versionId, digest, bytes.length, 1024).versionId())
-                    .isEqualTo(versionId);
+            assertProtectedVersion(storage, reader, bucket, key, versionId, digest, bytes, retainUntil);
 
             String unlockedVersion = admin.putObject(PutObjectRequest.builder().bucket(bucket)
                     .key(unlockedKey).build(), RequestBody.fromBytes(bytes)).versionId();
@@ -153,6 +143,27 @@ class S3EvidencePreservationObjectLockMinioTest {
                 .region(Region.US_EAST_1).forcePathStyle(true)
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(accessKey, secretKey))).build();
+    }
+
+    private static void assertProtectedVersion(S3EvidencePreservationStorage storage, S3Client reader,
+            String bucket, String key, String versionId, String digest, byte[] bytes, Instant retainUntil) {
+        EvidencePreservationStorage.LockedObject locked = storage.verifyLocked(
+                key, versionId, digest, bytes.length, 1024);
+        assertThat(locked.versionId()).isEqualTo(versionId);
+        assertThat(locked.sha256()).isEqualTo(digest);
+        assertThat(locked.byteSize()).isEqualTo(bytes.length);
+        assertThat(locked.lockMode()).isEqualTo(EvidencePreservationPolicy.Mode.GOVERNANCE);
+        assertThat(locked.retainUntil()).isAfter(LocalDateTime.now(ZoneOffset.UTC));
+        assertThat(locked.retainUntil()).isBeforeOrEqualTo(
+                LocalDateTime.ofInstant(retainUntil.plusSeconds(1), ZoneOffset.UTC));
+        assertThat(reader.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket)
+                .key(key).versionId(versionId).build()).asByteArray()).isEqualTo(bytes);
+    }
+
+    private static void assertS3Error(S3Exception error, int status, String code) {
+        assertThat(error.statusCode()).isEqualTo(status);
+        assertThat(error.awsErrorDetails()).isNotNull();
+        assertThat(error.awsErrorDetails().errorCode()).isEqualTo(code);
     }
 
     private static String sha256(byte[] bytes) {

@@ -67,6 +67,7 @@ public class EvidenceIntegrityService {
     private final EvidenceAssetRepository assets;
     private final FanReportRepository reports;
     private final CaseSnapshotManifest manifests;
+    private final ReportTemplateRegistry templates;
     private final CaseIdempotencyRepository idempotency;
     private final ObjectMapper json;
 
@@ -136,7 +137,8 @@ public class EvidenceIntegrityService {
             reasons.add("SNAPSHOT_DIGEST_MISMATCH");
         if (!CaseSnapshotManifest.sha256(draft.getContentJson()).equals(draft.getContentSha256())
                 || !contentBinds(draft, snapshot)) reasons.add("REPORT_DIGEST_MISMATCH");
-        if (!"DRAFT".equals(draft.getStatus()) || !"draft-input-v1".equals(draft.getTemplateVersion()))
+        if (!ReportVersion.Status.DRAFT.name().equals(draft.getStatus())
+                || !templates.verifies(draft.getTemplateVersion(), draft.getTemplateSha256()))
             reasons.add("TEMPLATE_NOT_RETAINED");
 
         List<CaseSourceReference> references = sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId);

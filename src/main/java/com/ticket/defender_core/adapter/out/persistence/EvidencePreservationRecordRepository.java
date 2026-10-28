@@ -9,6 +9,8 @@ import java.util.UUID;
 
 public interface EvidencePreservationRecordRepository extends JpaRepository<EvidencePreservationRecord, UUID> {
     List<EvidencePreservationRecord> findByCaseIdOrderByVerifiedAtAscIdAsc(UUID caseId);
+    Optional<EvidencePreservationRecord> findTopByEvidenceSnapshotIdAndSourceReferenceIdOrderByVerifiedAtDescIdDesc(
+            UUID snapshotId, UUID sourceReferenceId);
 
     Optional<EvidencePreservationRecord> findByTenantIdAndEvidenceIdAndStorageProfileAndActualVersionIdAndPreservationPolicyIdAndPreservationPolicyVersion(
             UUID tenantId, UUID evidenceId, String storageProfile, String actualVersionId,

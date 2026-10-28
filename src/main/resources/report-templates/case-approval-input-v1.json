@@ -1,0 +1,15 @@
+{
+  "templateVersion": "case-approval-input-v1",
+  "contentSchemaVersion": 1,
+  "required": [
+    "templateVersion",
+    "evidenceSnapshotId",
+    "manifestSha256",
+    "title",
+    "assessment",
+    "limitations",
+    "conclusion"
+  ],
+  "purpose": "sealed-approval-review-input",
+  "officialPdfTemplate": false
+}

@@ -31,13 +31,13 @@ public final class CaseDto {
     public record View(UUID caseId, UUID eventId, Case.Type type, Case.Status status,
                        long caseVersion, long evidenceRevision, UUID createdByMembershipId,
                        UUID assigneeMembershipId, UUID relatedCaseId, String relationReason,
-                       String classification,
+                       String classification, UUID currentReportVersionId,
                        OffsetDateTime createdAt, OffsetDateTime updatedAt) {
         public static View from(Case value) {
             return new View(value.getId(), value.getEventId(), value.getType(), value.getStatus(),
                     value.getCaseVersion(), value.getEvidenceRevision(), value.getCreatedByMembershipId(),
                     value.getAssigneeMembershipId(), value.getRelatedCaseId(), value.getRelationReason(),
-                    value.getClassification(),
+                    value.getClassification(), value.getCurrentReportVersionId(),
                     utc(value.getCreatedAt()), utc(value.getUpdatedAt()));
         }
     }

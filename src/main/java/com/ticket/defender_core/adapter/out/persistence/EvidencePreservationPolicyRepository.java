@@ -8,4 +8,5 @@ import java.util.UUID;
 
 public interface EvidencePreservationPolicyRepository extends JpaRepository<EvidencePreservationPolicy, UUID> {
     Optional<EvidencePreservationPolicy> findTopByPolicyIdOrderByPolicyVersionDesc(UUID policyId);
+    Optional<EvidencePreservationPolicy> findByPolicyIdAndPolicyVersion(UUID policyId, long policyVersion);
 }

@@ -1,0 +1,209 @@
+openapi: 3.1.0
+x-contract-status: IMPLEMENTED_W08A
+info:
+  title: Ticket Defender Approval Request Binding API
+  version: 1.0.0
+  description: >-
+    W08a implements only approval request submission and detail lookup. A PENDING request
+    pins the server-verified report revision, report content and template digests, evidence
+    snapshot revision and manifest digest. It is not an approval decision or permission to
+    issue an official PDF. approvalEligibility therefore remains BLOCKED.
+servers:
+  - url: http://localhost:8080
+security:
+  - adminBearer: []
+paths:
+  /api/v1/cases/{caseId}/approval-requests:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      operationId: submitApprovalRequest
+      x-required-roles: [REVIEWER]
+      description: >-
+        Atomically changes the Case from IN_REVIEW to READY_FOR_APPROVAL, changes the pinned
+        report from DRAFT to PENDING_APPROVAL, and stores the PENDING request, Case activity,
+        approval audit event and idempotency result. The server recomputes stored digests and
+        requires current MATCH verification, immutable preservation and its current APPROVED
+        preservation policy for every file evidence source. An ACTIVE issuance hold blocks
+        submission. Replaying an identical body with the same key returns the stored request.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitApprovalRequest'
+      responses:
+        '201':
+          description: The target is pinned in a PENDING approval request; it is not approved.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequest'
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approval-requests/{approvalRequestId}:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalRequestId'
+    get:
+      operationId: getApprovalRequest
+      x-required-roles: [TENANT_ADMIN, REVIEWER, APPROVER]
+      description: >-
+        Returns a request only after authenticated tenant and event access checks. Inaccessible
+        tenant or event resources are hidden as RESOURCE_NOT_FOUND. The response never includes
+        an object key, object bytes, storage credentials or private evidence content.
+      responses:
+        '200':
+          description: Server-pinned approval request details.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequest'
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ApprovalRequestId:
+      name: approvalRequestId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+  schemas:
+    SubmitApprovalRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - reportVersionId
+        - evidenceSnapshotId
+        - expectedCaseVersion
+        - expectedReportVersion
+        - expectedReportContentSha256
+        - reason
+      properties:
+        reportVersionId: { type: string, format: uuid }
+        evidenceSnapshotId: { type: string, format: uuid }
+        expectedCaseVersion: { type: integer, format: int64, minimum: 0 }
+        expectedReportVersion: { type: integer, format: int64, minimum: 0 }
+        expectedReportContentSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        reason: { type: string, minLength: 3, maxLength: 1800 }
+    ApprovalRequest:
+      type: object
+      required:
+        - approvalRequestId
+        - caseId
+        - eventId
+        - reportVersionId
+        - reportRevision
+        - reportContentSha256
+        - reportTemplateVersion
+        - reportTemplateSha256
+        - evidenceSnapshotId
+        - evidenceRevision
+        - manifestSha256
+        - requestedBy
+        - requestedAt
+        - reason
+        - status
+        - caseVersionAtSubmit
+        - version
+        - approvalEligibility
+      properties:
+        approvalRequestId: { type: string, format: uuid }
+        caseId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        reportVersionId: { type: string, format: uuid }
+        reportRevision: { type: integer, format: int64, minimum: 1 }
+        reportContentSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        reportTemplateVersion: { type: string, const: case-approval-input-v1 }
+        reportTemplateSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        evidenceSnapshotId: { type: string, format: uuid }
+        evidenceRevision: { type: integer, format: int64, minimum: 1 }
+        manifestSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        requestedBy: { type: string, format: uuid }
+        requestedAt: { type: string, format: date-time }
+        reason: { type: string }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED, WITHDRAWN, INVALIDATED] }
+        caseVersionAtSubmit: { type: integer, format: int64, minimum: 0 }
+        version: { type: integer, format: int64, minimum: 0 }
+        approvalEligibility:
+          type: string
+          const: BLOCKED
+          description: W08a stores a review target; W08b decision and official issuance remain disabled.
+    Problem:
+      type: object
+      required: [status, title, code, requestId]
+      properties:
+        status: { type: integer }
+        title: { type: string }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+  responses:
+    Invalid:
+      description: INVALID_REQUEST or INVALID_IDEMPOTENCY_KEY
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthenticated:
+      description: Admin JWT is required.
+    Forbidden:
+      description: FORBIDDEN for an authenticated member without an allowed role.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: RESOURCE_NOT_FOUND, including inaccessible tenant or event scope.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: >-
+        IDEMPOTENCY_KEY_REUSED, APPROVAL_REQUEST_ALREADY_PENDING, REPORT_REVISION_CLOSED,
+        CASE_VERSION_CONFLICT, CASE_STATE_CONFLICT, ISSUANCE_HOLD_ACTIVE,
+        REPORT_VERSION_CONFLICT, EVIDENCE_VERSION_MISMATCH, EVIDENCE_REVIEW_MISMATCH or
+        REPORT_CONTENT_MISMATCH.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unprocessable:
+      description: VALIDATION_FAILED, TEMPLATE_NOT_RETAINED or APPROVAL_BASIS_BLOCKED.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: DEPENDENCY_UNAVAILABLE for a database outage.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

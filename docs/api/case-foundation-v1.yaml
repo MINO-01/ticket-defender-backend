@@ -123,7 +123,7 @@ components:
     CaseStatus:
       type: string
       enum: [OPEN, TRIAGED, IN_REVIEW, NEEDS_EVIDENCE, READY_FOR_APPROVAL, APPROVED_FOR_REPORT, DISMISSED, CLOSED]
-      description: W04 commands cannot enter approval, closure or reopen states.
+      description: W04 transition commands cannot enter approval, closure or reopen states; W08a approval submission can enter READY_FOR_APPROVAL.
     GraphCluster:
       type: object
       required: [analysisRequestId, clusterId]
@@ -179,6 +179,7 @@ components:
         relatedCaseId: { type: [string, 'null'], format: uuid }
         relationReason: { type: [string, 'null'] }
         classification: { type: [string, 'null'] }
+        currentReportVersionId: { type: [string, 'null'], format: uuid, description: Set only when W08a pins a report for approval review. }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     CasePage:

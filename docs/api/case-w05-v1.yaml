@@ -230,7 +230,7 @@ components:
     Draft:
       type: object
       required: [reportVersionId, caseId, eventId, evidenceSnapshotId, evidenceRevision, revision, version,
-                 templateVersion, contentSha256, contentJson, status, renderable,
+                 templateVersion, templateSha256, contentSha256, contentJson, status, renderable,
                  approvalEligible, createdByMembershipId, createdAt]
       properties:
         reportVersionId: { type: string, format: uuid }
@@ -239,11 +239,12 @@ components:
         evidenceSnapshotId: { type: string, format: uuid }
         evidenceRevision: { type: integer, minimum: 1, format: int64 }
         revision: { type: integer, minimum: 1, format: int64 }
-        version: { type: integer, minimum: 0, format: int64, description: Reserved for future status locking. }
-        templateVersion: { type: string, const: draft-input-v1, description: Logical input schema, not a PDF template artifact. }
+        version: { type: integer, minimum: 0, format: int64, description: Optimistic lock version for report status transitions. }
+        templateVersion: { type: string, enum: [draft-input-v1, case-approval-input-v1], description: Legacy logical schema or retained W08a report input artifact version. }
+        templateSha256: { type: [string, 'null'], pattern: '^[a-f0-9]{64}$', description: Null on legacy rows; otherwise the server-computed SHA-256 of the retained classpath artifact. }
         contentSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
         contentJson: { type: string, description: Server sealed draft input. Private to authorized Case viewers. }
-        status: { type: string, const: DRAFT }
+        status: { type: string, enum: [DRAFT, PENDING_APPROVAL], description: W08a can transition a sealed DRAFT to PENDING_APPROVAL without changing its content. }
         renderable: { type: boolean, const: false }
         approvalEligible: { type: boolean, const: false }
         createdByMembershipId: { type: string, format: uuid }

@@ -1,5 +1,6 @@
 openapi: 3.1.0
 x-contract-status: PROPOSED_UNIMPLEMENTED
+x-w08a-implemented-contract: case-w08a-v1.yaml
 info:
   title: Ticket Defender Case and Approval API (PROPOSAL)
   version: 0.1.0

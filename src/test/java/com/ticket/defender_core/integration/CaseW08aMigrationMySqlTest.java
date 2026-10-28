@@ -95,14 +95,14 @@ class CaseW08aMigrationMySqlTest {
 
         assertThatThrownBy(() -> insertRequest(jdbc, UUID.randomUUID().toString(), scope,
                 UUID.randomUUID().toString(), scope.snapshotId(), scope.revision(),
-                scope.contentSha256(), after, UUID.randomUUID().toString(), now))
+                scope.contentSha256(), after, scope.caseId(), now))
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE approval_requests SET status='WITHDRAWN' WHERE id=?", REQUEST_ID))
                 .isInstanceOf(DataAccessException.class)
                 .hasRootCauseInstanceOf(java.sql.SQLException.class);
         assertThatThrownBy(() -> insertHold(jdbc, UUID.randomUUID().toString(),
-                new Scope(scope.tenant(), scope.event(), UUID.randomUUID().toString(), scope.snapshotId(),
+                new Scope(scope.tenant(), UUID.randomUUID().toString(), scope.caseId(), scope.snapshotId(),
                         scope.actor(), scope.revision(), scope.contentSha256()), now))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }

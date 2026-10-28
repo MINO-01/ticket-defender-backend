@@ -79,7 +79,8 @@ public class SecurityConfig {
                                 "/api/v1/cases/*/transitions",
                                 "/api/v1/cases/*/evidence-snapshots",
                                 "/api/v1/cases/*/report-versions",
-                                "/api/v1/cases/*/evidence-verifications").authenticated()
+                                "/api/v1/cases/*/evidence-verifications",
+                                "/api/v1/cases/*/approval-requests").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/cases",
                                 "/api/v1/cases/*", "/api/v1/cases/*/sources",
                                 "/api/v1/cases/*/activities",
@@ -88,7 +89,8 @@ public class SecurityConfig {
                                 "/api/v1/cases/*/report-versions",
                                 "/api/v1/cases/*/evidence-verifications",
                                 "/api/v1/cases/*/integrity-evaluation",
-                                "/api/v1/report-versions/*").authenticated()
+                                "/api/v1/report-versions/*",
+                                "/api/v1/approval-requests/*").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/api/v1/cases/*/assignee").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))

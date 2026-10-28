@@ -65,7 +65,7 @@ W07은 D의 검증 기반을 채택한다. 버전 관리만 켜진 저장소는 
 - 바이트 크기와 스트리밍 SHA-256
 - `GetObjectRetention`의 실제 lock mode와 retain-until
 
-ETag 또는 DB 상태만으로 `IMMUTABLE_VERIFIED`를 만들지 않는다. 객체 없음, digest 또는 크기 불일치, version 불일치, 잠금 없음, 모드 불일치, 상한 초과, 권한 부족이나 저장소 장애는 성공 기록을 만들지 않는다.
+ETag 또는 DB 상태만으로 `IMMUTABLE_VERIFIED`를 만들지 않는다. 객체 없음, digest 또는 크기 불일치, version 불일치, 잠금 없음, 모드 불일치, 상한 초과, 권한 부족이나 저장소 장애는 성공 기록을 만들지 않는다. 객체 HEAD 또는 version GET에서 확인한 객체 부재는 `PRESERVATION_OBJECT_MISMATCH`로 구분한다. 반면 `GetObjectRetention`에서 확인한 보존 정보 부재는 `OBJECT_LOCK_NOT_VERIFIED`로 구분한다. 고정 MinIO 버전은 이 경우 HTTP 400 `NoSuchObjectLockConfiguration`을 반환하며, retention 조회의 HTTP 404도 잠금 미확인으로 처리한다. 다른 HTTP 400, 권한 부족과 저장소 장애는 잠금 부재로 간주하지 않는다.
 
 CI는 기존 W02 버킷과 별도로 `td-issue40-ci-preservation`을 `--with-lock`으로 생성한다. 합성 객체에 짧은 Governance 보존만 적용한다. 보존 검증자는 bucket capability, retention과 version GET만 허용하고 PUT, COPY, DELETE 권한이 없다. 읽기 전용 계정은 retention을 조회할 수 없으며, 테스트 삭제 계정은 version 삭제 권한은 있지만 `BypassGovernanceRetention` 권한이 없다. 고정 MinIO 버전은 우회 헤더가 없는 보호 version 삭제를 HTTP 400 `InvalidRequest`로, 우회 헤더가 있지만 권한이 없는 요청을 HTTP 403 `AccessDenied`로 구분한다. 두 거부 뒤에 version GET, SHA-256, mode와 retain-until을 다시 검증하며, 관리자 계정만 테스트 정리를 위해 명시적 bypass를 사용한다.
 
@@ -84,7 +84,9 @@ CI는 기존 W02 버킷과 별도로 `td-issue40-ci-preservation`을 `--with-loc
 
 원본 object key는 일반 응답이나 감사 detail에 저장하지 않는다. DB에는 key의 SHA-256만 남긴다. 같은 tenant, evidence, storage profile, actual version과 policy version 조합은 UNIQUE 제약으로 중복 성공 기록을 막는다.
 
-`EvidencePreservationAttempt`는 인가 후 확인 가능한 명령의 결과를 append-only로 남긴다. 성공은 보존 기록을 참조하고, 정책 거절·저장소 거절·저장소 장애·경합은 보존 기록을 참조하지 않는다. 자격증명, 원본 바이트, raw object key와 예외 전문은 저장하지 않는다.
+`EvidencePreservationAttempt`는 인가 후 확인 가능한 명령의 결과를 append-only로 남긴다. 성공은 보존 기록을 참조하고, 정책 거절, Object Lock 미확인, 원본 불일치, 저장소 장애와 경합은 보존 기록을 참조하지 않는다. 자격증명, 원본 바이트, raw object key와 예외 전문은 저장하지 않는다.
+
+정책 거절이나 저장소 검증 실패의 감사 저장이 성공하면 실패 시도 한 건을 별도 트랜잭션에 남긴다. 감사 저장 자체가 실패하면 원래 정책 또는 저장소 오류 코드와 HTTP 의미를 유지하고 감사 실패 예외를 원래 예외의 suppressed exception으로 연결한다. 운영 로그에는 서비스 오류 코드와 감사 실패 예외 유형만 남기며 객체 key, 자격증명, 요청 본문과 예외 메시지는 남기지 않는다. 이 경우 성공 보존 기록, CaseActivity, Case version 증가와 멱등 성공 결과는 생성되지 않지만, 실패 감사의 영속성도 보장되지 않는다. 따라서 운영에서는 해당 오류 로그에 대한 경보와 별도 복구 절차가 필요하다.
 
 ## 트랜잭션, 멱등성과 장애 복구
 

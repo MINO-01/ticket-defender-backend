@@ -11,6 +11,7 @@ import com.ticket.defender_core.domain.EvidencePreservationRecord;
 import com.ticket.defender_core.security.AdminAccessService;
 import com.ticket.defender_core.security.AdminResourceScope;
 import com.ticket.defender_core.security.AdminRole;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -27,6 +28,7 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 @Service
+@Slf4j
 public class EvidencePreservationService {
     private static final Pattern KEY = Pattern.compile(
             "(?i)[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}");
@@ -77,8 +79,8 @@ public class EvidencePreservationService {
             policy = gate.authorize(checked.source(), input.preservationPolicyId(),
                     LocalDateTime.now(ZoneOffset.UTC));
         } catch (EvidencePreservationPolicyGate.Rejection rejection) {
-            writer.failure(checked, input.preservationPolicyId(), rejection.policyVersion(),
-                    rejection.outcome(), rejection.code(), prepared.keyDigest(), prepared.requestDigest());
+            auditFailure(checked, input.preservationPolicyId(), rejection.policyVersion(),
+                    rejection.outcome(), rejection, prepared);
             throw rejection;
         }
         String objectKey = preservationKey(checked);
@@ -130,9 +132,23 @@ public class EvidencePreservationService {
     private CaseApiException audited(EvidencePreservationContext.Checked checked, Command input,
             EvidencePreservationPolicyGate.Authorized policy, Prepared prepared,
             EvidencePreservationAttempt.Outcome outcome, HttpStatus status, String code) {
-        writer.failure(checked, input.preservationPolicyId(), policy.policy().getPolicyVersion(), outcome,
-                code, prepared.keyDigest(), prepared.requestDigest());
-        return new CaseApiException(status, code);
+        CaseApiException original = new CaseApiException(status, code);
+        auditFailure(checked, input.preservationPolicyId(), policy.policy().getPolicyVersion(),
+                outcome, original, prepared);
+        return original;
+    }
+
+    private void auditFailure(EvidencePreservationContext.Checked checked, UUID requestedPolicyId,
+            Long policyVersion, EvidencePreservationAttempt.Outcome outcome,
+            CaseApiException original, Prepared prepared) {
+        try {
+            writer.failure(checked, requestedPolicyId, policyVersion, outcome, original.code(),
+                    prepared.keyDigest(), prepared.requestDigest());
+        } catch (RuntimeException auditFailure) {
+            original.addSuppressed(auditFailure);
+            log.error("증거 보존 실패 감사를 저장하지 못했습니다. 서비스 오류 코드: {}, 감사 실패 유형: {}",
+                    original.code(), auditFailure.getClass().getSimpleName());
+        }
     }
 
     private static EvidencePreservationAttempt.Outcome outcome(CaseApiException error) {

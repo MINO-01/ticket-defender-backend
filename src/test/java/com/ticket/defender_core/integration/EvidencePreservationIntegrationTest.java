@@ -11,12 +11,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.security.MessageDigest;
@@ -29,6 +31,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
@@ -68,6 +71,7 @@ class EvidencePreservationIntegrationTest {
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
     @MockitoBean private EvidenceObjectStorage objectStorage;
     @MockitoBean private EvidencePreservationStorage preservationStorage;
+    @MockitoSpyBean private EvidencePreservationWriteService preservationWriter;
 
     private UUID tenant;
     private UUID event;
@@ -160,6 +164,73 @@ class EvidencePreservationIntegrationTest {
                 .hasSize(4).allMatch(attempt -> attempt.getOutcome()
                         == EvidencePreservationAttempt.Outcome.POLICY_REJECTED);
         verify(preservationStorage, never()).verifyLocked(anyString(), any(), anyString(), anyLong(), anyLong());
+    }
+
+    @Test
+    void policyRejectionSurvivesFailureAuditWriteFailure() {
+        Fixture fixture = fixture(null);
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        EvidencePreservationPolicy draft = savePolicy(UUID.randomUUID(), 1, tenant, event,
+                EvidencePreservationPolicy.Status.DRAFT, now.minusDays(1), now.plusDays(10),
+                5, PROFILE, EvidencePreservationPolicy.Mode.GOVERNANCE, null, null, null);
+        EvidencePreservationService.Command command = command(fixture, draft.getPolicyId());
+        String key = UUID.randomUUID().toString();
+        long before = cases.findById(fixture.caseId()).orElseThrow().getCaseVersion();
+        DataAccessResourceFailureException auditFailure = auditFailure();
+        rejectFailureAudit(auditFailure);
+
+        assertOriginalFailure(() -> preservation.preserve(fixture.caseId(), command, key),
+                HttpStatus.CONFLICT, "PRESERVATION_POLICY_NOT_APPROVED", auditFailure);
+
+        assertNoPreservationChanges(fixture, key, before);
+        assertThat(attempts.findByCaseIdOrderByAttemptedAtAscIdAsc(fixture.caseId())).isEmpty();
+        verify(preservationStorage, never()).verifyLocked(anyString(), any(), anyString(), anyLong(), anyLong());
+    }
+
+    @Test
+    void objectLockFailureSurvivesFailureAuditWriteFailure() {
+        Fixture fixture = fixture(null);
+        EvidencePreservationPolicy policy = approvedPolicy(fixture, PROFILE, 10,
+                EvidencePreservationPolicy.Mode.GOVERNANCE);
+        EvidencePreservationService.Command command = command(fixture, policy.getPolicyId());
+        String key = UUID.randomUUID().toString();
+        long before = cases.findById(fixture.caseId()).orElseThrow().getCaseVersion();
+        DataAccessResourceFailureException auditFailure = auditFailure();
+        rejectFailureAudit(auditFailure);
+        when(preservationStorage.verifyLocked(anyString(), isNull(), eq(fixture.sha256()),
+                eq(4L), eq(MAX_BYTES)))
+                .thenThrow(new EvidencePreservationStorage.ObjectLockNotVerifiedException());
+
+        assertOriginalFailure(() -> preservation.preserve(fixture.caseId(), command, key),
+                HttpStatus.UNPROCESSABLE_ENTITY, "OBJECT_LOCK_NOT_VERIFIED", auditFailure);
+
+        assertNoPreservationChanges(fixture, key, before);
+        assertThat(attempts.findByCaseIdOrderByAttemptedAtAscIdAsc(fixture.caseId())).isEmpty();
+        verify(preservationStorage).verifyLocked(
+                preservationKey(fixture), null, fixture.sha256(), 4, MAX_BYTES);
+    }
+
+    @Test
+    void storageOutageSurvivesFailureAuditWriteFailure() {
+        Fixture fixture = fixture(null);
+        EvidencePreservationPolicy policy = approvedPolicy(fixture, PROFILE, 10,
+                EvidencePreservationPolicy.Mode.GOVERNANCE);
+        EvidencePreservationService.Command command = command(fixture, policy.getPolicyId());
+        String key = UUID.randomUUID().toString();
+        long before = cases.findById(fixture.caseId()).orElseThrow().getCaseVersion();
+        DataAccessResourceFailureException auditFailure = auditFailure();
+        rejectFailureAudit(auditFailure);
+        when(preservationStorage.verifyLocked(anyString(), isNull(), eq(fixture.sha256()),
+                eq(4L), eq(MAX_BYTES)))
+                .thenThrow(new EvidencePreservationStorage.StorageUnavailableException("synthetic outage"));
+
+        assertOriginalFailure(() -> preservation.preserve(fixture.caseId(), command, key),
+                HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", auditFailure);
+
+        assertNoPreservationChanges(fixture, key, before);
+        assertThat(attempts.findByCaseIdOrderByAttemptedAtAscIdAsc(fixture.caseId())).isEmpty();
+        verify(preservationStorage).verifyLocked(
+                preservationKey(fixture), null, fixture.sha256(), 4, MAX_BYTES);
     }
 
     @Test
@@ -452,6 +523,34 @@ class EvidencePreservationIntegrationTest {
         return activities.findByCaseId(caseId, org.springframework.data.domain.Pageable.unpaged()).stream()
                 .filter(activity -> activity.getEventType().equals("EVIDENCE_PRESERVATION_VERIFIED"))
                 .count();
+    }
+
+    private void rejectFailureAudit(RuntimeException failure) {
+        doThrow(failure).when(preservationWriter).failure(any(), any(), nullable(Long.class), any(),
+                anyString(), anyString(), anyString());
+    }
+
+    private void assertNoPreservationChanges(Fixture fixture, String key, long caseVersion) {
+        assertThat(preservationRecords.findByCaseIdOrderByVerifiedAtAscIdAsc(fixture.caseId())).isEmpty();
+        assertThat(preservationActivityCount(fixture.caseId())).isZero();
+        assertThat(cases.findById(fixture.caseId()).orElseThrow().getCaseVersion()).isEqualTo(caseVersion);
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                tenant, reviewer, "EVIDENCE_PRESERVE", fixture.caseId(), CaseSnapshotManifest.sha256(key)))
+                .isEmpty();
+    }
+
+    private static DataAccessResourceFailureException auditFailure() {
+        return new DataAccessResourceFailureException("synthetic audit persistence failure");
+    }
+
+    private static void assertOriginalFailure(Runnable action, HttpStatus status, String code,
+            RuntimeException auditFailure) {
+        Throwable failure = catchThrowable(action::run);
+        assertThat(failure).isInstanceOfSatisfying(CaseApiException.class, error -> {
+            assertThat(error.status()).isEqualTo(status);
+            assertThat(error.code()).isEqualTo(code);
+            assertThat(error.getSuppressed()).containsExactly(auditFailure);
+        });
     }
 
     private void member(UUID id, String subject, AdminRole role, UUID memberTenant, UUID memberEvent) {

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.*;
 
 @SpringBootTest(properties = {
@@ -143,6 +145,42 @@ class CaseW07ConcurrentMySqlTest {
             assertThat(attempts.findByCaseIdOrderByAttemptedAtAscIdAsc(fixture.caseId()))
                     .singleElement().extracting(EvidencePreservationAttempt::getOutcome)
                     .isEqualTo(EvidencePreservationAttempt.Outcome.CONFLICT);
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS " + trigger);
+        }
+    }
+
+    @Test
+    void failedFailureAuditInsertPreservesOriginalObjectLockError() {
+        Fixture fixture = fixture();
+        long before = cases.findById(fixture.caseId()).orElseThrow().getCaseVersion();
+        String trigger = "td_w07_failure_audit_failure";
+        jdbc.execute("DROP TRIGGER IF EXISTS " + trigger);
+        jdbc.execute("CREATE TRIGGER " + trigger
+                + " BEFORE INSERT ON evidence_preservation_attempts FOR EACH ROW "
+                + "BEGIN IF NEW.case_id = '" + fixture.caseId() + "' "
+                + "AND NEW.reason_code = 'OBJECT_LOCK_NOT_VERIFIED' THEN "
+                + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'synthetic W07 failure audit failure'; "
+                + "END IF; END");
+        String key = UUID.randomUUID().toString();
+        when(preservationStorage.verifyLocked(anyString(), isNull(), eq(fixture.sha256()), eq(4L),
+                eq(MAX_BYTES))).thenThrow(new EvidencePreservationStorage.ObjectLockNotVerifiedException());
+        try {
+            Throwable failure = catchThrowable(() -> preservation.preserve(
+                    fixture.caseId(), command(fixture), key));
+            assertThat(failure).isInstanceOfSatisfying(CaseApiException.class, error -> {
+                assertThat(error.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                assertThat(error.code()).isEqualTo("OBJECT_LOCK_NOT_VERIFIED");
+                assertThat(error.getSuppressed()).singleElement()
+                        .isInstanceOf(DataAccessException.class);
+            });
+            assertThat(preservationRecords.findByCaseIdOrderByVerifiedAtAscIdAsc(fixture.caseId())).isEmpty();
+            assertThat(preservationActivityCount(fixture.caseId())).isZero();
+            assertThat(cases.findById(fixture.caseId()).orElseThrow().getCaseVersion()).isEqualTo(before);
+            assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                    TENANT, fixture.memberId(), "EVIDENCE_PRESERVE", fixture.caseId(),
+                    CaseSnapshotManifest.sha256(key))).isEmpty();
+            assertThat(attempts.findByCaseIdOrderByAttemptedAtAscIdAsc(fixture.caseId())).isEmpty();
         } finally {
             jdbc.execute("DROP TRIGGER IF EXISTS " + trigger);
         }

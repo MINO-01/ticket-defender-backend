@@ -89,6 +89,16 @@ class S3EvidencePreservationObjectLockMinioTest {
             String unlockedVersion = admin.putObject(PutObjectRequest.builder().bucket(bucket)
                     .key(unlockedKey).build(), RequestBody.fromBytes(bytes)).versionId();
             assertThat(unlockedVersion).isNotBlank();
+            assertThat(reader.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket)
+                    .key(unlockedKey).versionId(unlockedVersion).build()).asByteArray()).isEqualTo(bytes);
+            assertThatThrownBy(() -> admin.getObjectRetention(GetObjectRetentionRequest.builder()
+                    .bucket(bucket).key(unlockedKey).versionId(unlockedVersion).build()))
+                    .isInstanceOfSatisfying(S3Exception.class,
+                            error -> assertS3Error(error, 400, "NoSuchObjectLockConfiguration"));
+            assertThatThrownBy(() -> storage.verifyLocked(
+                    unlockedKey, unlockedVersion, digest, bytes.length, 1024))
+                    .isExactlyInstanceOf(
+                            EvidencePreservationStorage.ObjectLockNotVerifiedException.class);
             deleter.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(unlockedKey)
                     .versionId(unlockedVersion).build());
             assertThat(admin.listObjectVersions(ListObjectVersionsRequest.builder().bucket(bucket)

@@ -67,7 +67,7 @@ W07은 D의 검증 기반을 채택한다. 버전 관리만 켜진 저장소는 
 
 ETag 또는 DB 상태만으로 `IMMUTABLE_VERIFIED`를 만들지 않는다. 객체 없음, digest 또는 크기 불일치, version 불일치, 잠금 없음, 모드 불일치, 상한 초과, 권한 부족이나 저장소 장애는 성공 기록을 만들지 않는다.
 
-CI는 기존 W02 버킷과 별도로 `td-issue40-ci-preservation`을 `--with-lock`으로 생성한다. 합성 객체에 짧은 Governance 보존만 적용한다. 보존 검증자는 bucket capability, retention과 version GET만 허용하고 PUT, COPY, DELETE 권한이 없다. 읽기 전용 계정은 retention을 조회할 수 없으며, 테스트 삭제 계정은 version 삭제 권한은 있지만 `BypassGovernanceRetention` 권한이 없다. 관리자 계정만 테스트 정리를 위해 명시적 bypass를 사용한다.
+CI는 기존 W02 버킷과 별도로 `td-issue40-ci-preservation`을 `--with-lock`으로 생성한다. 합성 객체에 짧은 Governance 보존만 적용한다. 보존 검증자는 bucket capability, retention과 version GET만 허용하고 PUT, COPY, DELETE 권한이 없다. 읽기 전용 계정은 retention을 조회할 수 없으며, 테스트 삭제 계정은 version 삭제 권한은 있지만 `BypassGovernanceRetention` 권한이 없다. 고정 MinIO 버전은 우회 헤더가 없는 보호 version 삭제를 HTTP 400 `InvalidRequest`로, 우회 헤더가 있지만 권한이 없는 요청을 HTTP 403 `AccessDenied`로 구분한다. 두 거부 뒤에 version GET, SHA-256, mode와 retain-until을 다시 검증하며, 관리자 계정만 테스트 정리를 위해 명시적 bypass를 사용한다.
 
 잠긴 version을 직접 삭제하는 요청은 차단되지만, version을 지정하지 않은 DELETE는 delete marker를 만들 수 있다. 이때 현재 key 조회는 가려져도 보호 version은 version ID로 계속 조회된다. 잠금 없는 version은 직접 삭제할 수 있다. Compliance 모드는 CI에서 적용하지 않는다. 삭제 불가능한 장기 객체를 남기지 않기 위해 Compliance 지원과 우회 불가 동작은 미검증으로 보고한다.
 

@@ -50,6 +50,15 @@ class CaseW08bMigrationMySqlTest {
                 String.class, CaseW08aMigrationMySqlTest.AUDIT_ID)).isNull();
 
         LocalDateTime now = LocalDateTime.parse("2026-10-29T12:00:00");
+        assertThat(insertCaseActivity(jdbc, UUID.randomUUID().toString(), scope, "APPROVER",
+                "REVIEW_RECEIPT_ISSUED", now)).isEqualTo(1);
+        assertThat(insertCaseActivity(jdbc, UUID.randomUUID().toString(), scope, "SYSTEM",
+                "APPROVAL_INVALIDATED", now)).isEqualTo(1);
+        assertThatThrownBy(() -> insertCaseActivity(jdbc, UUID.randomUUID().toString(), scope, "ADMIN",
+                "APPROVAL_INVALIDATED", now))
+                .isInstanceOf(DataAccessException.class)
+                .hasRootCauseInstanceOf(java.sql.SQLException.class)
+                .satisfies(error -> assertCheck((DataAccessException) error, "chk_case_activities_actor_role"));
         assertThat(insertReceipt(jdbc, RECEIPT_ID, scope, RECEIPT_TOKEN_SHA256,
                 CaseW08aMigrationMySqlTest.REQUEST_ID, "ISSUED", now)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT active_approval_request_id FROM review_receipts WHERE id=?",
@@ -82,6 +91,19 @@ class CaseW08bMigrationMySqlTest {
                 now.plusSeconds(1))).isInstanceOf(DataIntegrityViolationException.class);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM approval_audit_events WHERE approval_request_id=?",
                 Integer.class, CaseW08aMigrationMySqlTest.REQUEST_ID)).isEqualTo(auditsBefore + 2);
+    }
+
+    private static int insertCaseActivity(JdbcTemplate jdbc, String id, Scope scope, String actorRole,
+            String eventType, LocalDateTime now) {
+        return jdbc.update("INSERT INTO case_activities (id,case_id,tenant_id,event_id,actor_membership_id,"
+                        + "actor_role,event_type,reason,from_status,to_status,version_before,version_after,"
+                        + "evidence_revision,source_reference_id,previous_assignee_membership_id,"
+                        + "new_assignee_membership_id,occurred_at) "
+                        + "SELECT ?,r.case_id,r.tenant_id,r.event_id,r.requested_by_membership_id,?,?,"
+                        + "'Synthetic W08b activity',NULL,'READY_FOR_APPROVAL',?,?,r.evidence_revision,"
+                        + "NULL,NULL,NULL,? FROM approval_requests r WHERE r.id=?",
+                id, actorRole, eventType, scope.caseVersion(), scope.caseVersion(), now,
+                CaseW08aMigrationMySqlTest.REQUEST_ID);
     }
 
     private static int insertReceipt(JdbcTemplate jdbc, String id, Scope scope, String tokenSha256,

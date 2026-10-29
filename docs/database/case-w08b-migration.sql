@@ -106,6 +106,11 @@ CREATE TABLE approval_decisions (
             AND request_version_at_decision >= 0 AND report_version_at_decision >= 0)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+ALTER TABLE case_activities
+    DROP CHECK chk_case_activities_actor_role,
+    ADD CONSTRAINT chk_case_activities_actor_role CHECK
+        (actor_role IN ('ANALYST', 'REVIEWER', 'APPROVER', 'SYSTEM'));
+
 ALTER TABLE approval_audit_events
     ADD COLUMN review_receipt_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL
         AFTER approval_request_id,

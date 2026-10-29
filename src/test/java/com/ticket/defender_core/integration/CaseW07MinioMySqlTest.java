@@ -1,6 +1,7 @@
 package com.ticket.defender_core.integration;
 
 import com.ticket.defender_core.adapter.in.web.dto.ApprovalRequestDto;
+import com.ticket.defender_core.adapter.in.web.dto.ApprovalReviewDto;
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
 import com.ticket.defender_core.adapter.in.web.dto.CasePreparationDto;
 import com.ticket.defender_core.adapter.in.web.dto.EvidenceIntegrityDto;
@@ -55,6 +56,7 @@ class CaseW07MinioMySqlTest {
     @Autowired private EvidenceIntegrityService integrity;
     @Autowired private EvidencePreservationService preservation;
     @Autowired private ApprovalRequestService approvals;
+    @Autowired private ApprovalReviewService review;
     @Autowired private TenantRepository tenants;
     @Autowired private TenantEventRepository events;
     @Autowired private AdminMembershipRepository memberships;
@@ -68,6 +70,8 @@ class CaseW07MinioMySqlTest {
     @Autowired private EvidencePreservationRecordRepository preservationRecords;
     @Autowired private EvidencePreservationAttemptRepository attempts;
     @Autowired private ApprovalRequestRepository approvalRequests;
+    @Autowired private ReviewReceiptRepository reviewReceipts;
+    @Autowired private ApprovalDecisionRepository approvalDecisions;
     @Autowired private ReportVersionRepository reportVersions;
     @MockitoBean private EvidenceObjectStorage objectStorage;
 
@@ -124,7 +128,7 @@ class CaseW07MinioMySqlTest {
     }
 
     @Test
-    void realLockedSyntheticObjectCreatesPreservationProofAndPinsApprovalRequest() throws Exception {
+    void realLockedSyntheticObjectSupportsPreservationRequestAndIndependentDecision() throws Exception {
         UUID tenant = UUID.randomUUID();
         UUID event = UUID.randomUUID();
         UUID member = UUID.randomUUID();
@@ -135,6 +139,12 @@ class CaseW07MinioMySqlTest {
         memberships.saveAndFlush(new AdminMembershipEntity(member, tenant, subject, AccessRecordStatus.ACTIVE));
         roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), member, AdminRole.REVIEWER));
         grants.saveAndFlush(new MembershipEventGrant(UUID.randomUUID(), member, tenant, event));
+        UUID approver = UUID.randomUUID();
+        String approverSubject = "w07-minio-approver-" + approver;
+        memberships.saveAndFlush(new AdminMembershipEntity(approver, tenant, approverSubject,
+                AccessRecordStatus.ACTIVE));
+        roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), approver, AdminRole.APPROVER));
+        grants.saveAndFlush(new MembershipEventGrant(UUID.randomUUID(), approver, tenant, event));
         UUID reportId = UUID.randomUUID();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         FanReport report = new FanReport(reportId, "FR-" + reportId, tenant, event, now.plusDays(1), null,
@@ -229,6 +239,30 @@ class CaseW07MinioMySqlTest {
                 .isEqualTo(Case.Status.READY_FOR_APPROVAL);
         assertThat(reportVersions.findById(draft.reportVersionId()).orElseThrow().getStatus())
                 .isEqualTo(ReportVersion.Status.PENDING_APPROVAL.name());
+
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(approval.approvalRequestId());
+        ApprovalRequest request = approvalRequests.findById(approval.approvalRequestId()).orElseThrow();
+        Case target = cases.findById(opened.caseId()).orElseThrow();
+        ReportVersion reportVersion = reportVersions.findById(draft.reportVersionId()).orElseThrow();
+        ApprovalReviewDto.DecisionView decision = review.decide(approval.approvalRequestId(),
+                new ApprovalReviewDto.DecisionInput(ApprovalDecision.Outcome.APPROVE,
+                        "Approve the independently reviewed MinIO Object Lock proof",
+                        snapshot.evidenceSnapshotId(), snapshot.manifestSha256(), draft.contentSha256(),
+                        receipt.reviewReceiptToken(), true, target.getCaseVersion(), request.getVersion(),
+                        reportVersion.getVersion()), UUID.randomUUID().toString());
+
+        assertThat(decision.outcome()).isEqualTo(ApprovalDecision.Outcome.APPROVE);
+        assertThat(decision.issuanceEligibility()).isEqualTo("BLOCKED");
+        assertThat(reviewReceipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.CONSUMED);
+        assertThat(approvalDecisions.findByApprovalRequestId(approval.approvalRequestId())).isPresent();
+        assertThat(approvalRequests.findById(approval.approvalRequestId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.APPROVED);
+        assertThat(cases.findById(opened.caseId()).orElseThrow().getStatus())
+                .isEqualTo(Case.Status.APPROVED_FOR_REPORT);
+        assertThat(reportVersions.findById(draft.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.APPROVED.name());
     }
 
     private static String sha256(byte[] bytes) throws Exception {

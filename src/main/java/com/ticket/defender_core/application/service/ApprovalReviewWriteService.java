@@ -73,9 +73,10 @@ public class ApprovalReviewWriteService {
         if (ttl == null || ttl.isZero() || ttl.isNegative()) {
             throw new IllegalArgumentException("Review receipt TTL must be positive");
         }
-        ApprovalRequest initial = requests.findById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
-        Case target = cases.findByIdForUpdate(initial.getCaseId()).orElseThrow(ApprovalReviewWriteService::notFound);
+        UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        Case target = cases.findByIdForUpdate(caseId).orElseThrow(ApprovalReviewWriteService::notFound);
         ApprovalRequest request = requests.findByIdForUpdate(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        requireRequestScope(target, request);
         UUID actor = requireApprover(target, memberId);
         Bound bound = bound(target, request);
         bindings.validatePending(target, request, bound.snapshot(), bound.report());
@@ -113,9 +114,10 @@ public class ApprovalReviewWriteService {
     @Transactional
     public ApprovalDecision decide(UUID requestId, ApprovalReviewDto.DecisionInput input, UUID memberId,
             String tokenDigest, String keyDigest, String requestDigest) {
-        ApprovalRequest initial = requests.findById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
-        Case target = cases.findByIdForUpdate(initial.getCaseId()).orElseThrow(ApprovalReviewWriteService::notFound);
+        UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        Case target = cases.findByIdForUpdate(caseId).orElseThrow(ApprovalReviewWriteService::notFound);
         ApprovalRequest request = requests.findByIdForUpdate(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        requireRequestScope(target, request);
         UUID actor = requireApprover(target, memberId);
         rejectSelfApproval(target, request, actor);
         Bound bound = bound(target, request);
@@ -173,9 +175,10 @@ public class ApprovalReviewWriteService {
     @Transactional
     public ApprovalRequest withdraw(UUID requestId, ApprovalReviewDto.WithdrawInput input, UUID memberId,
             String keyDigest, String requestDigest) {
-        ApprovalRequest initial = requests.findById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
-        Case target = cases.findByIdForUpdate(initial.getCaseId()).orElseThrow(ApprovalReviewWriteService::notFound);
+        UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        Case target = cases.findByIdForUpdate(caseId).orElseThrow(ApprovalReviewWriteService::notFound);
         ApprovalRequest request = requests.findByIdForUpdate(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        requireRequestScope(target, request);
         UUID actor = requireReviewer(target, memberId);
         Bound bound = bound(target, request);
         bindings.validatePending(target, request, bound.snapshot(), bound.report());
@@ -210,9 +213,10 @@ public class ApprovalReviewWriteService {
      */
     @Transactional
     public ApprovalRequest invalidateFromTrustedSystem(UUID requestId, UUID actorMembershipId, String reason) {
-        ApprovalRequest initial = requests.findById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
-        Case target = cases.findByIdForUpdate(initial.getCaseId()).orElseThrow(ApprovalReviewWriteService::notFound);
+        UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        Case target = cases.findByIdForUpdate(caseId).orElseThrow(ApprovalReviewWriteService::notFound);
         ApprovalRequest request = requests.findByIdForUpdate(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
+        requireRequestScope(target, request);
         AdminMembershipEntity actor = membershipRepository.findById(actorMembershipId)
                 .filter(member -> target.getTenantId().equals(member.getTenantId())
                         && AccessRecordStatus.ACTIVE.name().equals(member.getStatus()))
@@ -267,6 +271,14 @@ public class ApprovalReviewWriteService {
                 .orElseThrow(ApprovalReviewWriteService::notFound);
         if (Objects.equals(requester.getSubject(), approver.getSubject())) {
             throw new CaseApiException(HttpStatus.FORBIDDEN, "SELF_APPROVAL_FORBIDDEN");
+        }
+    }
+
+    private static void requireRequestScope(Case target, ApprovalRequest request) {
+        if (!target.getId().equals(request.getCaseId())
+                || !target.getTenantId().equals(request.getTenantId())
+                || !target.getEventId().equals(request.getEventId())) {
+            throw notFound();
         }
     }
 

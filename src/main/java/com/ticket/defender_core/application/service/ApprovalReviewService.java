@@ -64,14 +64,14 @@ public class ApprovalReviewService {
     @Transactional(readOnly = true)
     public ApprovalReviewDto.ReviewPackage reviewPackage(UUID requestId) {
         ApprovalRequest request = request(requestId);
-        approver(request);
+        approver(request.getTenantId(), request.getEventId());
         Bound bound = bound(request);
         bindings.validatePending(bound.target(), request, bound.snapshot(), bound.report());
         return ApprovalReviewDto.ReviewPackage.from(request, bound.target(), bound.snapshot(), bound.report());
     }
 
     public ApprovalReviewDto.Receipt issueReceipt(UUID requestId) {
-        ApprovalRequest request = request(requestId);
+        RequestScope request = requestScope(requestId);
         Authorized actor = approver(request);
         String token = token();
         com.ticket.defender_core.domain.ReviewReceipt receipt = writer.issueReceipt(requestId, actor.memberId(),
@@ -82,7 +82,7 @@ public class ApprovalReviewService {
     public ApprovalReviewDto.DecisionView decide(UUID requestId, ApprovalReviewDto.DecisionInput input,
             String key) {
         validateDecision(input);
-        ApprovalRequest request = request(requestId);
+        RequestScope request = requestScope(requestId);
         Authorized actor = approver(request);
         Prepared prepared = prepareDecision(key, input);
         ApprovalDecision prior = replayDecision(request, actor, prepared);
@@ -92,15 +92,15 @@ public class ApprovalReviewService {
                     prepared.keyDigest(), prepared.requestDigest());
             return view(result);
         } catch (CaseApiException collision) {
-            ApprovalDecision committed = replayDecision(request, approver(request(requestId)), prepared);
+            ApprovalDecision committed = replayDecision(request, approver(request), prepared);
             if (committed != null) return view(committed);
             throw collision;
         } catch (OptimisticLockingFailureException collision) {
-            ApprovalDecision committed = replayDecision(request, approver(request(requestId)), prepared);
+            ApprovalDecision committed = replayDecision(request, approver(request), prepared);
             if (committed != null) return view(committed);
             throw conflict("CASE_VERSION_CONFLICT");
         } catch (DataIntegrityViolationException collision) {
-            ApprovalDecision committed = replayDecision(request, approver(request(requestId)), prepared);
+            ApprovalDecision committed = replayDecision(request, approver(request), prepared);
             if (committed != null) return view(committed);
             throw conflict("APPROVAL_REQUEST_CLOSED");
         }
@@ -109,7 +109,7 @@ public class ApprovalReviewService {
     public ApprovalReviewDto.WithdrawView withdraw(UUID requestId, ApprovalReviewDto.WithdrawInput input,
             String key) {
         validateWithdraw(input);
-        ApprovalRequest request = request(requestId);
+        RequestScope request = requestScope(requestId);
         Authorized actor = reviewer(request);
         Prepared prepared = prepare(key, input);
         ApprovalRequest prior = replayWithdraw(request, actor, prepared);
@@ -119,15 +119,15 @@ public class ApprovalReviewService {
                     prepared.keyDigest(), prepared.requestDigest());
             return withdrawView(result);
         } catch (CaseApiException collision) {
-            ApprovalRequest committed = replayWithdraw(request, reviewer(request(requestId)), prepared);
+            ApprovalRequest committed = replayWithdraw(request, reviewer(request), prepared);
             if (committed != null) return withdrawView(committed);
             throw collision;
         } catch (OptimisticLockingFailureException collision) {
-            ApprovalRequest committed = replayWithdraw(request, reviewer(request(requestId)), prepared);
+            ApprovalRequest committed = replayWithdraw(request, reviewer(request), prepared);
             if (committed != null) return withdrawView(committed);
             throw conflict("CASE_VERSION_CONFLICT");
         } catch (DataIntegrityViolationException collision) {
-            ApprovalRequest committed = replayWithdraw(request, reviewer(request(requestId)), prepared);
+            ApprovalRequest committed = replayWithdraw(request, reviewer(request), prepared);
             if (committed != null) return withdrawView(committed);
             throw conflict("APPROVAL_REQUEST_CLOSED");
         }
@@ -145,10 +145,10 @@ public class ApprovalReviewService {
         return ApprovalReviewDto.WithdrawView.from(request, bound.target(), bound.report());
     }
 
-    private ApprovalDecision replayDecision(ApprovalRequest request, Authorized actor, Prepared prepared) {
+    private ApprovalDecision replayDecision(RequestScope request, Authorized actor, Prepared prepared) {
         CaseIdempotencyRecord record = idempotency
                 .findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
-                        actor.tenantId(), actor.memberId(), DECISION_OPERATION, request.getCaseId(),
+                        actor.tenantId(), actor.memberId(), DECISION_OPERATION, request.caseId(),
                         prepared.keyDigest())
                 .orElse(null);
         if (record == null) return null;
@@ -157,16 +157,16 @@ public class ApprovalReviewService {
         }
         UUID decisionId = json.readValue(record.getResponseJson(), DecisionReference.class).approvalDecisionId();
         ApprovalDecision decision = decisions.findById(decisionId).orElseThrow(ApprovalReviewService::notFound);
-        if (!request.getId().equals(decision.getApprovalRequestId())
+        if (!request.id().equals(decision.getApprovalRequestId())
                 || !actor.tenantId().equals(decision.getTenantId())
                 || !actor.eventId().equals(decision.getEventId())) throw notFound();
         return decision;
     }
 
-    private ApprovalRequest replayWithdraw(ApprovalRequest request, Authorized actor, Prepared prepared) {
+    private ApprovalRequest replayWithdraw(RequestScope request, Authorized actor, Prepared prepared) {
         CaseIdempotencyRecord record = idempotency
                 .findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
-                        actor.tenantId(), actor.memberId(), WITHDRAW_OPERATION, request.getCaseId(),
+                        actor.tenantId(), actor.memberId(), WITHDRAW_OPERATION, request.caseId(),
                         prepared.keyDigest())
                 .orElse(null);
         if (record == null) return null;
@@ -175,19 +175,27 @@ public class ApprovalReviewService {
         }
         UUID requestId = json.readValue(record.getResponseJson(), RequestReference.class).approvalRequestId();
         ApprovalRequest result = requests.findById(requestId).orElseThrow(ApprovalReviewService::notFound);
-        if (!request.getId().equals(result.getId()) || !actor.tenantId().equals(result.getTenantId())
+        if (!request.id().equals(result.getId()) || !actor.tenantId().equals(result.getTenantId())
                 || !actor.eventId().equals(result.getEventId())) throw notFound();
         return result;
     }
 
-    private Authorized approver(ApprovalRequest request) {
-        var actor = access.requireResourceAccess(new AdminResourceScope(request.getTenantId(), request.getEventId()),
+    private Authorized approver(RequestScope request) {
+        return approver(request.tenantId(), request.eventId());
+    }
+
+    private Authorized approver(UUID tenantId, UUID eventId) {
+        var actor = access.requireResourceAccess(new AdminResourceScope(tenantId, eventId),
                 null, APPROVER);
         return new Authorized(actor.tenantId(), actor.eventId(), memberships.actor(actor).getId());
     }
 
-    private Authorized reviewer(ApprovalRequest request) {
-        var actor = access.requireResourceAccess(new AdminResourceScope(request.getTenantId(), request.getEventId()),
+    private Authorized reviewer(RequestScope request) {
+        return reviewer(request.tenantId(), request.eventId());
+    }
+
+    private Authorized reviewer(UUID tenantId, UUID eventId) {
+        var actor = access.requireResourceAccess(new AdminResourceScope(tenantId, eventId),
                 null, REVIEWER);
         return new Authorized(actor.tenantId(), actor.eventId(), memberships.actor(actor).getId());
     }
@@ -203,6 +211,13 @@ public class ApprovalReviewService {
 
     private ApprovalRequest request(UUID requestId) {
         return requests.findById(requestId).orElseThrow(ApprovalReviewService::notFound);
+    }
+
+    private RequestScope requestScope(UUID requestId) {
+        return requests.findAccessScopeById(requestId)
+                .map(scope -> new RequestScope(scope.getId(), scope.getTenantId(), scope.getEventId(),
+                        scope.getCaseId()))
+                .orElseThrow(ApprovalReviewService::notFound);
     }
 
     private Prepared prepareDecision(String key, ApprovalReviewDto.DecisionInput input) {
@@ -264,6 +279,7 @@ public class ApprovalReviewService {
     }
 
     private record Authorized(UUID tenantId, UUID eventId, UUID memberId) { }
+    private record RequestScope(UUID id, UUID tenantId, UUID eventId, UUID caseId) { }
     private record Bound(Case target, EvidenceSnapshot snapshot, ReportVersion report) { }
     private record Prepared(String keyDigest, String requestDigest, String tokenDigest) { }
     private record DecisionReference(UUID approvalDecisionId) { }

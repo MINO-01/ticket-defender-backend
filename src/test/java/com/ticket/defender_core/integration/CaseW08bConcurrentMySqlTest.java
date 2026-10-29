@@ -64,6 +64,7 @@ class CaseW08bConcurrentMySqlTest {
     @Autowired private ApprovalRequestRepository requests;
     @Autowired private ReviewReceiptRepository receipts;
     @Autowired private ApprovalDecisionRepository decisions;
+    @Autowired private ApprovalAuditEventRepository audits;
     @Autowired private CaseIdempotencyRepository idempotency;
     @Autowired private EvidencePreservationPolicyRepository policies;
     @Autowired private TenantRepository tenants;
@@ -112,9 +113,8 @@ class CaseW08bConcurrentMySqlTest {
                 .containsExactly("APPROVAL_REQUEST_CLOSED");
         ApprovalDecision decision = decisions.findByApprovalRequestId(fixture.requestId()).orElseThrow();
         ApprovalRequest request = requests.findById(fixture.requestId()).orElseThrow();
-        assertThat(request.getActiveCaseId()).isNull();
-        assertThat(request.getStatus()).isEqualTo(decision.getOutcome() == ApprovalDecision.Outcome.APPROVE
-                ? ApprovalRequest.Status.APPROVED : ApprovalRequest.Status.REJECTED);
+        assertDecisionTerminalState(fixture, request, decision);
+        assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 1);
         assertThat(receipts.findAll().stream().filter(receipt -> fixture.requestId()
                 .equals(receipt.getApprovalRequestId()))
                 .filter(receipt -> receipt.getStatus() == ReviewReceipt.Status.CONSUMED)).hasSize(1);
@@ -141,7 +141,9 @@ class CaseW08bConcurrentMySqlTest {
         assertThat(outcomes.stream().filter(value -> value.startsWith("OK:"))).hasSize(1);
         assertThat(outcomes.stream().filter(value -> !value.startsWith("OK:")))
                 .containsExactly("APPROVAL_REQUEST_CLOSED");
-        assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isPresent();
+        ApprovalDecision decision = decisions.findByApprovalRequestId(fixture.requestId()).orElseThrow();
+        assertDecisionTerminalState(fixture, requests.findById(fixture.requestId()).orElseThrow(), decision);
+        assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 1);
         assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                 .isEqualTo(ReviewReceipt.Status.CONSUMED);
     }
@@ -167,16 +169,22 @@ class CaseW08bConcurrentMySqlTest {
         ApprovalRequest request = requests.findById(fixture.requestId()).orElseThrow();
         assertThat(request.getActiveCaseId()).isNull();
         if (request.getStatus() == ApprovalRequest.Status.APPROVED) {
-            assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isPresent();
-            assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus())
-                    .isEqualTo(Case.Status.APPROVED_FOR_REPORT);
+            assertDecisionTerminalState(fixture, request,
+                    decisions.findByApprovalRequestId(fixture.requestId()).orElseThrow());
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 1);
+            assertAuditCount(fixture.requestId(), "APPROVAL_WITHDRAWN", 0);
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.CONSUMED);
         } else {
             assertThat(request.getStatus()).isEqualTo(ApprovalRequest.Status.WITHDRAWN);
             assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isEmpty();
+            assertDecisionCount(fixture.requestId(), 0);
             assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus())
                     .isEqualTo(Case.Status.IN_REVIEW);
+            assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                    .isEqualTo(ReportVersion.Status.WITHDRAWN.name());
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 0);
+            assertAuditCount(fixture.requestId(), "APPROVAL_WITHDRAWN", 1);
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.REVOKED);
         }
@@ -204,12 +212,22 @@ class CaseW08bConcurrentMySqlTest {
         ApprovalRequest request = requests.findById(fixture.requestId()).orElseThrow();
         assertThat(request.getActiveCaseId()).isNull();
         if (request.getStatus() == ApprovalRequest.Status.APPROVED) {
-            assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isPresent();
+            assertDecisionTerminalState(fixture, request,
+                    decisions.findByApprovalRequestId(fixture.requestId()).orElseThrow());
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 1);
+            assertAuditCount(fixture.requestId(), "APPROVAL_INVALIDATED", 0);
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.CONSUMED);
         } else {
             assertThat(request.getStatus()).isEqualTo(ApprovalRequest.Status.INVALIDATED);
             assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isEmpty();
+            assertDecisionCount(fixture.requestId(), 0);
+            assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus())
+                    .isEqualTo(Case.Status.IN_REVIEW);
+            assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                    .isEqualTo(ReportVersion.Status.INVALIDATED.name());
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 0);
+            assertAuditCount(fixture.requestId(), "APPROVAL_INVALIDATED", 1);
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.REVOKED);
         }
@@ -234,15 +252,27 @@ class CaseW08bConcurrentMySqlTest {
                         "APPROVAL_REQUEST_CLOSED"));
         ApprovalRequest request = requests.findById(fixture.requestId()).orElseThrow();
         if (request.getStatus() == ApprovalRequest.Status.APPROVED) {
-            assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isPresent();
+            assertDecisionTerminalState(fixture, request,
+                    decisions.findByApprovalRequestId(fixture.requestId()).orElseThrow());
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 1);
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.CONSUMED);
+            assertThat(receipts.findAll().stream().filter(current -> fixture.requestId()
+                    .equals(current.getApprovalRequestId()))
+                    .filter(current -> current.getStatus() == ReviewReceipt.Status.CONSUMED)).hasSize(1);
             assertThat(receipts.findAll().stream().filter(current -> fixture.requestId()
                     .equals(current.getApprovalRequestId()))
                     .filter(current -> current.getStatus() == ReviewReceipt.Status.ISSUED)).isEmpty();
         } else {
             assertThat(request.getStatus()).isEqualTo(ApprovalRequest.Status.PENDING);
             assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isEmpty();
+            assertDecisionCount(fixture.requestId(), 0);
+            assertThat(request.getActiveCaseId()).isEqualTo(fixture.caseId());
+            assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus())
+                    .isEqualTo(Case.Status.READY_FOR_APPROVAL);
+            assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                    .isEqualTo(ReportVersion.Status.PENDING_APPROVAL.name());
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 0);
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.REVOKED);
             assertThat(receipts.findAll().stream().filter(current -> fixture.requestId()
@@ -280,10 +310,41 @@ class CaseW08bConcurrentMySqlTest {
             assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
                     .isEqualTo(ReviewReceipt.Status.ISSUED);
             assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isEmpty();
+            assertDecisionCount(fixture.requestId(), 0);
+            assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 0);
         } finally {
             jdbc.execute("DROP TRIGGER IF EXISTS " + trigger);
             SecurityContextHolder.clearContext();
         }
+    }
+
+    private void assertDecisionTerminalState(Fixture fixture, ApprovalRequest request,
+            ApprovalDecision decision) {
+        assertDecisionCount(fixture.requestId(), 1);
+        assertThat(request.getActiveCaseId()).isNull();
+        if (decision.getOutcome() == ApprovalDecision.Outcome.APPROVE) {
+            assertThat(request.getStatus()).isEqualTo(ApprovalRequest.Status.APPROVED);
+            assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus())
+                    .isEqualTo(Case.Status.APPROVED_FOR_REPORT);
+            assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                    .isEqualTo(ReportVersion.Status.APPROVED.name());
+        } else {
+            assertThat(request.getStatus()).isEqualTo(ApprovalRequest.Status.REJECTED);
+            assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus())
+                    .isEqualTo(Case.Status.IN_REVIEW);
+            assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                    .isEqualTo(ReportVersion.Status.REJECTED.name());
+        }
+    }
+
+    private void assertDecisionCount(UUID requestId, int expected) {
+        assertThat(decisions.findAll().stream()
+                .filter(decision -> requestId.equals(decision.getApprovalRequestId()))).hasSize(expected);
+    }
+
+    private void assertAuditCount(UUID requestId, String eventType, int expected) {
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(requestId).stream()
+                .filter(event -> eventType.equals(event.getEventType()))).hasSize(expected);
     }
 
     private Fixture fixture() {

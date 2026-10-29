@@ -54,7 +54,7 @@ CREATE TABLE approval_requests (
         (report_revision >= 1 AND evidence_revision >= 1
             AND case_version_at_submit >= 0 AND request_version >= 0),
     CONSTRAINT chk_approval_request_active CHECK
-        ((status = 'PENDING' AND active_case_id = case_id)
+        ((status = 'PENDING' AND active_case_id IS NOT NULL AND active_case_id = case_id)
             OR (status <> 'PENDING' AND active_case_id IS NULL))
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 

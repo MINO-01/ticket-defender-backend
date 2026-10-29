@@ -66,8 +66,8 @@ class CaseW08aMigrationMySqlTest {
         jdbc.update("UPDATE cases SET status='READY_FOR_APPROVAL', current_report_version_id=?, "
                 + "case_version=case_version+1 WHERE id=?", pinnedReportId, scope.caseId());
         long after = before + 1;
-        insertRequest(jdbc, REQUEST_ID, scope, pinnedReportId, scope.snapshotId(), scope.revision() + 1,
-                CONTENT_SHA256, after, scope.caseId(), now);
+        assertThat(insertRequest(jdbc, REQUEST_ID, scope, pinnedReportId, scope.snapshotId(),
+                scope.revision() + 1, CONTENT_SHA256, after, scope.caseId(), now)).isEqualTo(1);
         insertAudit(jdbc, AUDIT_ID, scope, pinnedReportId, REQUEST_ID, CONTENT_SHA256, before, after, now);
         insertHold(jdbc, HOLD_ID, scope, now);
 
@@ -82,13 +82,24 @@ class CaseW08aMigrationMySqlTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
 
         String secondReport = UUID.randomUUID().toString();
-        jdbc.update("INSERT INTO report_versions (id,tenant_id,event_id,case_id,evidence_snapshot_id,"
+        assertThat(jdbc.update("INSERT INTO report_versions (id,tenant_id,event_id,case_id,evidence_snapshot_id,"
                         + "evidence_revision,revision,version,template_version,template_sha256,content_sha256,"
                         + "content_json,status,created_by_membership_id,created_at) "
                         + "SELECT ?,tenant_id,event_id,case_id,evidence_snapshot_id,evidence_revision,"
                         + "revision+2,0,'case-approval-input-v1',?, ?,content_json,'DRAFT',"
                         + "created_by_membership_id,? FROM report_versions WHERE id=?",
-                secondReport, TEMPLATE_SHA256, "7".repeat(64), now.plusSeconds(1), reportId);
+                secondReport, TEMPLATE_SHA256, "7".repeat(64), now.plusSeconds(1), reportId)).isEqualTo(1);
+        assertThatThrownBy(() -> insertRequest(jdbc, UUID.randomUUID().toString(), scope, secondReport,
+                scope.snapshotId(), scope.revision() + 2, "7".repeat(64), after, null, now))
+                .isInstanceOf(DataAccessException.class)
+                .hasRootCauseInstanceOf(java.sql.SQLException.class)
+                .satisfies(error -> {
+                    java.sql.SQLException sqlException = (java.sql.SQLException)
+                            ((DataAccessException) error).getMostSpecificCause();
+                    assertThat(sqlException.getErrorCode()).isEqualTo(3819);
+                    assertThat(sqlException.getMessage()).contains("chk_approval_request_active");
+                });
+        assertThat(count(jdbc, "approval_requests")).isEqualTo(1);
         assertThatThrownBy(() -> insertRequest(jdbc, UUID.randomUUID().toString(), scope, secondReport,
                 scope.snapshotId(), scope.revision() + 2, "7".repeat(64), after, scope.caseId(), now))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -101,24 +112,44 @@ class CaseW08aMigrationMySqlTest {
                 "UPDATE approval_requests SET status='WITHDRAWN' WHERE id=?", REQUEST_ID))
                 .isInstanceOf(DataAccessException.class)
                 .hasRootCauseInstanceOf(java.sql.SQLException.class);
+        String withdrawnReport = UUID.randomUUID().toString();
+        assertThat(jdbc.update("INSERT INTO report_versions (id,tenant_id,event_id,case_id,evidence_snapshot_id,"
+                        + "evidence_revision,revision,version,template_version,template_sha256,content_sha256,"
+                        + "content_json,status,created_by_membership_id,created_at) "
+                        + "SELECT ?,tenant_id,event_id,case_id,evidence_snapshot_id,evidence_revision,"
+                        + "revision+3,0,'case-approval-input-v1',?, ?,content_json,'WITHDRAWN',"
+                        + "created_by_membership_id,? FROM report_versions WHERE id=?",
+                withdrawnReport, TEMPLATE_SHA256, "6".repeat(64), now.plusSeconds(2), reportId)).isEqualTo(1);
+        String withdrawnRequest = UUID.randomUUID().toString();
+        assertThat(insertRequest(jdbc, withdrawnRequest, scope, withdrawnReport, scope.snapshotId(),
+                scope.revision() + 3, "6".repeat(64), after, null, "WITHDRAWN", now)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT active_case_id FROM approval_requests WHERE id=?", String.class,
+                withdrawnRequest)).isNull();
         assertThatThrownBy(() -> insertHold(jdbc, UUID.randomUUID().toString(),
                 new Scope(scope.tenant(), UUID.randomUUID().toString(), scope.caseId(), scope.snapshotId(),
                         scope.actor(), scope.revision(), scope.contentSha256()), now))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
-    private static void insertRequest(JdbcTemplate jdbc, String id, Scope scope, String reportId,
+    private static int insertRequest(JdbcTemplate jdbc, String id, Scope scope, String reportId,
             String snapshotId, long reportRevision, String contentSha, long caseVersion,
             String activeCaseId, LocalDateTime now) {
-        jdbc.update("INSERT INTO approval_requests (id,tenant_id,event_id,case_id,report_version_id,"
+        return insertRequest(jdbc, id, scope, reportId, snapshotId, reportRevision, contentSha, caseVersion,
+                activeCaseId, "PENDING", now);
+    }
+
+    private static int insertRequest(JdbcTemplate jdbc, String id, Scope scope, String reportId,
+            String snapshotId, long reportRevision, String contentSha, long caseVersion,
+            String activeCaseId, String status, LocalDateTime now) {
+        return jdbc.update("INSERT INTO approval_requests (id,tenant_id,event_id,case_id,report_version_id,"
                         + "report_revision,report_content_sha256,report_template_version,"
                         + "report_template_sha256,evidence_snapshot_id,evidence_revision,manifest_sha256,"
                         + "requested_by_membership_id,requested_at,reason,status,case_version_at_submit,"
                         + "active_case_id,request_version) SELECT ?,?,?,?,?,?,?,?,?,?,s.evidence_revision,"
-                        + "s.manifest_sha256,?,?,?,'PENDING',?,?,0 FROM evidence_snapshots s WHERE s.id=?",
+                        + "s.manifest_sha256,?,?,?,?,?,?,0 FROM evidence_snapshots s WHERE s.id=?",
                 id, scope.tenant(), scope.event(), scope.caseId(), reportId, reportRevision, contentSha,
                 "case-approval-input-v1", TEMPLATE_SHA256, snapshotId, scope.actor(), now,
-                "Synthetic W08 migration request", caseVersion, activeCaseId, snapshotId);
+                "Synthetic W08 migration request", status, caseVersion, activeCaseId, snapshotId);
     }
 
     private static void insertAudit(JdbcTemplate jdbc, String id, Scope scope, String reportId,

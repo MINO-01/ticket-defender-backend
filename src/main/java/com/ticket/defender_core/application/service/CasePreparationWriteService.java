@@ -34,13 +34,12 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class CasePreparationWriteService {
     private static final Set<AdminRole> REVIEWER = Set.of(AdminRole.REVIEWER);
-    private static final String DRAFT_INPUT_VERSION = "draft-input-v1";
-
     private final AdminAccessService access;
     private final CaseMembershipAccess memberships;
     private final CaseRepository cases;
     private final CaseSourceReferenceRepository sources;
     private final CaseSnapshotManifest manifests;
+    private final ReportTemplateRegistry templates;
     private final EvidenceSnapshotRepository snapshots;
     private final ReportVersionRepository drafts;
     private final CaseActivityRepository activities;
@@ -93,8 +92,9 @@ public class CasePreparationWriteService {
         manifests.recheckDatabase(target, sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), prepared, now);
         if (!prepared.sha256().equals(snapshot.getManifestSha256())) throw conflict("SOURCE_CHANGED");
         Map<String, Object> content = new LinkedHashMap<>();
+        ReportTemplateRegistry.Template template = templates.current();
         content.put("contentSchemaVersion", 1);
-        content.put("templateVersion", DRAFT_INPUT_VERSION);
+        content.put("templateVersion", template.version());
         content.put("evidenceSnapshotId", snapshot.getId().toString());
         content.put("manifestSha256", snapshot.getManifestSha256());
         content.put("title", input.title().trim());
@@ -112,7 +112,7 @@ public class CasePreparationWriteService {
         target.recordPreparation(now);
         cases.saveAndFlush(target);
         ReportVersion draft = drafts.saveAndFlush(new ReportVersion(target, snapshot, revision,
-                DRAFT_INPUT_VERSION, contentSha256, contentJson, memberId, now));
+                template.version(), template.sha256(), contentSha256, contentJson, memberId, now));
         activities.saveAndFlush(new CaseActivity(target, memberId, AdminRole.REVIEWER.name(),
                 "REPORT_DRAFT_CREATED", "reportVersion=" + draft.getId() + "; " + input.reason().trim(),
                 target.getStatus(), target.getStatus(), before, target.getCaseVersion(), null, now));

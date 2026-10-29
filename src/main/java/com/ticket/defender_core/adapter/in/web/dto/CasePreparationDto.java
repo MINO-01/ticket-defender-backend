@@ -35,15 +35,16 @@ public final class CasePreparationDto {
 
     public record Draft(UUID reportVersionId, UUID caseId, UUID eventId,
                         UUID evidenceSnapshotId, long evidenceRevision, long revision, long version,
-                        String templateVersion,
+                        String templateVersion, String templateSha256,
                         String contentSha256, String contentJson, ReportVersion.Status status,
                         boolean renderable, boolean approvalEligible,
                         UUID createdByMembershipId, OffsetDateTime createdAt) {
         public static Draft from(ReportVersion value) {
             return new Draft(value.getId(), value.getCaseId(), value.getEventId(),
                     value.getEvidenceSnapshotId(), value.getEvidenceRevision(), value.getRevision(),
-                    value.getVersion(), value.getTemplateVersion(),
-                    value.getContentSha256(), value.getContentJson(), ReportVersion.Status.DRAFT,
+                    value.getVersion(), value.getTemplateVersion(), value.getTemplateSha256(),
+                    value.getContentSha256(), value.getContentJson(),
+                    ReportVersion.Status.valueOf(value.getStatus()),
                     false, false, value.getCreatedByMembershipId(),
                     value.getCreatedAt().atOffset(ZoneOffset.UTC));
         }

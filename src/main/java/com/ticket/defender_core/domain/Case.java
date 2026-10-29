@@ -57,6 +57,8 @@ public class Case {
     private Long caseVersion;
     @Column(name = "evidence_revision", nullable = false)
     private long evidenceRevision;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "current_report_version_id", length = 36)
+    private UUID currentReportVersionId;
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
     @Column(name = "updated_at", nullable = false)
@@ -89,6 +91,13 @@ public class Case {
     }
 
     public void recordPreparation(LocalDateTime now) {
+        this.updatedAt = Objects.requireNonNull(now);
+    }
+
+    public void submitForApproval(UUID reportVersionId, LocalDateTime now) {
+        if (status != Status.IN_REVIEW) throw new IllegalStateException("Case is not under review");
+        this.currentReportVersionId = Objects.requireNonNull(reportVersionId);
+        this.status = Status.READY_FOR_APPROVAL;
         this.updatedAt = Objects.requireNonNull(now);
     }
 }

@@ -1,5 +1,6 @@
 package com.ticket.defender_core.integration;
 
+import com.ticket.defender_core.adapter.in.web.dto.ApprovalRequestDto;
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
 import com.ticket.defender_core.adapter.in.web.dto.CasePreparationDto;
 import com.ticket.defender_core.adapter.in.web.dto.EvidenceIntegrityDto;
@@ -53,6 +54,7 @@ class CaseW07MinioMySqlTest {
     @Autowired private CasePreparationService preparation;
     @Autowired private EvidenceIntegrityService integrity;
     @Autowired private EvidencePreservationService preservation;
+    @Autowired private ApprovalRequestService approvals;
     @Autowired private TenantRepository tenants;
     @Autowired private TenantEventRepository events;
     @Autowired private AdminMembershipRepository memberships;
@@ -65,6 +67,8 @@ class CaseW07MinioMySqlTest {
     @Autowired private EvidencePreservationPolicyRepository policies;
     @Autowired private EvidencePreservationRecordRepository preservationRecords;
     @Autowired private EvidencePreservationAttemptRepository attempts;
+    @Autowired private ApprovalRequestRepository approvalRequests;
+    @Autowired private ReportVersionRepository reportVersions;
     @MockitoBean private EvidenceObjectStorage objectStorage;
 
     private final List<String> keys = new ArrayList<>();
@@ -120,7 +124,7 @@ class CaseW07MinioMySqlTest {
     }
 
     @Test
-    void realLockedSyntheticObjectCreatesMySqlPreservationProof() throws Exception {
+    void realLockedSyntheticObjectCreatesPreservationProofAndPinsApprovalRequest() throws Exception {
         UUID tenant = UUID.randomUUID();
         UUID event = UUID.randomUUID();
         UUID member = UUID.randomUUID();
@@ -168,6 +172,13 @@ class CaseW07MinioMySqlTest {
         var snapshot = preparation.capture(opened.caseId(),
                 new CasePreparationDto.Capture(reviewing.caseVersion(), "Capture synthetic evidence"),
                 UUID.randomUUID().toString());
+        var draft = preparation.draft(opened.caseId(), new CasePreparationDto.DraftInput(
+                        cases.findById(opened.caseId()).orElseThrow().getCaseVersion(),
+                        snapshot.evidenceSnapshotId(), "Synthetic locked evidence report",
+                        "The synthetic source bytes and immutable version are verified for review.",
+                        "This fixture proves only the isolated technical preservation controls.",
+                        "Bind this synthetic report and evidence for an approval request.",
+                        "Create the W08a report revision"), UUID.randomUUID().toString());
         UUID sourceId = sources.findByCaseIdOrderByLinkedAtAscIdAsc(opened.caseId()).stream()
                 .filter(source -> source.getSourceType() == CaseSourceReference.Type.EVIDENCE_ASSET)
                 .findFirst().orElseThrow().getId();
@@ -196,6 +207,11 @@ class CaseW07MinioMySqlTest {
                         cases.findById(opened.caseId()).orElseThrow().getCaseVersion(),
                         snapshot.evidenceSnapshotId(), sourceId, evidenceId, verification.recordId(), policyId,
                         "Verify synthetic immutable version"), UUID.randomUUID().toString());
+        ApprovalRequestDto.View approval = approvals.submit(opened.caseId(),
+                new ApprovalRequestDto.Submit(draft.reportVersionId(), snapshot.evidenceSnapshotId(),
+                        cases.findById(opened.caseId()).orElseThrow().getCaseVersion(), draft.version(),
+                        draft.contentSha256(), "Submit the real locked evidence proof for review"),
+                UUID.randomUUID().toString());
 
         assertThat(result.actualVersionId()).isEqualTo(versionId);
         assertThat(result.objectLockMode()).isEqualTo(EvidencePreservationPolicy.Mode.GOVERNANCE);
@@ -204,6 +220,15 @@ class CaseW07MinioMySqlTest {
         assertThat(attempts.findByCaseIdOrderByAttemptedAtAscIdAsc(opened.caseId()))
                 .singleElement().extracting(EvidencePreservationAttempt::getOutcome)
                 .isEqualTo(EvidencePreservationAttempt.Outcome.VERIFIED);
+        assertThat(approval.status()).isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(approval.approvalEligibility()).isEqualTo("BLOCKED");
+        assertThat(approval.reportVersionId()).isEqualTo(draft.reportVersionId());
+        assertThat(approval.evidenceSnapshotId()).isEqualTo(snapshot.evidenceSnapshotId());
+        assertThat(approvalRequests.findById(approval.approvalRequestId())).isPresent();
+        assertThat(cases.findById(opened.caseId()).orElseThrow().getStatus())
+                .isEqualTo(Case.Status.READY_FOR_APPROVAL);
+        assertThat(reportVersions.findById(draft.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.PENDING_APPROVAL.name());
     }
 
     private static String sha256(byte[] bytes) throws Exception {

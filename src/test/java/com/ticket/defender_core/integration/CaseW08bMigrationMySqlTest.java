@@ -94,7 +94,7 @@ class CaseW08bMigrationMySqlTest {
                         + "SELECT ?,r.tenant_id,r.event_id,r.case_id,r.id,r.report_version_id,r.report_revision,"
                         + "r.report_content_sha256,r.report_template_version,r.report_template_sha256,"
                         + "r.evidence_snapshot_id,r.evidence_revision,r.manifest_sha256,"
-                        + "r.requested_by_membership_id,?,?,?,NULL,NULL,?,0 FROM approval_requests r WHERE r.id=?",
+                        + "r.requested_by_membership_id,?,?,?,?,NULL,NULL,?,0 FROM approval_requests r WHERE r.id=?",
                 id, tokenSha256, status, now, now.plusMinutes(10), activeRequestId,
                 CaseW08aMigrationMySqlTest.REQUEST_ID);
     }

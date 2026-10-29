@@ -93,6 +93,15 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.CaseW08aConcurrentMySqlTest": (
         4, "Runs after W08a migration on the isolated MySQL CI schema"
     ),
+    "com.ticket.defender_core.integration.CaseW08bMigrationMySqlTest": (
+        1, "Runs after W08a migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW08bSchemaValidateMySqlTest": (
+        1, "Runs after W08b migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW08bConcurrentMySqlTest": (
+        6, "Runs after W08b migration on the isolated MySQL CI schema"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -160,6 +169,18 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.CaseW08aConcurrentMySqlTest", 4
     ),
     "case-w08a-minio-mysql": (
+        "com.ticket.defender_core.integration.CaseW07MinioMySqlTest", 1
+    ),
+    "case-w08b-migration": (
+        "com.ticket.defender_core.integration.CaseW08bMigrationMySqlTest", 1
+    ),
+    "case-w08b-schema": (
+        "com.ticket.defender_core.integration.CaseW08bSchemaValidateMySqlTest", 1
+    ),
+    "case-w08b-concurrency": (
+        "com.ticket.defender_core.integration.CaseW08bConcurrentMySqlTest", 6
+    ),
+    "case-w08b-minio-mysql": (
         "com.ticket.defender_core.integration.CaseW07MinioMySqlTest", 1
     ),
     "track1-concurrency": (

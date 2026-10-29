@@ -399,7 +399,7 @@ class CaseW08bConcurrentMySqlTest {
 
     private String snapshotSha256(UUID snapshotId) {
         return jdbc.queryForObject("SELECT manifest_sha256 FROM evidence_snapshots WHERE id=?", String.class,
-                snapshotId);
+                snapshotId.toString());
     }
 
     private void member(UUID id, String subject, AdminRole role, UUID tenant, UUID event) {

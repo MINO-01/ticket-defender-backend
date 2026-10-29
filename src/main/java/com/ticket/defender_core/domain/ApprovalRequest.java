@@ -103,4 +103,28 @@ public class ApprovalRequest {
         this.caseVersionAtSubmit = target.getCaseVersion();
         this.activeCaseId = target.getId();
     }
+
+    public void approve() {
+        close(Status.APPROVED);
+    }
+
+    public void reject() {
+        close(Status.REJECTED);
+    }
+
+    public void withdraw() {
+        close(Status.WITHDRAWN);
+    }
+
+    public void invalidate() {
+        close(Status.INVALIDATED);
+    }
+
+    private void close(Status target) {
+        if (status != Status.PENDING) {
+            throw new IllegalStateException("Only a pending approval request can be closed");
+        }
+        this.status = Objects.requireNonNull(target);
+        this.activeCaseId = null;
+    }
 }

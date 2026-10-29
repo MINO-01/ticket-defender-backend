@@ -92,4 +92,27 @@ public class ReportVersion {
         }
         status = Status.PENDING_APPROVAL.name();
     }
+
+    public void approve() {
+        close(Status.APPROVED);
+    }
+
+    public void reject() {
+        close(Status.REJECTED);
+    }
+
+    public void withdraw() {
+        close(Status.WITHDRAWN);
+    }
+
+    public void invalidate() {
+        close(Status.INVALIDATED);
+    }
+
+    private void close(Status target) {
+        if (!Status.PENDING_APPROVAL.name().equals(status)) {
+            throw new IllegalStateException("Only a pending report can be closed");
+        }
+        status = target.name();
+    }
 }

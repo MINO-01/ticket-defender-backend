@@ -100,4 +100,24 @@ public class Case {
         this.status = Status.READY_FOR_APPROVAL;
         this.updatedAt = Objects.requireNonNull(now);
     }
+
+    public void approveForReport(UUID reportVersionId, LocalDateTime now) {
+        requirePendingReport(reportVersionId);
+        this.status = Status.APPROVED_FOR_REPORT;
+        this.updatedAt = Objects.requireNonNull(now);
+    }
+
+    public void returnToReview(UUID reportVersionId, LocalDateTime now) {
+        requirePendingReport(reportVersionId);
+        this.currentReportVersionId = null;
+        this.status = Status.IN_REVIEW;
+        this.updatedAt = Objects.requireNonNull(now);
+    }
+
+    private void requirePendingReport(UUID reportVersionId) {
+        if (status != Status.READY_FOR_APPROVAL
+                || !Objects.equals(currentReportVersionId, reportVersionId)) {
+            throw new IllegalStateException("Case is not awaiting this report approval");
+        }
+    }
 }

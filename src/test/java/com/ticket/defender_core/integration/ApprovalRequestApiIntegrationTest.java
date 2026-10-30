@@ -1,6 +1,7 @@
 package com.ticket.defender_core.integration;
 
 import com.ticket.defender_core.adapter.in.web.dto.ApprovalRequestDto;
+import com.ticket.defender_core.adapter.in.web.dto.ApprovalReviewDto;
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
 import com.ticket.defender_core.adapter.in.web.dto.CasePreparationDto;
 import com.ticket.defender_core.adapter.in.web.dto.EvidenceIntegrityDto;
@@ -59,12 +60,16 @@ class ApprovalRequestApiIntegrationTest {
     @Autowired private EvidenceIntegrityService integrity;
     @Autowired private EvidencePreservationService preservation;
     @Autowired private ApprovalRequestService approvals;
+    @Autowired private ApprovalReviewService review;
+    @Autowired private ApprovalReviewWriteService reviewWriter;
     @Autowired private CaseRepository cases;
     @Autowired private CaseSourceReferenceRepository sources;
     @Autowired private EvidenceSnapshotRepository snapshots;
     @Autowired private ReportVersionRepository reports;
     @Autowired private EvidencePreservationPolicyRepository policies;
     @Autowired private ApprovalRequestRepository requests;
+    @Autowired private ReviewReceiptRepository receipts;
+    @Autowired private ApprovalDecisionRepository decisions;
     @MockitoSpyBean private ApprovalAuditEventRepository audits;
     @Autowired private IssuanceHoldRepository holds;
     @Autowired private CaseActivityRepository activities;
@@ -90,6 +95,7 @@ class ApprovalRequestApiIntegrationTest {
     private String reviewerSubject;
     private String analystSubject;
     private String approverSubject;
+    private String otherApproverSubject;
     private String tenantAdminSubject;
     private String otherTenantReviewerSubject;
     private String otherEventReviewerSubject;
@@ -103,6 +109,7 @@ class ApprovalRequestApiIntegrationTest {
         reviewerSubject = "w08-reviewer-" + reviewer;
         analystSubject = "w08-analyst-" + UUID.randomUUID();
         approverSubject = "w08-approver-" + UUID.randomUUID();
+        otherApproverSubject = "w08-other-approver-" + UUID.randomUUID();
         tenantAdminSubject = "w08-admin-" + UUID.randomUUID();
         tenants.saveAndFlush(new Tenant(tenant, "Synthetic W08 tenant", AccessRecordStatus.ACTIVE));
         events.saveAndFlush(new TenantEvent(event, tenant, "w08-" + event,
@@ -110,6 +117,7 @@ class ApprovalRequestApiIntegrationTest {
         member(reviewer, reviewerSubject, AdminRole.REVIEWER, tenant, event);
         member(UUID.randomUUID(), analystSubject, AdminRole.ANALYST, tenant, event);
         member(UUID.randomUUID(), approverSubject, AdminRole.APPROVER, tenant, event);
+        member(UUID.randomUUID(), otherApproverSubject, AdminRole.APPROVER, tenant, event);
         member(UUID.randomUUID(), tenantAdminSubject, AdminRole.TENANT_ADMIN, tenant, event);
         UUID otherEventInTenant = UUID.randomUUID();
         events.saveAndFlush(new TenantEvent(otherEventInTenant, tenant, "other-event-" + otherEventInTenant,
@@ -414,6 +422,353 @@ class ApprovalRequestApiIntegrationTest {
                 .andExpect(jsonPath("$.code").value("AUDIT_REPORT_ISSUANCE_DISABLED"));
     }
 
+    @Test
+    void reviewPackageRequiresApproverAndIsReadOnly() throws Exception {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+
+        mvc.perform(get("/api/v1/approval-requests/{id}/review-package", request.getId()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/approval-requests/{id}/review-package", request.getId())
+                        .header("Authorization", "Bearer " + reviewerSubject))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/approval-requests/{id}/review-package", request.getId())
+                        .header("Authorization", "Bearer " + otherTenantReviewerSubject))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/approval-requests/{id}/review-package", request.getId())
+                        .header("Authorization", "Bearer " + approverSubject))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.approvalRequestId").value(request.getId().toString()))
+                .andExpect(jsonPath("$.reportContentSha256").value(fixture.reportContentSha256()))
+                .andExpect(jsonPath("$.manifestSha256").value(fixture.manifestSha256()))
+                .andExpect(jsonPath("$.issuanceEligibility").value("BLOCKED"))
+                .andExpect(jsonPath("$.objectKey").doesNotExist());
+        mvc.perform(post("/api/v1/approval-requests/{id}/review-package", request.getId()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/approval-requests/{id}/review-package", request.getId())
+                        .header("Authorization", "Bearer " + reviewerSubject))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/approval-requests/{id}/review-package", request.getId())
+                        .header("Authorization", "Bearer " + otherTenantReviewerSubject))
+                .andExpect(status().isNotFound());
+        assertThat(receipts.findAll()).noneMatch(receipt -> request.getId().equals(receipt.getApprovalRequestId()));
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.PENDING);
+    }
+
+    @Test
+    void reviewReceiptDecisionAndWithdrawalCommandsExposeNoStoreHttpContracts() throws Exception {
+        Fixture decisionFixture = fixture(true);
+        ApprovalRequest decisionRequest = pending(decisionFixture);
+
+        var receiptResult = mvc.perform(post("/api/v1/approval-requests/{id}/review-package", decisionRequest.getId())
+                        .header("Authorization", "Bearer " + approverSubject))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.reviewReceiptToken").isString())
+                .andReturn();
+        ApprovalReviewDto.Receipt receipt = json.readValue(
+                receiptResult.getResponse().getContentAsString(), ApprovalReviewDto.Receipt.class);
+
+        mvc.perform(post("/api/v1/approval-requests/{id}/decision", decisionRequest.getId())
+                        .header("Authorization", "Bearer " + approverSubject)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(decision(decisionFixture, receipt.reviewReceiptToken(),
+                                ApprovalDecision.Outcome.APPROVE, "Approve through the HTTP command"))))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.outcome").value("APPROVE"))
+                .andExpect(jsonPath("$.issuanceEligibility").value("BLOCKED"));
+
+        Fixture withdrawnFixture = fixture(true);
+        ApprovalRequest withdrawnRequest = pending(withdrawnFixture);
+        mvc.perform(post("/api/v1/approval-requests/{id}/withdraw", withdrawnRequest.getId())
+                        .header("Authorization", "Bearer " + reviewerSubject)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(withdraw(withdrawnFixture,
+                                "Withdraw through the HTTP command"))))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.requestStatus").value("WITHDRAWN"))
+                .andExpect(jsonPath("$.caseStatus").value("IN_REVIEW"));
+    }
+
+    @Test
+    void receiptIsOpaqueOneTimeAndApproveIsAtomicAndIdempotent() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+
+        ApprovalReviewDto.Receipt first = review.issueReceipt(request.getId());
+        ApprovalReviewDto.Receipt replacement = review.issueReceipt(request.getId());
+        ReviewReceipt firstStored = receipts.findById(first.reviewReceiptId()).orElseThrow();
+        ReviewReceipt replacementStored = receipts.findById(replacement.reviewReceiptId()).orElseThrow();
+        assertThat(first.reviewReceiptToken()).hasSizeGreaterThanOrEqualTo(32);
+        assertThat(firstStored.getTokenSha256()).isNotEqualTo(first.reviewReceiptToken());
+        assertThat(firstStored.getTokenSha256()).isEqualTo(CaseSnapshotManifest.sha256(first.reviewReceiptToken()));
+        assertThat(firstStored.getStatus()).isEqualTo(ReviewReceipt.Status.REVOKED);
+        assertThat(replacementStored.getStatus()).isEqualTo(ReviewReceipt.Status.ISSUED);
+        assertCode(() -> review.decide(request.getId(), decision(fixture, first.reviewReceiptToken(),
+                        ApprovalDecision.Outcome.APPROVE, "Approve with revoked receipt"),
+                UUID.randomUUID().toString()), HttpStatus.CONFLICT, "REVIEW_RECEIPT_ALREADY_USED");
+
+        String key = UUID.randomUUID().toString();
+        ApprovalReviewDto.DecisionInput input = decision(fixture, replacement.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Independent synthetic approval");
+        ApprovalReviewDto.DecisionView accepted = review.decide(request.getId(), input, key);
+        ApprovalReviewDto.DecisionView replayed = review.decide(request.getId(), input, key);
+
+        assertThat(replayed.approvalDecisionId()).isEqualTo(accepted.approvalDecisionId());
+        assertThat(accepted.outcome()).isEqualTo(ApprovalDecision.Outcome.APPROVE);
+        assertThat(accepted.issuanceEligibility()).isEqualTo("BLOCKED");
+        assertThat(currentCase(fixture).getStatus()).isEqualTo(Case.Status.APPROVED_FOR_REPORT);
+        assertThat(currentCase(fixture).getCurrentReportVersionId()).isEqualTo(fixture.reportVersionId());
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.APPROVED);
+        assertThat(requests.findById(request.getId()).orElseThrow().getActiveCaseId()).isNull();
+        assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.APPROVED.name());
+        assertThat(receipts.findById(replacement.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.CONSUMED);
+        assertThat(decisions.findByApprovalRequestId(request.getId())).hasValueSatisfying(decision ->
+                assertThat(decision.getReviewReceiptId()).isEqualTo(replacement.reviewReceiptId()));
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
+                .extracting(ApprovalAuditEvent::getEventType)
+                .containsExactlyInAnyOrder("APPROVAL_REQUESTED", "REVIEW_RECEIPT_ISSUED",
+                        "REVIEW_RECEIPT_REVOKED", "REVIEW_RECEIPT_ISSUED", "APPROVAL_DECIDED");
+        assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                tenant, memberId(approverSubject), "APPROVAL_DECISION", fixture.caseId(),
+                CaseSnapshotManifest.sha256(key))).hasValueSatisfying(record ->
+                assertThat(record.getResponseJson()).doesNotContain(replacement.reviewReceiptToken()));
+        ApprovalReviewDto.DecisionInput changed = decision(fixture, replacement.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Different body with the same idempotency key");
+        assertCode(() -> review.decide(request.getId(), changed, key), HttpStatus.CONFLICT,
+                "IDEMPOTENCY_KEY_REUSED");
+    }
+
+    @Test
+    void selfApprovalIsDeniedBySubjectEvenWhenOneMembershipHasBothRoles() {
+        roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), reviewer, AdminRole.APPROVER));
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(reviewerSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+
+        assertCode(() -> review.decide(request.getId(), decision(fixture, receipt.reviewReceiptToken(),
+                        ApprovalDecision.Outcome.APPROVE, "Attempt self approval with second role"),
+                UUID.randomUUID().toString()), HttpStatus.FORBIDDEN, "SELF_APPROVAL_FORBIDDEN");
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+        assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+    }
+
+    @Test
+    void rejectAndWithdrawReturnCaseToReviewAndReleasePendingSlot() {
+        Fixture rejectedFixture = fixture(true);
+        ApprovalRequest rejectedRequest = pending(rejectedFixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt rejectedReceipt = review.issueReceipt(rejectedRequest.getId());
+        review.decide(rejectedRequest.getId(), decision(rejectedFixture, rejectedReceipt.reviewReceiptToken(),
+                ApprovalDecision.Outcome.REJECT, "Synthetic report requires revision"), UUID.randomUUID().toString());
+        assertThat(currentCase(rejectedFixture).getStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(currentCase(rejectedFixture).getCurrentReportVersionId()).isNull();
+        assertThat(requests.findById(rejectedRequest.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.REJECTED);
+        assertThat(requests.findById(rejectedRequest.getId()).orElseThrow().getActiveCaseId()).isNull();
+        assertThat(reports.findById(rejectedFixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.REJECTED.name());
+
+        Fixture withdrawnFixture = fixture(true);
+        ApprovalRequest withdrawnRequest = pending(withdrawnFixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(withdrawnRequest.getId());
+        authenticate(reviewerSubject);
+        ApprovalReviewDto.WithdrawView withdrawn = review.withdraw(withdrawnRequest.getId(),
+                withdraw(withdrawnFixture, "Reviewer withdrew the pending request"), UUID.randomUUID().toString());
+        assertThat(withdrawn.requestStatus()).isEqualTo(ApprovalRequest.Status.WITHDRAWN);
+        assertThat(withdrawn.caseStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(withdrawn.reportStatus()).isEqualTo(ReportVersion.Status.WITHDRAWN);
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.REVOKED);
+        assertThat(decisions.findByApprovalRequestId(withdrawnRequest.getId())).isEmpty();
+    }
+
+    @Test
+    void decisionBlocksHoldBindingPolicyAndExpiredOrOtherApproverReceipts() {
+        Fixture holdFixture = fixture(true);
+        ApprovalRequest holdRequest = pending(holdFixture);
+        holds.saveAndFlush(new IssuanceHold(currentCase(holdFixture), "SYNTHETIC_HOLD", reviewer,
+                LocalDateTime.now(ZoneOffset.UTC)));
+        authenticate(approverSubject);
+        assertCode(() -> review.issueReceipt(holdRequest.getId()), HttpStatus.CONFLICT, "ISSUANCE_HOLD_ACTIVE");
+
+        Fixture decisionHoldFixture = fixture(true);
+        ApprovalRequest decisionHoldRequest = pending(decisionHoldFixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt decisionHoldReceipt = review.issueReceipt(decisionHoldRequest.getId());
+        holds.saveAndFlush(new IssuanceHold(currentCase(decisionHoldFixture), "SYNTHETIC_DECISION_HOLD", reviewer,
+                LocalDateTime.now(ZoneOffset.UTC)));
+        assertCode(() -> review.decide(decisionHoldRequest.getId(), decision(decisionHoldFixture,
+                        decisionHoldReceipt.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE,
+                        "Hold created after review receipt issuance"), UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "ISSUANCE_HOLD_ACTIVE");
+        assertThat(receipts.findById(decisionHoldReceipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+
+        Fixture otherApproverFixture = fixture(true);
+        ApprovalRequest otherApproverRequest = pending(otherApproverFixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt owned = review.issueReceipt(otherApproverRequest.getId());
+        authenticate(otherApproverSubject);
+        assertCode(() -> review.decide(otherApproverRequest.getId(), decision(otherApproverFixture,
+                        owned.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE,
+                        "Different approver cannot use the receipt"), UUID.randomUUID().toString()),
+                HttpStatus.UNPROCESSABLE_ENTITY, "REVIEW_RECEIPT_INVALID");
+
+        Fixture expiredFixture = fixture(true);
+        ApprovalRequest expiredRequest = pending(expiredFixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt expired = review.issueReceipt(expiredRequest.getId());
+        jdbc.update("UPDATE review_receipts SET expires_at=? WHERE id=?",
+                LocalDateTime.now(ZoneOffset.UTC).minusSeconds(1), expired.reviewReceiptId());
+        entityManager.clear();
+        assertCode(() -> review.decide(expiredRequest.getId(), decision(expiredFixture,
+                        expired.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE,
+                        "Expired receipt cannot be consumed"), UUID.randomUUID().toString()),
+                HttpStatus.UNPROCESSABLE_ENTITY, "REVIEW_RECEIPT_EXPIRED");
+
+        Fixture policyFixture = fixture(true);
+        ApprovalRequest policyRequest = pending(policyFixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt policyReceipt = review.issueReceipt(policyRequest.getId());
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        policies.saveAndFlush(new EvidencePreservationPolicy(policyFixture.policyId(), 2, tenant, event,
+                EvidencePreservationPolicy.Status.REVOKED, now.minusDays(1), now.plusDays(20), 10,
+                PROFILE, EvidencePreservationPolicy.Mode.GOVERNANCE, "synthetic-authority",
+                now.minusHours(2), now.minusHours(1), now));
+        assertCode(() -> review.decide(policyRequest.getId(), decision(policyFixture,
+                        policyReceipt.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE,
+                        "Revoked policy blocks decision"), UUID.randomUUID().toString()),
+                HttpStatus.UNPROCESSABLE_ENTITY, "APPROVAL_BASIS_BLOCKED");
+        assertThat(receipts.findById(policyReceipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+    }
+
+    @Test
+    void decisionRevalidatesExpectedVersionsPinnedDigestsAndRetainedTemplateArtifact() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        ApprovalReviewDto.DecisionInput valid = decision(fixture, receipt.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Revalidate sealed values before deciding");
+
+        ApprovalReviewDto.DecisionInput staleCase = new ApprovalReviewDto.DecisionInput(valid.outcome(),
+                valid.reason(), valid.evidenceSnapshotId(), valid.manifestSha256(),
+                valid.reportContentSha256(), valid.reviewReceiptToken(), valid.reviewConfirmed(),
+                valid.expectedCaseVersion() - 1, valid.expectedRequestVersion(), valid.expectedReportVersion());
+        assertCode(() -> review.decide(request.getId(), staleCase, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "CASE_VERSION_CONFLICT");
+        ApprovalReviewDto.DecisionInput wrongSnapshot = new ApprovalReviewDto.DecisionInput(valid.outcome(),
+                valid.reason(), UUID.randomUUID(), valid.manifestSha256(), valid.reportContentSha256(),
+                valid.reviewReceiptToken(), valid.reviewConfirmed(), valid.expectedCaseVersion(),
+                valid.expectedRequestVersion(), valid.expectedReportVersion());
+        assertCode(() -> review.decide(request.getId(), wrongSnapshot, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "APPROVAL_REVIEW_MISMATCH");
+
+        String originalManifest = jdbc.queryForObject("SELECT manifest_json FROM evidence_snapshots WHERE id=?",
+                String.class, fixture.snapshotId());
+        jdbc.update("UPDATE evidence_snapshots SET manifest_json='{}' WHERE id=?", fixture.snapshotId());
+        entityManager.clear();
+        assertCode(() -> review.decide(request.getId(), valid, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "EVIDENCE_REVIEW_MISMATCH");
+        jdbc.update("UPDATE evidence_snapshots SET manifest_json=? WHERE id=?", originalManifest, fixture.snapshotId());
+
+        String originalContent = jdbc.queryForObject("SELECT content_json FROM report_versions WHERE id=?",
+                String.class, fixture.reportVersionId());
+        jdbc.update("UPDATE report_versions SET content_json='{}' WHERE id=?", fixture.reportVersionId());
+        entityManager.clear();
+        assertCode(() -> review.decide(request.getId(), valid, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "REPORT_CONTENT_MISMATCH");
+        jdbc.update("UPDATE report_versions SET content_json=? WHERE id=?", originalContent, fixture.reportVersionId());
+
+        String unretained = "f".repeat(64);
+        jdbc.update("UPDATE approval_requests SET report_template_sha256=? WHERE id=?", unretained, request.getId());
+        jdbc.update("UPDATE report_versions SET template_sha256=? WHERE id=?", unretained,
+                fixture.reportVersionId());
+        entityManager.clear();
+        assertCode(() -> review.decide(request.getId(), valid, UUID.randomUUID().toString()),
+                HttpStatus.UNPROCESSABLE_ENTITY, "TEMPLATE_NOT_RETAINED");
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+        assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+    }
+
+    @Test
+    void trustedInvalidationClosesPendingRequestWhenEvidenceRevisionChanges() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        assertCode(() -> reviewWriter.invalidateFromTrustedSystem(request.getId(),
+                        memberId(otherEventReviewerSubject), "Other-event actor cannot invalidate this request"),
+                HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND");
+        jdbc.update("UPDATE cases SET evidence_revision=evidence_revision+1, case_version=case_version+1 WHERE id=?",
+                fixture.caseId());
+        entityManager.clear();
+
+        ApprovalRequest invalidated = reviewWriter.invalidateFromTrustedSystem(request.getId(), reviewer,
+                "Evidence changed after the request was submitted");
+
+        assertThat(invalidated.getStatus()).isEqualTo(ApprovalRequest.Status.INVALIDATED);
+        assertThat(invalidated.getActiveCaseId()).isNull();
+        assertThat(currentCase(fixture).getStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(currentCase(fixture).getCurrentReportVersionId()).isNull();
+        assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.INVALIDATED.name());
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.REVOKED);
+        assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
+                .extracting(ApprovalAuditEvent::getEventType)
+                .contains("APPROVAL_INVALIDATED");
+    }
+
+    @Test
+    void decisionAuditFailureRollsBackTokenConsumptionAndAllStateTransitions() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        long caseVersion = currentCase(fixture).getCaseVersion();
+        doThrow(new DataAccessResourceFailureException("synthetic W08b audit failure"))
+                .when(audits).saveAndFlush(any(ApprovalAuditEvent.class));
+        try {
+            assertThatThrownBy(() -> review.decide(request.getId(), decision(fixture,
+                            receipt.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE,
+                            "Synthetic audit rollback"), UUID.randomUUID().toString()))
+                    .isInstanceOf(DataAccessResourceFailureException.class);
+        } finally {
+            reset(audits);
+        }
+        entityManager.clear();
+        assertThat(currentCase(fixture).getStatus()).isEqualTo(Case.Status.READY_FOR_APPROVAL);
+        assertThat(currentCase(fixture).getCaseVersion()).isEqualTo(caseVersion);
+        assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.PENDING_APPROVAL.name());
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+        assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+        assertThat(caseActivityCount(fixture.caseId(), "APPROVAL_DECIDED")).isZero();
+    }
+
     private Fixture fixture(boolean preserve) {
         UUID fanReportId = UUID.randomUUID();
         UUID evidenceId = UUID.randomUUID();
@@ -490,6 +845,27 @@ class ApprovalRequestApiIntegrationTest {
                 fixture.reportContentSha256(), "Request independent approval review");
     }
 
+    private ApprovalRequest pending(Fixture fixture) {
+        approvals.submit(fixture.caseId(), command(fixture), UUID.randomUUID().toString());
+        return requests.findByReportVersionId(fixture.reportVersionId()).orElseThrow();
+    }
+
+    private ApprovalReviewDto.DecisionInput decision(Fixture fixture, String receiptToken,
+            ApprovalDecision.Outcome outcome, String reason) {
+        ApprovalRequest request = requests.findByReportVersionId(fixture.reportVersionId()).orElseThrow();
+        ReportVersion report = reports.findById(fixture.reportVersionId()).orElseThrow();
+        return new ApprovalReviewDto.DecisionInput(outcome, reason, fixture.snapshotId(),
+                fixture.manifestSha256(), fixture.reportContentSha256(), receiptToken, true,
+                currentCase(fixture).getCaseVersion(), request.getVersion(), report.getVersion());
+    }
+
+    private ApprovalReviewDto.WithdrawInput withdraw(Fixture fixture, String reason) {
+        ApprovalRequest request = requests.findByReportVersionId(fixture.reportVersionId()).orElseThrow();
+        ReportVersion report = reports.findById(fixture.reportVersionId()).orElseThrow();
+        return new ApprovalReviewDto.WithdrawInput(reason, currentCase(fixture).getCaseVersion(),
+                request.getVersion(), report.getVersion());
+    }
+
     private ApprovalRequestDto.Submit command(Fixture fixture, long caseVersion, long reportVersion,
             String contentSha256, String reason) {
         return new ApprovalRequestDto.Submit(fixture.reportVersionId(), fixture.snapshotId(),
@@ -513,6 +889,10 @@ class ApprovalRequestApiIntegrationTest {
         memberships.saveAndFlush(new AdminMembershipEntity(id, memberTenant, subject, AccessRecordStatus.ACTIVE));
         roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), id, role));
         grants.saveAndFlush(new MembershipEventGrant(UUID.randomUUID(), id, memberTenant, memberEvent));
+    }
+
+    private UUID memberId(String subject) {
+        return memberships.findBySubjectAndTenantId(subject, tenant).orElseThrow().getId();
     }
 
     private static void authenticate(String subject) {

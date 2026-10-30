@@ -32,6 +32,10 @@ public class ApprovalAuditEvent {
     private UUID caseId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "approval_request_id", length = 36, nullable = false)
     private UUID approvalRequestId;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "review_receipt_id", length = 36)
+    private UUID reviewReceiptId;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "approval_decision_id", length = 36)
+    private UUID approvalDecisionId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "report_version_id", length = 36, nullable = false)
     private UUID reportVersionId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "evidence_snapshot_id", length = 36, nullable = false)
@@ -61,6 +65,53 @@ public class ApprovalAuditEvent {
 
     public ApprovalAuditEvent(ApprovalRequest request, UUID actorMembershipId,
             long caseVersionBefore, LocalDateTime occurredAt) {
+        this(request, actorMembershipId, "APPROVAL_REQUESTED", null, request.getStatus().name(),
+                caseVersionBefore, request.getCaseVersionAtSubmit(), request.getReason(), null, null,
+                occurredAt);
+    }
+
+    public static ApprovalAuditEvent reviewReceiptIssued(ApprovalRequest request, ReviewReceipt receipt,
+            UUID actorMembershipId, long caseVersion, LocalDateTime occurredAt) {
+        return new ApprovalAuditEvent(request, actorMembershipId, "REVIEW_RECEIPT_ISSUED",
+                request.getStatus().name(), request.getStatus().name(), caseVersion, caseVersion,
+                "Review receipt issued", receipt.getId(), null, occurredAt);
+    }
+
+    public static ApprovalAuditEvent reviewReceiptClosed(ApprovalRequest request, ReviewReceipt receipt,
+            UUID actorMembershipId, String eventType, String reason, long caseVersion,
+            LocalDateTime occurredAt) {
+        return new ApprovalAuditEvent(request, actorMembershipId, eventType, request.getStatus().name(),
+                request.getStatus().name(), caseVersion, caseVersion, reason, receipt.getId(), null,
+                occurredAt);
+    }
+
+    public static ApprovalAuditEvent decision(ApprovalRequest request, ApprovalDecision decision,
+            UUID actorMembershipId, String fromStatus, long caseVersionBefore,
+            long caseVersionAfter, LocalDateTime occurredAt) {
+        return new ApprovalAuditEvent(request, actorMembershipId, "APPROVAL_DECIDED", fromStatus,
+                request.getStatus().name(), caseVersionBefore, caseVersionAfter, decision.getReason(),
+                decision.getReviewReceiptId(), decision.getId(), occurredAt);
+    }
+
+    public static ApprovalAuditEvent withdrawn(ApprovalRequest request, UUID actorMembershipId,
+            String fromStatus, long caseVersionBefore, long caseVersionAfter, String reason,
+            LocalDateTime occurredAt) {
+        return new ApprovalAuditEvent(request, actorMembershipId, "APPROVAL_WITHDRAWN", fromStatus,
+                request.getStatus().name(), caseVersionBefore, caseVersionAfter, reason, null, null,
+                occurredAt);
+    }
+
+    public static ApprovalAuditEvent invalidated(ApprovalRequest request, UUID actorMembershipId,
+            String fromStatus, long caseVersionBefore, long caseVersionAfter, String reason,
+            LocalDateTime occurredAt) {
+        return new ApprovalAuditEvent(request, actorMembershipId, "APPROVAL_INVALIDATED", fromStatus,
+                request.getStatus().name(), caseVersionBefore, caseVersionAfter, reason, null, null,
+                occurredAt);
+    }
+
+    private ApprovalAuditEvent(ApprovalRequest request, UUID actorMembershipId, String eventType,
+            String fromStatus, String toStatus, long caseVersionBefore, long caseVersionAfter,
+            String reason, UUID reviewReceiptId, UUID approvalDecisionId, LocalDateTime occurredAt) {
         this.id = UUID.randomUUID();
         this.tenantId = request.getTenantId();
         this.eventId = request.getEventId();
@@ -69,15 +120,17 @@ public class ApprovalAuditEvent {
         this.reportVersionId = request.getReportVersionId();
         this.evidenceSnapshotId = request.getEvidenceSnapshotId();
         this.actorMembershipId = actorMembershipId;
-        this.eventType = "APPROVAL_REQUESTED";
-        this.fromStatus = null;
-        this.toStatus = request.getStatus().name();
+        this.eventType = eventType;
+        this.fromStatus = fromStatus;
+        this.toStatus = toStatus;
         this.reportContentSha256 = request.getReportContentSha256();
         this.manifestSha256 = request.getManifestSha256();
         this.evidenceRevision = request.getEvidenceRevision();
         this.caseVersionBefore = caseVersionBefore;
-        this.caseVersionAfter = request.getCaseVersionAtSubmit();
-        this.reason = request.getReason();
+        this.caseVersionAfter = caseVersionAfter;
+        this.reason = reason;
+        this.reviewReceiptId = reviewReceiptId;
+        this.approvalDecisionId = approvalDecisionId;
         this.occurredAt = occurredAt;
     }
 }

@@ -53,8 +53,8 @@ class CaseW08aSchemaValidateMySqlTest {
         assertThat(cases.findById(request.getCaseId()).orElseThrow().getCurrentReportVersionId())
                 .isEqualTo(report.getId());
         assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
-                .singleElement().extracting(event -> event.getId())
-                .isEqualTo(UUID.fromString(CaseW08aMigrationMySqlTest.AUDIT_ID));
+                .extracting(event -> event.getId())
+                .contains(UUID.fromString(CaseW08aMigrationMySqlTest.AUDIT_ID));
         assertThat(hold.getStatus()).isEqualTo(IssuanceHold.Status.ACTIVE);
     }
 }

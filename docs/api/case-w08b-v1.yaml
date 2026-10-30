@@ -1,0 +1,308 @@
+openapi: 3.1.0
+x-contract-status: IMPLEMENTED_W08B
+info:
+  title: Ticket Defender Approval Review and Decision API
+  version: 1.0.0
+  description: >-
+    W08b adds an independent approver review package, one-time review receipt, APPROVE or REJECT
+    decision, and reviewer withdrawal for an existing W08a PENDING request. It does not create or
+    issue an official PDF. Every response keeps issuanceEligibility BLOCKED.
+servers:
+  - url: http://localhost:8080
+security:
+  - adminBearer: []
+paths:
+  /api/v1/approval-requests/{approvalRequestId}/review-package:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalRequestId'
+    get:
+      operationId: getApprovalReviewPackage
+      x-required-roles: [APPROVER]
+      description: >-
+        Reads a current PENDING review package without issuing a receipt or changing state. The
+        server rechecks tenant, event, Case, snapshot, report revision, content digest, manifest
+        digest and retained template artifact. The package has sealed report content and limited
+        snapshot metadata, never a private object key, object bytes, storage credential or URL.
+      responses:
+        '200':
+          description: A sealed package that an authorized independent approver may review.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewPackage' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      operationId: issueApprovalReviewReceipt
+      x-required-roles: [APPROVER]
+      description: >-
+        Issues one high-entropy opaque receipt token only after the same binding and evidence basis
+        checks pass. Its SHA-256 digest, not the token, is stored. Reissuing for the same approver
+        atomically revokes an earlier unconsumed receipt. ACTIVE issuance holds block issuance.
+      responses:
+        '201':
+          description: The raw receipt token is returned once and must not be retained by the server.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewReceiptIssued' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approval-requests/{approvalRequestId}/decision:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalRequestId'
+    post:
+      operationId: decideApprovalRequest
+      x-required-roles: [APPROVER]
+      description: >-
+        Atomically consumes the caller's one-time receipt and records APPROVE or REJECT. The
+        requester and approver are compared by authenticated membership subject, so multiple roles
+        do not bypass the self-approval prohibition. The server rechecks all pinned bindings,
+        W06 MATCH and W07 immutable preservation evidence, current APPROVED preservation policy,
+        receipt scope and expiry, optimistic versions, and ACTIVE issuance holds. A same-key,
+        same-body retry returns the existing decision without another receipt consumption.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecisionInput' }
+      responses:
+        '201':
+          description: The decision was atomically recorded. Official PDF issuance remains blocked.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionView' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approval-requests/{approvalRequestId}/withdraw:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalRequestId'
+    post:
+      operationId: withdrawApprovalRequest
+      x-required-roles: [REVIEWER]
+      description: >-
+        Atomically closes a PENDING request as WITHDRAWN, returns its report and Case to review,
+        revokes unconsumed receipts, releases the active request slot, and appends activity and
+        approval audit records. A same-key, same-body retry returns the stored result.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WithdrawInput' }
+      responses:
+        '200':
+          description: The request was withdrawn; it is not an approval decision.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WithdrawView' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    ApprovalRequestId:
+      name: approvalRequestId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+  schemas:
+    Sha256:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+    ReviewPackage:
+      type: object
+      additionalProperties: false
+      required: [approvalRequestId, requestStatus, caseId, eventId, caseVersion, evidenceSnapshotId,
+        evidenceRevision, manifestSha256, manifestJson, reportVersionId, reportRevision,
+        reportVersion, reportContentSha256, reportTemplateVersion, reportTemplateSha256,
+        reportContentJson, issuanceEligibility]
+      properties:
+        approvalRequestId: { type: string, format: uuid }
+        requestStatus: { type: string, const: PENDING }
+        caseId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        caseVersion: { type: integer, format: int64, minimum: 0 }
+        evidenceSnapshotId: { type: string, format: uuid }
+        evidenceRevision: { type: integer, format: int64, minimum: 1 }
+        manifestSha256: { $ref: '#/components/schemas/Sha256' }
+        manifestJson:
+          type: string
+          description: Sealed snapshot metadata only; no private object key or bytes.
+        reportVersionId: { type: string, format: uuid }
+        reportRevision: { type: integer, format: int64, minimum: 1 }
+        reportVersion: { type: integer, format: int64, minimum: 0 }
+        reportContentSha256: { $ref: '#/components/schemas/Sha256' }
+        reportTemplateVersion: { type: string }
+        reportTemplateSha256: { $ref: '#/components/schemas/Sha256' }
+        reportContentJson:
+          type: string
+          description: Sealed review report content, not a rendered official PDF.
+        issuanceEligibility:
+          type: string
+          const: BLOCKED
+    ReviewReceiptIssued:
+      type: object
+      additionalProperties: false
+      required: [reviewReceiptId, approvalRequestId, status, reviewReceiptToken, issuedAt, expiresAt]
+      properties:
+        reviewReceiptId: { type: string, format: uuid }
+        approvalRequestId: { type: string, format: uuid }
+        status: { type: string, const: ISSUED }
+        reviewReceiptToken:
+          type: string
+          minLength: 32
+          x-sensitive: true
+          description: Returned once. Only its SHA-256 digest is retained by the server.
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    DecisionInput:
+      type: object
+      additionalProperties: false
+      required: [outcome, reason, evidenceSnapshotId, manifestSha256, reportContentSha256,
+        reviewReceiptToken, reviewConfirmed, expectedCaseVersion, expectedRequestVersion,
+        expectedReportVersion]
+      properties:
+        outcome: { type: string, enum: [APPROVE, REJECT] }
+        reason: { type: string, minLength: 3, maxLength: 1800 }
+        evidenceSnapshotId: { type: string, format: uuid }
+        manifestSha256: { $ref: '#/components/schemas/Sha256' }
+        reportContentSha256: { $ref: '#/components/schemas/Sha256' }
+        reviewReceiptToken: { type: string, minLength: 32, maxLength: 512, writeOnly: true }
+        reviewConfirmed: { type: boolean, const: true }
+        expectedCaseVersion: { type: integer, format: int64, minimum: 0 }
+        expectedRequestVersion: { type: integer, format: int64, minimum: 0 }
+        expectedReportVersion: { type: integer, format: int64, minimum: 0 }
+    DecisionView:
+      type: object
+      additionalProperties: false
+      required: [approvalDecisionId, approvalRequestId, outcome, requestStatus, caseStatus,
+        reportStatus, reviewReceiptId, caseVersion, requestVersion, reportVersion, decidedAt,
+        issuanceEligibility]
+      properties:
+        approvalDecisionId: { type: string, format: uuid }
+        approvalRequestId: { type: string, format: uuid }
+        outcome: { type: string, enum: [APPROVE, REJECT] }
+        requestStatus: { type: string, enum: [APPROVED, REJECTED] }
+        caseStatus: { type: string, enum: [APPROVED_FOR_REPORT, IN_REVIEW] }
+        reportStatus: { type: string, enum: [APPROVED, REJECTED] }
+        reviewReceiptId: { type: string, format: uuid }
+        caseVersion: { type: integer, format: int64, minimum: 0 }
+        requestVersion: { type: integer, format: int64, minimum: 0 }
+        reportVersion: { type: integer, format: int64, minimum: 0 }
+        decidedAt: { type: string, format: date-time }
+        issuanceEligibility: { type: string, const: BLOCKED }
+    WithdrawInput:
+      type: object
+      additionalProperties: false
+      required: [reason, expectedCaseVersion, expectedRequestVersion, expectedReportVersion]
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 1800 }
+        expectedCaseVersion: { type: integer, format: int64, minimum: 0 }
+        expectedRequestVersion: { type: integer, format: int64, minimum: 0 }
+        expectedReportVersion: { type: integer, format: int64, minimum: 0 }
+    WithdrawView:
+      type: object
+      additionalProperties: false
+      required: [approvalRequestId, requestStatus, caseStatus, reportStatus, caseVersion,
+        requestVersion, reportVersion]
+      properties:
+        approvalRequestId: { type: string, format: uuid }
+        requestStatus: { type: string, const: WITHDRAWN }
+        caseStatus: { type: string, const: IN_REVIEW }
+        reportStatus: { type: string, const: WITHDRAWN }
+        caseVersion: { type: integer, format: int64, minimum: 0 }
+        requestVersion: { type: integer, format: int64, minimum: 0 }
+        reportVersion: { type: integer, format: int64, minimum: 0 }
+    Problem:
+      type: object
+      required: [status, title, code, requestId]
+      properties:
+        status: { type: integer }
+        title: { type: string }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+  responses:
+    Invalid:
+      description: INVALID_REQUEST or INVALID_IDEMPOTENCY_KEY.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthenticated:
+      description: Admin JWT is required.
+    Forbidden:
+      description: FORBIDDEN or SELF_APPROVAL_FORBIDDEN.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: RESOURCE_NOT_FOUND, including inaccessible tenant or event scope.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: >-
+        APPROVAL_REQUEST_CLOSED, APPROVAL_REQUEST_ALREADY_PENDING, CASE_VERSION_CONFLICT,
+        REQUEST_VERSION_CONFLICT, REPORT_VERSION_CONFLICT, APPROVAL_REVIEW_MISMATCH,
+        EVIDENCE_VERSION_MISMATCH, EVIDENCE_REVIEW_MISMATCH, REPORT_CONTENT_MISMATCH,
+        ISSUANCE_HOLD_ACTIVE, REVIEW_RECEIPT_ALREADY_USED or IDEMPOTENCY_KEY_REUSED.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unprocessable:
+      description: >-
+        VALIDATION_FAILED, TEMPLATE_NOT_RETAINED, APPROVAL_BASIS_BLOCKED,
+        REVIEW_RECEIPT_INVALID or REVIEW_RECEIPT_EXPIRED.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: DEPENDENCY_UNAVAILABLE for a database outage.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

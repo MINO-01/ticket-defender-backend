@@ -31,6 +31,7 @@ import com.ticket.defender_core.security.AdminRole;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
@@ -67,7 +68,7 @@ public class ApprovalReviewWriteService {
     private final CaseIdempotencyRepository idempotency;
     private final ObjectMapper json;
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ReviewReceipt issueReceipt(UUID requestId, UUID memberId, String tokenDigest,
             LocalDateTime now, Duration ttl) {
         if (ttl == null || ttl.isZero() || ttl.isNegative()) {
@@ -111,7 +112,7 @@ public class ApprovalReviewWriteService {
         return receipt;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApprovalDecision decide(UUID requestId, ApprovalReviewDto.DecisionInput input, UUID memberId,
             String tokenDigest, String keyDigest, String requestDigest) {
         UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
@@ -172,7 +173,7 @@ public class ApprovalReviewWriteService {
         return decision;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApprovalRequest withdraw(UUID requestId, ApprovalReviewDto.WithdrawInput input, UUID memberId,
             String keyDigest, String requestDigest) {
         UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
@@ -211,7 +212,7 @@ public class ApprovalReviewWriteService {
      * Trusted server-only invalidation hook. No web endpoint invokes this method in W08b; a future
      * evidence, policy, or authorization change listener must deliberately supply its server actor.
      */
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApprovalRequest invalidateFromTrustedSystem(UUID requestId, UUID actorMembershipId, String reason) {
         UUID caseId = requests.findCaseIdById(requestId).orElseThrow(ApprovalReviewWriteService::notFound);
         Case target = cases.findByIdForUpdate(caseId).orElseThrow(ApprovalReviewWriteService::notFound);

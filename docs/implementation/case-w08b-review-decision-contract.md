@@ -91,6 +91,20 @@ review receipt token이 포함되지 않고 해당 SHA-256만 포함된다. 인�
 `REVIEW_RECEIPT_ISSUED`, `REVIEW_RECEIPT_REVOKED`, `REVIEW_RECEIPT_EXPIRED`,
 `APPROVAL_DECIDED`, `APPROVAL_WITHDRAWN`, `APPROVAL_INVALIDATED` 이벤트를 additive하게 허용한다.
 
+## 읽기 일관성과 잠금 경계
+
+`issueReceipt`, `decide`, `withdraw`, `invalidateFromTrustedSystem`은 해당 짧은 쓰기
+트랜잭션에만 `READ_COMMITTED`를 적용한다. 전역 datasource, Hikari, MySQL 기본 격리 수준은
+바꾸지 않으며, `findCaseIdById` → Case `FOR UPDATE` → Request `FOR UPDATE` 순서도 유지한다.
+이는 MySQL `REPEATABLE_READ`에서 잠금 대기 전 일반 조회가 만든 스냅샷 때문에, Case 잠금을
+획득한 뒤 `ApprovalRequestBasisValidator`가 이미 커밋된 보존 정책이나 증거 변경을 과거 값으로
+검증하는 일을 피하기 위함이다.
+
+이 설정은 Case 잠금 획득 뒤 일반 검증 조회가 그 시점에 커밋된 값을 읽도록 한다. 다만 검증이
+끝난 뒤 별도 정책 또는 `IssuanceHold` writer가 같은 Case 잠금 경계에 참여하지 않고 변경하는
+경쟁까지 직렬화하지는 않는다. 향후 그러한 writer는 같은 Case write lock을 사용하거나 별도
+업무상 동기화 규칙을 가져야 한다.
+
 ## MySQL 적용 순서
 
 1. 기존 W02, W04, W05, W06, W07 및 W08a migration을 적용한다.

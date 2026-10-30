@@ -7,6 +7,7 @@ export MSYS_NO_PATHCONV=1
 container=td-issue32-ci-minio
 bucket=td-issue32-ci-private
 preservation_bucket=td-issue40-ci-preservation
+official_pdf_bucket=td-issue46-ci-official-pdf
 image=td-issue32-minio-ci:local
 output_file=${GITHUB_ENV:-${TD_ISSUE32_CI_ENV_FILE:-}}
 
@@ -35,6 +36,8 @@ preservation_reader_user="td40read$(openssl rand -hex 8)"
 preservation_reader_password="$(openssl rand -hex 24)"
 preservation_delete_user="td40delete$(openssl rand -hex 8)"
 preservation_delete_password="$(openssl rand -hex 24)"
+official_pdf_user="td46pdf$(openssl rand -hex 8)"
+official_pdf_password="$(openssl rand -hex 24)"
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf '::add-mask::%s\n' "$root_user"
@@ -49,6 +52,8 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf '::add-mask::%s\n' "$preservation_reader_password"
   printf '::add-mask::%s\n' "$preservation_delete_user"
   printf '::add-mask::%s\n' "$preservation_delete_password"
+  printf '::add-mask::%s\n' "$official_pdf_user"
+  printf '::add-mask::%s\n' "$official_pdf_password"
 fi
 
 started=false
@@ -92,10 +97,15 @@ docker cp .github/scripts/minio-w07-reader-policy.json \
   "$container:/tmp/minio-w07-reader-policy.json" >/dev/null
 docker cp .github/scripts/minio-w07-delete-policy.json \
   "$container:/tmp/minio-w07-delete-policy.json" >/dev/null
+docker cp .github/scripts/minio-w09-pdf-policy.json \
+  "$container:/tmp/minio-w09-pdf-policy.json" >/dev/null
 docker exec "$container" mc mb "ci/$bucket" >/dev/null
 docker exec "$container" mc anonymous set none "ci/$bucket" >/dev/null
 docker exec "$container" mc mb --with-lock "ci/$preservation_bucket" >/dev/null
 docker exec "$container" mc anonymous set none "ci/$preservation_bucket" >/dev/null
+docker exec "$container" mc mb "ci/$official_pdf_bucket" >/dev/null
+docker exec "$container" mc version enable "ci/$official_pdf_bucket" >/dev/null
+docker exec "$container" mc anonymous set none "ci/$official_pdf_bucket" >/dev/null
 docker exec "$container" mc admin policy create ci td-issue32-ci /tmp/minio-ci-policy.json >/dev/null
 docker exec "$container" mc admin user add ci "$app_user" "$app_password" >/dev/null
 docker exec "$container" mc admin policy attach ci td-issue32-ci --user "$app_user" >/dev/null
@@ -120,6 +130,10 @@ docker exec "$container" mc admin user add ci \
   "$preservation_delete_user" "$preservation_delete_password" >/dev/null
 docker exec "$container" mc admin policy attach ci td-issue40-ci-delete \
   --user "$preservation_delete_user" >/dev/null
+docker exec "$container" mc admin policy create ci td-issue46-ci-pdf \
+  /tmp/minio-w09-pdf-policy.json >/dev/null
+docker exec "$container" mc admin user add ci "$official_pdf_user" "$official_pdf_password" >/dev/null
+docker exec "$container" mc admin policy attach ci td-issue46-ci-pdf --user "$official_pdf_user" >/dev/null
 
 {
   printf 'TD_ISSUE32_MINIO_ENDPOINT=http://127.0.0.1:19000\n'
@@ -138,7 +152,10 @@ docker exec "$container" mc admin policy attach ci td-issue40-ci-delete \
   printf 'TD_ISSUE40_MINIO_READER_SECRET_KEY=%s\n' "$preservation_reader_password"
   printf 'TD_ISSUE40_MINIO_DELETE_ACCESS_KEY=%s\n' "$preservation_delete_user"
   printf 'TD_ISSUE40_MINIO_DELETE_SECRET_KEY=%s\n' "$preservation_delete_password"
+  printf 'TD_ISSUE46_MINIO_BUCKET=%s\n' "$official_pdf_bucket"
+  printf 'TD_ISSUE46_MINIO_ACCESS_KEY=%s\n' "$official_pdf_user"
+  printf 'TD_ISSUE46_MINIO_SECRET_KEY=%s\n' "$official_pdf_password"
 } >> "$output_file"
 
 initialized=true
-echo 'Private W02 bucket and isolated W07 Object Lock bucket are ready'
+echo 'Private W02 bucket, isolated W07 Object Lock bucket, and versioned W09 PDF bucket are ready'

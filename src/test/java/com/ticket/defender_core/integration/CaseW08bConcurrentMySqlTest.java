@@ -334,6 +334,8 @@ class CaseW08bConcurrentMySqlTest {
         ApprovalReviewDto.DecisionInput command = decision(fixture, receipt.reviewReceiptToken(),
                 ApprovalDecision.Outcome.APPROVE, "Block approval after the preservation policy changes");
         String key = UUID.randomUUID().toString();
+        String keyDigest = CaseSnapshotManifest.sha256(key.toLowerCase());
+        String requestDigest = CaseSnapshotManifest.sha256("policy-race-" + fixture.requestId());
         UUID approver = memberships.findBySubjectAndTenantId(fixture.approverOneSubject(), fixture.tenantId())
                 .orElseThrow().getId();
         CountDownLatch caseLocked = new CountDownLatch(1);
@@ -366,7 +368,8 @@ class CaseW08bConcurrentMySqlTest {
             attemptedDecision = workers.submit(() -> {
                 authenticate(fixture.approverOneSubject());
                 try {
-                    review.decide(fixture.requestId(), command, key);
+                    reviewWriter.decide(fixture.requestId(), command, approver,
+                            CaseSnapshotManifest.sha256(receipt.reviewReceiptToken()), keyDigest, requestDigest);
                     return null;
                 } catch (Throwable error) {
                     return error;
@@ -405,7 +408,7 @@ class CaseW08bConcurrentMySqlTest {
             assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 0);
             assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
                     fixture.tenantId(), approver, "APPROVAL_DECISION", fixture.caseId(),
-                    CaseSnapshotManifest.sha256(key))).isEmpty();
+                    keyDigest)).isEmpty();
         } finally {
             releaseCaseLock.countDown();
             if (attemptedDecision != null) attemptedDecision.cancel(true);

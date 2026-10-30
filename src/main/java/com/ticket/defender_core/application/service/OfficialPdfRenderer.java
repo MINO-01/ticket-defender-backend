@@ -24,12 +24,15 @@ import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Renders only a server-owned XHTML template and escaped sealed report fields. */
 @Component
 @RequiredArgsConstructor
 public class OfficialPdfRenderer {
     private static final DateTimeFormatter KOREAN_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'KST'");
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{([A-Za-z0-9]+)}}");
     private final ObjectMapper json;
 
     public byte[] render(RenderContext context) {
@@ -86,12 +89,7 @@ public class OfficialPdfRenderer {
         variables.put("assessment", content(content, "assessment", 6000));
         variables.put("limitations", content(content, "limitations", 3000));
         variables.put("conclusion", content(content, "conclusion", 3000));
-        String xhtml = template.artifact();
-        for (Map.Entry<String, String> variable : variables.entrySet()) {
-            // XML-safe escaping: HTML named entities such as &middot; are undefined in XHTML.
-            xhtml = xhtml.replace("{{" + variable.getKey() + "}}", HtmlUtils.htmlEscape(variable.getValue(), "UTF-8"));
-        }
-        if (xhtml.contains("{{")) throw new OfficialPdfRenderingException("Official PDF template has unresolved fields");
+        String xhtml = fill(template.artifact(), variables);
         try (ByteArrayOutputStream out = new ByteArrayOutputStream(); PDDocument document = new PDDocument()) {
             // PDFBox and openhtmltopdf otherwise use the clock for /ID and CreationDate; recovering the
             // deterministic object key requires the same sealed input to produce the same bytes.
@@ -143,6 +141,23 @@ public class OfficialPdfRenderer {
         if (!(value instanceof String text) || text.isBlank() || text.length() > maximum)
             throw new OfficialPdfRenderingException("Report content is incomplete");
         return text;
+    }
+
+    /**
+     * Scans only the server-owned template once, so sealed reviewer text containing braces or another
+     * placeholder name is never rescanned or substituted.
+     */
+    static String fill(String artifact, Map<String, String> variables) {
+        Matcher placeholder = PLACEHOLDER.matcher(artifact);
+        StringBuilder xhtml = new StringBuilder(artifact.length());
+        while (placeholder.find()) {
+            String value = variables.get(placeholder.group(1));
+            if (value == null) throw new OfficialPdfRenderingException("Official PDF template has unresolved fields");
+            // XML-safe escaping: HTML named entities such as &middot; are undefined in XHTML.
+            placeholder.appendReplacement(xhtml, Matcher.quoteReplacement(HtmlUtils.htmlEscape(value, "UTF-8")));
+        }
+        placeholder.appendTail(xhtml);
+        return xhtml.toString();
     }
 
     private static void rejectExternalResources(String artifact) {

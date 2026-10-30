@@ -1,7 +1,5 @@
 package com.ticket.defender_core.integration;
 
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
 import com.ticket.defender_core.adapter.in.web.dto.ApprovalRequestDto;
 import com.ticket.defender_core.adapter.in.web.dto.ApprovalReviewDto;
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
@@ -24,7 +22,6 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -38,13 +35,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.reset;
 
 @SpringBootTest(properties = {
@@ -65,10 +61,10 @@ class CaseW08bConcurrentMySqlTest {
     @Autowired private ApprovalRequestService approvals;
     @Autowired private ApprovalReviewService review;
     @Autowired private ApprovalReviewWriteService reviewWriter;
-    @MockitoSpyBean private CaseRepository cases;
+    @Autowired private CaseRepository cases;
     @Autowired private CaseSourceReferenceRepository sources;
     @Autowired private ReportVersionRepository reports;
-    @MockitoSpyBean private ApprovalRequestRepository requests;
+    @Autowired private ApprovalRequestRepository requests;
     @Autowired private ReviewReceiptRepository receipts;
     @Autowired private ApprovalDecisionRepository decisions;
     @Autowired private ApprovalAuditEventRepository audits;
@@ -83,7 +79,6 @@ class CaseW08bConcurrentMySqlTest {
     @Autowired private EvidenceAssetRepository assets;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PlatformTransactionManager transactionManager;
-    @PersistenceContext private EntityManager entityManager;
     @MockitoBean private EvidenceObjectStorage objectStorage;
     @MockitoBean private EvidencePreservationStorage preservationStorage;
 
@@ -97,7 +92,7 @@ class CaseW08bConcurrentMySqlTest {
 
     @BeforeEach
     void setupStorage() {
-        reset(objectStorage, preservationStorage, cases, requests);
+        reset(objectStorage, preservationStorage);
         given(preservationStorage.profile()).willReturn(PROFILE);
     }
 
@@ -339,10 +334,7 @@ class CaseW08bConcurrentMySqlTest {
         UUID approver = memberships.findBySubjectAndTenantId(fixture.approverOneSubject(), fixture.tenantId())
                 .orElseThrow().getId();
         CountDownLatch caseLocked = new CountDownLatch(1);
-        CountDownLatch scalarRead = new CountDownLatch(1);
-        CountDownLatch caseLockAttempted = new CountDownLatch(1);
         CountDownLatch releaseCaseLock = new CountDownLatch(1);
-        AtomicReference<String> isolation = new AtomicReference<>();
         var workers = Executors.newFixedThreadPool(2, Thread.ofPlatform().daemon(true).factory());
         Future<?> holder = workers.submit(() -> new TransactionTemplate(transactionManager)
                 .executeWithoutResult(status -> {
@@ -353,18 +345,6 @@ class CaseW08bConcurrentMySqlTest {
         Future<Throwable> attemptedDecision = null;
         try {
             assertThat(caseLocked.await(10, TimeUnit.SECONDS)).isTrue();
-            doAnswer(invocation -> {
-                Object result = invocation.callRealMethod();
-                isolation.set(String.valueOf(entityManager.createNativeQuery("SELECT @@transaction_isolation")
-                        .getSingleResult()));
-                scalarRead.countDown();
-                return result;
-            }).when(requests).findCaseIdById(fixture.requestId());
-            doAnswer(invocation -> {
-                caseLockAttempted.countDown();
-                return invocation.callRealMethod();
-            }).when(cases).findByIdForUpdate(fixture.caseId());
-
             attemptedDecision = workers.submit(() -> {
                 authenticate(fixture.approverOneSubject());
                 try {
@@ -378,8 +358,7 @@ class CaseW08bConcurrentMySqlTest {
                 }
             });
 
-            assertThat(scalarRead.await(10, TimeUnit.SECONDS)).isTrue();
-            assertThat(caseLockAttempted.await(10, TimeUnit.SECONDS)).isTrue();
+            String isolation = awaitWaitingCaseLockIsolation();
             LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
             policies.saveAndFlush(new EvidencePreservationPolicy(fixture.policyId(), 2,
                     fixture.tenantId(), null, EvidencePreservationPolicy.Status.REVOKED,
@@ -390,7 +369,7 @@ class CaseW08bConcurrentMySqlTest {
 
             Throwable failure = attemptedDecision.get(30, TimeUnit.SECONDS);
             holder.get(30, TimeUnit.SECONDS);
-            assertThat(isolation.get()).isEqualToIgnoringCase("READ-COMMITTED");
+            assertThat(isolation.replace(' ', '-')).isEqualToIgnoringCase("READ-COMMITTED");
             assertThat(failure).isInstanceOf(CaseApiException.class);
             assertThat(((CaseApiException) failure).code()).isEqualTo("APPROVAL_BASIS_BLOCKED");
             assertThat(decisions.findByApprovalRequestId(fixture.requestId())).isEmpty();
@@ -415,8 +394,36 @@ class CaseW08bConcurrentMySqlTest {
             holder.cancel(true);
             workers.shutdownNow();
             assertThat(workers.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
-            reset(cases, requests);
         }
+    }
+
+    /**
+     * Waits for the decision transaction to reach the held Case row rather than relying on a
+     * scheduling delay. The read-only scalar request lookup must have completed before this
+     * {@code FOR UPDATE} wait, so InnoDB's transaction row proves both the lock boundary and the
+     * effective per-transaction isolation level.
+     */
+    private String awaitWaitingCaseLockIsolation() {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            List<String> isolations = jdbc.query("""
+                    SELECT transaction_row.trx_isolation_level
+                    FROM performance_schema.data_lock_waits lock_wait
+                    JOIN performance_schema.data_locks requested_lock
+                      ON requested_lock.engine = lock_wait.engine
+                     AND requested_lock.engine_lock_id = lock_wait.requesting_engine_lock_id
+                    JOIN performance_schema.threads waiting_thread
+                      ON waiting_thread.thread_id = lock_wait.requesting_thread_id
+                    JOIN information_schema.innodb_trx transaction_row
+                      ON transaction_row.trx_mysql_thread_id = waiting_thread.processlist_id
+                    WHERE requested_lock.object_schema = DATABASE()
+                      AND requested_lock.object_name = 'cases'
+                      AND requested_lock.lock_status = 'WAITING'
+                    """, (resultSet, rowNum) -> resultSet.getString(1));
+            if (!isolations.isEmpty()) return isolations.getFirst();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+        throw new IllegalStateException("Timed out waiting for the decision transaction to block on the Case lock");
     }
 
     private void assertDecisionTerminalState(Fixture fixture, ApprovalRequest request,

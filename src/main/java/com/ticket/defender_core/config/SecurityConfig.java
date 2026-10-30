@@ -95,6 +95,11 @@ public class SecurityConfig {
                                 "/api/v1/report-versions/*",
                                 "/api/v1/approval-requests/*",
                                 "/api/v1/approval-requests/*/review-package").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/approval-decisions/*/official-pdf-issuances",
+                                "/api/v1/official-pdf-issuances/*/retry").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/approval-decisions/*/official-pdf-eligibility",
+                                "/api/v1/official-pdf-issuances/*", "/api/v1/official-pdf-issuances/*/download",
+                                "/api/v1/report-versions/*/official-pdf-issuances").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/api/v1/cases/*/assignee").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)))

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    @page { size: A4; margin: 19mm 16mm 18mm 16mm; }
+    body { font-family: NanumGothic; color: #172033; font-size: 10.5pt; line-height: 1.55; }
+    h1 { color: #0e3a66; font-size: 20pt; margin: 0 0 4mm 0; }
+    h2 { color: #0e3a66; font-size: 12pt; border-bottom: 1px solid #b8c7d8; padding-bottom: 2mm; margin-top: 6mm; }
+    .notice { background: #edf4fb; border-left: 4px solid #2d6caa; padding: 3mm; }
+    .meta { width: 100%; border-collapse: collapse; }
+    .meta th, .meta td { border: 1px solid #cdd8e4; padding: 2.4mm; text-align: left; vertical-align: top; }
+    .meta th { width: 31%; background: #f4f7fa; color: #24394f; }
+    .content { white-space: pre-wrap; }
+    .foot { margin-top: 8mm; color: #5d6a77; font-size: 8.5pt; }
+    .candidate { color: #7c3f00; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>공식 검토 보고서</h1>
+  <p class="notice">본 문서는 승인된 검토 보고서와 당시 고정된 증거 근거를 바탕으로 발급되었습니다. 의심 정황, MATCH_CANDIDATE 및 FOUND 표시는 확정 사실 또는 자동 제재를 뜻하지 않습니다.</p>
+  <table class="meta">
+    <tr><th>발급 식별자</th><td>{{issuanceId}}</td></tr>
+    <tr><th>Case / 보고서 식별자</th><td>{{caseId}} / {{reportVersionId}}</td></tr>
+    <tr><th>발급 요청 시각(UTC / 한국)</th><td>{{requestedAt}} / {{requestedAtKorea}}</td></tr>
+    <tr><th>승인 결정 식별자 / 결과</th><td>{{approvalDecisionId}} / {{approvalOutcome}}</td></tr>
+    <tr><th>사람 승인 시각(UTC)</th><td>{{approvalDecidedAt}}</td></tr>
+    <tr><th>승인 요청자 / 독립 승인자 (멤버십 가명 식별자)</th><td>{{requesterMembershipId}} / {{approverMembershipId}}</td></tr>
+    <tr><th>보고서 revision / SHA-256</th><td>{{reportRevision}} / {{reportContentSha256}}</td></tr>
+    <tr><th>증거 Snapshot / 출처 수</th><td>{{evidenceSnapshotId}} / {{evidenceSourceCount}}</td></tr>
+    <tr><th>증거 revision / manifest SHA-256</th><td>{{evidenceRevision}} / {{manifestSha256}}</td></tr>
+    <tr><th>증거 검증 상태</th><td>{{sourceIntegrity}} — {{verificationSummary}}</td></tr>
+    <tr><th>공식 PDF 템플릿 / SHA-256</th><td>{{officialTemplateVersion}} / {{officialTemplateSha256}}</td></tr>
+  </table>
+  <h2>검토 내용</h2>
+  <p><strong>제목</strong></p><div class="content">{{title}}</div>
+  <p><strong>평가</strong></p><div class="content">{{assessment}}</div>
+  <p><strong>한계 및 주의사항</strong></p><div class="content">{{limitations}}</div>
+  <p><strong>결론</strong></p><div class="content">{{conclusion}}</div>
+  <p class="candidate">Risk Score는 조사 우선순위 정보이며, 후보 표시는 사람의 추가 검토가 필요한 후보일 뿐 확정 결과가 아닙니다.</p>
+  <p class="foot">개인정보 최소화 원칙에 따라 저장소 경로, 원시 영수증 토큰 및 외부 객체 URL은 표시하지 않습니다.</p>
+</body>
+</html>

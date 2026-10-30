@@ -60,4 +60,11 @@ public class IssuanceHold {
         this.evidenceRevision = target.getEvidenceRevision();
         this.createdAt = Objects.requireNonNull(createdAt);
     }
+
+    /** Internal workflow only. There is intentionally no public release endpoint while policy is unapproved. */
+    public void release(LocalDateTime now) {
+        if (status != Status.ACTIVE) throw new IllegalStateException("Only an active issuance hold can be released");
+        this.status = Status.RELEASED;
+        this.releasedAt = Objects.requireNonNull(now);
+    }
 }

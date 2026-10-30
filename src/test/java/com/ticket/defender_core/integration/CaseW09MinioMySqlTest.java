@@ -110,7 +110,8 @@ class CaseW09MinioMySqlTest {
         OfficialPdfDto.Issuance issued = official.request(fixture.decisionId(), idempotencyKey);
         OfficialPdfDto.Issuance replayed = official.request(fixture.decisionId(), idempotencyKey);
 
-        assertThat(issued.status()).isEqualTo(OfficialPdfIssuance.Status.GENERATED);
+        assertThat(issued.status()).as("issuance failure code: %s", issued.lastFailureCode())
+                .isEqualTo(OfficialPdfIssuance.Status.GENERATED);
         assertThat(replayed.officialPdfIssuanceId()).isEqualTo(issued.officialPdfIssuanceId());
         assertThat(issued.artifactId()).isNotNull();
         OfficialPdfArtifact artifact = artifacts.findByIssuanceId(issued.officialPdfIssuanceId()).orElseThrow();

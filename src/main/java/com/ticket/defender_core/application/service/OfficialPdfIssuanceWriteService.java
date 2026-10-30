@@ -232,7 +232,9 @@ public class OfficialPdfIssuanceWriteService {
         ApprovalDecision decision = decisions.findById(issuance.getApprovalDecisionId())
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireDecisionScope(target, decision);
-        Bound bound = bound(target, decision);
+        // Read-only snapshot for rendering: MySQL rejects FOR UPDATE inside READ ONLY transactions.
+        // Finalization re-validates everything under Case and request locks.
+        Bound bound = bound(target, decision, false);
         requireIssuanceMatchesDecision(issuance, decision);
         return new RenderSource(issuance, bound.value().report(),
                 templates.pinned(issuance.getOfficialTemplateVersion(), issuance.getOfficialTemplateSha256()), decision,
@@ -264,7 +266,12 @@ public class OfficialPdfIssuanceWriteService {
     }
 
     private Bound bound(Case target, ApprovalDecision decision) {
-        ApprovalRequest request = requests.findByIdForUpdate(decision.getApprovalRequestId())
+        return bound(target, decision, true);
+    }
+
+    private Bound bound(Case target, ApprovalDecision decision, boolean lockRequest) {
+        ApprovalRequest request = (lockRequest ? requests.findByIdForUpdate(decision.getApprovalRequestId())
+                : requests.findById(decision.getApprovalRequestId()))
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         ReviewReceipt receipt = receipts.findById(decision.getReviewReceiptId())
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);

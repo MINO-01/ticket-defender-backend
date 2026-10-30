@@ -31,6 +31,21 @@ class CaseW09OpenApiContractTest {
                 "202", "400", "401", "403", "404", "409", "422", "503");
         assertResponses(paths, "/api/v1/official-pdf-issuances/{issuanceId}/download", "get",
                 "200", "401", "403", "404", "409", "503");
+        // Retry verifies physical evidence first (503), and every read path is behind the disabled gate (409).
+        assertResponses(paths, "/api/v1/official-pdf-issuances/{issuanceId}/retry", "post",
+                "202", "400", "401", "403", "404", "409", "422", "503");
+        assertResponses(paths, "/api/v1/report-versions/{reportVersionId}/official-pdf-issuances", "get",
+                "200", "401", "403", "404", "409");
+        // SecurityConfig requires an authenticated bearer request on every W09 route.
+        assertThat(document.get("security").toString()).contains("adminBearer");
+        Map<?, ?> components = (Map<?, ?>) document.get("components");
+        assertThat(((Map<?, ?>) components.get("securitySchemes")).get("adminBearer").toString())
+                .contains("http", "bearer");
+        // The service accepts only version-4 UUID keys.
+        String keyPattern = ((Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) components.get("parameters"))
+                .get("IdempotencyKey")).get("schema")).get("pattern").toString();
+        assertThat(java.util.UUID.randomUUID().toString()).matches(keyPattern);
+        assertThat("123e4567-e89b-12d3-a456-426614174000").doesNotMatch(keyPattern);
         verifyReferences(document, document);
     }
 

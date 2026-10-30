@@ -6,6 +6,8 @@ x-contract-status: IMPLEMENTED_W09_SYNTHETIC_ONLY
 x-operational-policy: >-
   Disabled by default. The current implementation permits only explicit SYNTHETIC_ISOLATED mode
   and TENANT_ADMIN for isolated development; this is not an approved production issuance policy.
+security:
+  - adminBearer: []
 paths:
   /api/v1/approval-decisions/{approvalDecisionId}/official-pdf-eligibility:
     get:
@@ -60,6 +62,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Blocked' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/official-pdf-issuances/{issuanceId}/download:
     get:
       summary: Download a private, verified, generated official PDF
@@ -80,12 +83,23 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 components:
   parameters:
     ApprovalDecisionId: { name: approvalDecisionId, in: path, required: true, schema: { type: string, format: uuid } }
     IssuanceId: { name: issuanceId, in: path, required: true, schema: { type: string, format: uuid } }
     ReportVersionId: { name: reportVersionId, in: path, required: true, schema: { type: string, format: uuid } }
-    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID version 4 only; other UUID versions are rejected with 400 INVALID_IDEMPOTENCY_KEY.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
   schemas:
     Eligibility:
       type: object
@@ -122,4 +136,4 @@ components:
     NotFound: { description: Resource is outside the caller tenant/event scope or absent }
     Conflict: { description: Current eligibility is stale, a hold is active, or the feature is safely disabled }
     Blocked: { description: Approval, preservation, integrity, template, or operating-policy gate blocks issuance }
-    Unavailable: { description: Private object storage is unavailable or its object proof fails }
+    Unavailable: { description: Evidence or private PDF object storage is unavailable, or its object proof fails }

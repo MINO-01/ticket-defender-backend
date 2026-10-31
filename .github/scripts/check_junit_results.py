@@ -36,6 +36,9 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.FanReportMinioMySqlTest": (
         3, "Runs in the isolated MinIO and MySQL CI job"
     ),
+    "com.ticket.defender_core.integration.FanReportRetryContractMySqlTest": (
+        5, "Runs in the isolated MinIO and MySQL CI job"
+    ),
     "com.ticket.defender_core.integration.CaseMigrationMySqlTest": (
         1, "Runs after W02 migration on the isolated MySQL CI schema"
     ),
@@ -245,6 +248,9 @@ MYSQL_SUITES = {
     ),
     "minio-mysql": (
         "com.ticket.defender_core.integration.FanReportMinioMySqlTest", 3
+    ),
+    "fan-report-retry-minio-mysql": (
+        "com.ticket.defender_core.integration.FanReportRetryContractMySqlTest", 5
     ),
     "case-w09-minio-storage": (
         "com.ticket.defender_core.integration.S3OfficialPdfStorageMinioTest", 2

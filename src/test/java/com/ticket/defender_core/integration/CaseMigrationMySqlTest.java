@@ -38,7 +38,8 @@ class CaseMigrationMySqlTest {
         assertThat(reports).isGreaterThan(0);
 
         // The first test initializes the W02 baseline with JPA. Remove its empty post-W02 tables.
-        for (String table : new String[]{"official_pdf_audit_events", "official_pdf_artifacts",
+        for (String table : new String[]{"listing_context_observations", "listing_context_analyses",
+                "official_pdf_audit_events", "official_pdf_artifacts",
                 "official_pdf_issuance_attempts", "official_pdf_issuances",
                 "approval_decisions", "review_receipts", "approval_audit_events",
                 "issuance_holds", "approval_requests",

@@ -1,0 +1,211 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender Track 2 listing context analysis API
+  version: 1.0.0
+  description: >-
+    관리자가 비공개 저장된 팬 제보 이미지 1건을 서버 검증 후 Python Listing Context API로 분석하고 결과 이력을 조회합니다.
+    FOUND는 모델 추출 후보이며 사실 확인, 부정 거래 판정, 예매 일치가 아닙니다. Case 확정, 예매 취소, 제재, PDF 발급은 수행하지 않습니다.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+paths:
+  /api/v1/admin/fan-reports/{fanReportId}/evidence/{evidenceId}/listing-analyses:
+    parameters:
+      - $ref: '#/components/parameters/FanReportId'
+      - $ref: '#/components/parameters/EvidenceId'
+    post:
+      operationId: analyzeFanReportListingEvidence
+      description: >-
+        ANALYST 또는 REVIEWER. 서버가 저장된 FanReport의 tenant/event로 권한을 확인하고, EvidenceAsset이 해당 제보 소속인지,
+        저장 완료와 보존기간, JPEG/PNG 형식, 5 MiB 이하인지 확인합니다. 저장된 서버 소유 객체 키와 객체 버전으로 비공개 원본을 읽어
+        크기, 형식, 실제 SHA-256을 확인한 경우에만 Python을 호출합니다. 요청 본문은 없으며 클라이언트가 보낸 객체 키나 URL은 받지 않습니다.
+        같은 요청자와 증거의 같은 Idempotency-Key는 Python을 다시 호출하지 않고 기존 결과를 같은 상태 코드로 재현합니다.
+        실패도 FAILED 이력으로 남으며, 재시도는 새 Idempotency-Key로 새 이력을 만듭니다. 증거별로 동시에 1건만 실행되고,
+        임대 시간이 지난 IN_PROGRESS 시도는 다음 요청에서 ABANDONED로 닫힙니다. 분석 기능이 설정되지 않았으면 이력 없이 503
+        ANALYZER_DISABLED를 반환합니다.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: COMPLETED, PARTIAL, UNVERIFIABLE 중 하나로 계약 검증을 통과해 저장된 결과입니다. reviewRequired는 항상 true입니다.
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Analysis' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+        '504': { $ref: '#/components/responses/Timeout' }
+    get:
+      operationId: listFanReportListingAnalyses
+      description: ANALYST 또는 REVIEWER. 해당 증거의 분석 이력을 최신순으로 반환합니다. 객체 키, 객체 버전, 원본 이미지는 반환하지 않습니다.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 최신 시도 우선. 실패 이력은 fields가 null입니다.
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalysisPage' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    FanReportId: { name: fanReportId, in: path, required: true, schema: { type: string, format: uuid } }
+    EvidenceId: { name: evidenceId, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, format: uuid, description: UUID version 4 }
+    Page: { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+    PageSize: { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+  schemas:
+    Analysis:
+      type: object
+      required: [analysisId, fanReportId, evidenceId, requestId, executionStatus, input, createdAt]
+      properties:
+        analysisId: { type: string, format: uuid }
+        fanReportId: { type: string, format: uuid }
+        evidenceId: { type: string, format: uuid }
+        requestId: { type: string, format: uuid, description: Python 요청의 requestId와 X-Request-Id }
+        executionStatus:
+          type: string
+          enum: [IN_PROGRESS, SUCCEEDED, INPUT_REJECTED, STORAGE_FAILED, ANALYZER_FAILED, ABANDONED]
+        analysisStatus:
+          type: [string, 'null']
+          enum: [COMPLETED, PARTIAL, UNVERIFIABLE, FAILED, null]
+          description: SUCCEEDED는 Python 200 상태만 가지며 그 외 종료 상태는 항상 FAILED입니다.
+        errorCode: { type: [string, 'null'], description: Spring 분류 코드. 오류 응답의 code와 같습니다. }
+        analyzerHttpStatus: { type: [integer, 'null'] }
+        analyzerErrorCode: { type: [string, 'null'], description: 요청 ID가 일치하는 Python problem+json의 code만 보존합니다. }
+        input: { $ref: '#/components/schemas/Input' }
+        modelName: { type: [string, 'null'], maxLength: 128 }
+        modelVersion: { type: [string, 'null'], maxLength: 128, description: 공급자 보고 버전이며 없으면 null입니다. }
+        analyzedAt: { type: [string, 'null'], format: date-time, description: UTC }
+        reviewRequired: { type: [boolean, 'null'] }
+        fields:
+          type: [object, 'null']
+          description: SUCCEEDED일 때 계약의 9개 필드를 모두 포함합니다.
+          properties:
+            eventName: { $ref: '#/components/schemas/Field' }
+            performanceAt: { $ref: '#/components/schemas/Field' }
+            platformDisplayName: { $ref: '#/components/schemas/Field' }
+            askingPrice: { $ref: '#/components/schemas/Field' }
+            currency: { $ref: '#/components/schemas/Field' }
+            saleText: { $ref: '#/components/schemas/Field' }
+            zone: { $ref: '#/components/schemas/Field' }
+            row: { $ref: '#/components/schemas/Field' }
+            seat: { $ref: '#/components/schemas/Field' }
+        candidateMatch: { $ref: '#/components/schemas/CandidateMatch' }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+    Input:
+      type: object
+      description: 분석 입력의 출처입니다. 객체 키와 객체 버전은 노출하지 않습니다.
+      required: [expectedSha256, expectedByteSize, mediaType]
+      properties:
+        expectedSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        verifiedSha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        expectedByteSize: { type: integer, minimum: 1 }
+        verifiedByteSize: { type: [integer, 'null'] }
+        mediaType: { type: string }
+    Field:
+      type: object
+      required: [state, candidates]
+      properties:
+        state: { type: string, enum: [FOUND, UNKNOWN, AMBIGUOUS] }
+        value:
+          description: FOUND일 때만 값이 있습니다. askingPrice는 Price, 나머지는 문자열입니다.
+          oneOf:
+            - { type: 'null' }
+            - { type: string, maxLength: 256 }
+            - { $ref: '#/components/schemas/Price' }
+        evidenceQuote: { type: [string, 'null'], maxLength: 512 }
+        unknownReason: { type: [string, 'null'], enum: [ABSENT, UNREADABLE, NOT_CONFIRMED, null] }
+        candidates: { type: array, maxItems: 3, items: { type: string, maxLength: 128 } }
+    Price:
+      type: object
+      required: [raw, amount]
+      properties:
+        raw: { type: string, maxLength: 64 }
+        amount: { type: string, pattern: '^(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,2})?$' }
+    CandidateMatch:
+      type: [object, 'null']
+      description: >-
+        기존 예매 후보 대조 연결 여부입니다. 기존 규칙은 검증된 회차 식별자와 좌석 3요소, 0.85 이상의 일치 신뢰도가 필요하지만
+        Listing Context는 일치 신뢰도를 제공하지 않으므로 현재 항상 NOT_LINKED입니다. MATCH_CANDIDATE를 만들지 않습니다.
+      properties:
+        status: { type: string, enum: [NOT_LINKED] }
+        reason:
+          type: string
+          enum: [PERFORMANCE_REF_UNVERIFIED, SEAT_NOT_FOUND, MATCH_SCORE_UNAVAILABLE, ANALYSIS_NOT_SUCCEEDED]
+    AnalysisPage:
+      type: object
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Analysis' } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasNext: { type: boolean }
+    Problem:
+      type: object
+      required: [status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+  responses:
+    Invalid:
+      description: INVALID_REQUEST 또는 INVALID_IDEMPOTENCY_KEY
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthenticated:
+      description: UNAUTHENTICATED
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Forbidden:
+      description: FORBIDDEN. 범위 안의 관리자이지만 ANALYST나 REVIEWER 역할이 없습니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotFound:
+      description: RESOURCE_NOT_FOUND. 다른 tenant/event 자원과 다른 제보의 증거도 존재 여부를 드러내지 않고 같은 응답을 받습니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Conflict:
+      description: >-
+        ANALYSIS_IN_PROGRESS는 같은 증거의 다른 시도가 실행 중이거나 같은 키의 시도가 아직 끝나지 않은 경우입니다.
+        ANALYSIS_ABANDONED는 같은 키의 시도가 임대 시간 초과로 닫힌 경우이며 새 키로 재시도합니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unprocessable:
+      description: >-
+        분석 입력 검증 실패이며 FAILED 이력이 남고 Python은 호출되지 않습니다. 코드는 SOURCE_NOT_AVAILABLE, RETENTION_EXPIRED,
+        UNSUPPORTED_IMAGE_TYPE, ANALYSIS_INPUT_TOO_LARGE, OBJECT_MISSING, OBJECT_CHANGED, SIZE_MISMATCH, MEDIA_TYPE_MISMATCH,
+        HASH_MISMATCH입니다. W02 접수 상태는 변경하지 않습니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    BadGateway:
+      description: >-
+        Python 실패이며 FAILED 이력이 남습니다. ANALYZER_AUTH_FAILED, ANALYZER_INPUT_REJECTED, ANALYZER_MODEL_FAILED,
+        ANALYZER_INTERNAL_ERROR, ANALYZER_RESPONSE_INVALID(계약 위반 응답), ANALYZER_IDENTITY_MISMATCH(requestId, evidenceId,
+        imageSha256 불일치)입니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unavailable:
+      description: >-
+        ANALYZER_DISABLED(설정 없음, 이력 없음), STORAGE_UNAVAILABLE, ANALYZER_UNAVAILABLE, ANALYZER_CONNECTION_FAILED,
+        DEPENDENCY_UNAVAILABLE입니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Timeout:
+      description: ANALYZER_TIMEOUT(Spring 응답 대기 초과) 또는 ANALYZER_MODEL_TIMEOUT(Python 504)이며 FAILED 이력이 남습니다.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

@@ -62,6 +62,15 @@ ticket-defender:
       secret-key: ${FAN_REPORT_S3_SECRET_KEY:}
       head-access-key: ${FAN_REPORT_S3_HEAD_ACCESS_KEY:}
       head-secret-key: ${FAN_REPORT_S3_HEAD_SECRET_KEY:}
+  track2-listing-analysis:
+    # 실제 팬 이미지를 외부 모델로 보내는 정책이 승인되기 전에는 합성 격리 환경에서만 활성화합니다.
+    enabled: ${TRACK2_LISTING_ANALYSIS_ENABLED:false}
+    base-url: ${TRACK2_LISTING_ANALYSIS_URL:}
+    # Track 1 설정과 분리된 X-TD-Internal-Key 비밀이며 32자 미만이면 분석을 차단합니다.
+    internal-key: ${TRACK2_LISTING_ANALYSIS_INTERNAL_KEY:}
+    connect-timeout: ${TRACK2_LISTING_ANALYSIS_CONNECT_TIMEOUT:PT3S}
+    read-timeout: ${TRACK2_LISTING_ANALYSIS_READ_TIMEOUT:PT60S}
+    attempt-lease: ${TRACK2_LISTING_ANALYSIS_ATTEMPT_LEASE:PT5M}
   official-pdf:
     # This flag alone never authorizes operation; only synthetic isolated mode is currently accepted.
     enabled: ${OFFICIAL_PDF_ENABLED:false}

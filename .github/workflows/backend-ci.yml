@@ -156,6 +156,10 @@ jobs:
         run: bash ./gradlew test --tests '*Track2ListingAnalysisConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 listing analysis MySQL concurrency tests ran
         run: python3 .github/scripts/check_junit_results.py track2-listing-concurrency
+      - name: Verify admin fan report read scope and paging on MySQL
+        run: bash ./gradlew test --tests '*AdminFanReportReadMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm admin fan report MySQL read tests ran
+        run: python3 .github/scripts/check_junit_results.py admin-fan-report-read
       - name: Validate W05 mappings after concurrency data
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm order-independent W05 schema test ran

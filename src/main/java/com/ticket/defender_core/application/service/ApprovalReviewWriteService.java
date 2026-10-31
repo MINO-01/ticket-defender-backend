@@ -63,6 +63,7 @@ public class ApprovalReviewWriteService {
     private final IssuanceHoldRepository holds;
     private final ApprovalReviewBindingValidator bindings;
     private final ApprovalRequestBasisValidator basis;
+    private final ApprovalRequesterAccessValidator requesterAccess;
     private final CaseActivityRepository activities;
     private final ApprovalAuditEventRepository audits;
     private final CaseIdempotencyRepository idempotency;
@@ -81,6 +82,7 @@ public class ApprovalReviewWriteService {
         UUID actor = requireApprover(target, memberId);
         Bound bound = bound(target, request);
         bindings.validatePending(target, request, bound.snapshot(), bound.report());
+        requesterAccess.requireCurrent(target, request);
         requireNoActiveHold(target);
         basis.validate(target, bound.snapshot(), bound.report(), now);
 
@@ -130,6 +132,7 @@ public class ApprovalReviewWriteService {
                 || !request.getReportContentSha256().equals(input.reportContentSha256())) {
             throw conflict("APPROVAL_REVIEW_MISMATCH");
         }
+        requesterAccess.requireCurrent(target, request);
         requireNoActiveHold(target);
         LocalDateTime now = LocalDateTime.now(java.time.ZoneOffset.UTC);
         basis.validate(target, bound.snapshot(), bound.report(), now);
@@ -209,8 +212,8 @@ public class ApprovalReviewWriteService {
     }
 
     /**
-     * Trusted server-only invalidation hook. No web endpoint invokes this method in W08b; a future
-     * evidence, policy, or authorization change listener must deliberately supply its server actor.
+     * 서버 내부 전용 무효화 경로이며 웹 API로 노출하지 않는다. 현재는 승인 처리 중 근거 변경을 재확인한
+     * {@link ApprovalInvalidationWriteService}가 호출하며, 다른 내부 호출자도 실행 주체 멤버십을 직접 지정해야 한다.
      */
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApprovalRequest invalidateFromTrustedSystem(UUID requestId, UUID actorMembershipId, String reason) {

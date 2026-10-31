@@ -62,6 +62,7 @@ class ApprovalRequestApiIntegrationTest {
     @Autowired private ApprovalRequestService approvals;
     @Autowired private ApprovalReviewService review;
     @Autowired private ApprovalReviewWriteService reviewWriter;
+    @Autowired private ApprovalInvalidationWriteService invalidation;
     @Autowired private CaseRepository cases;
     @Autowired private CaseSourceReferenceRepository sources;
     @Autowired private EvidenceSnapshotRepository snapshots;
@@ -655,8 +656,12 @@ class ApprovalRequestApiIntegrationTest {
                         policyReceipt.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE,
                         "Revoked policy blocks decision"), UUID.randomUUID().toString()),
                 HttpStatus.UNPROCESSABLE_ENTITY, "APPROVAL_BASIS_BLOCKED");
+        // 정책 철회는 승인 근거의 영구 변경이므로 차단에 그치지 않고 대기 요청과 Receipt까지 닫는다.
+        assertThat(requests.findById(policyRequest.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.INVALIDATED);
         assertThat(receipts.findById(policyReceipt.reviewReceiptId()).orElseThrow().getStatus())
-                .isEqualTo(ReviewReceipt.Status.ISSUED);
+                .isEqualTo(ReviewReceipt.Status.REVOKED);
+        assertThat(decisions.findByApprovalRequestId(policyRequest.getId())).isEmpty();
     }
 
     @Test
@@ -737,6 +742,224 @@ class ApprovalRequestApiIntegrationTest {
         assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
                 .extracting(ApprovalAuditEvent::getEventType)
                 .contains("APPROVAL_INVALIDATED");
+    }
+
+    @Test
+    void evidenceRevisionChangeDetectedAtDecisionAutomaticallyInvalidatesPendingRequestOnce() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        ApprovalReviewDto.DecisionInput approve = decision(fixture, receipt.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Approve with the original evidence");
+        long caseVersion = currentCase(fixture).getCaseVersion();
+        jdbc.update("UPDATE cases SET evidence_revision=evidence_revision+1 WHERE id=?", fixture.caseId());
+        entityManager.clear();
+
+        assertCode(() -> review.decide(request.getId(), approve, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "EVIDENCE_VERSION_MISMATCH");
+
+        ApprovalRequest invalidated = requests.findById(request.getId()).orElseThrow();
+        assertThat(invalidated.getStatus()).isEqualTo(ApprovalRequest.Status.INVALIDATED);
+        assertThat(invalidated.getActiveCaseId()).isNull();
+        Case target = currentCase(fixture);
+        assertThat(target.getStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(target.getCurrentReportVersionId()).isNull();
+        assertThat(target.getCaseVersion()).isGreaterThan(caseVersion);
+        assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.INVALIDATED.name());
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.REVOKED);
+        assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+        UUID approver = memberId(approverSubject);
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
+                .filteredOn(audit -> audit.getEventType().equals("APPROVAL_INVALIDATED")).singleElement()
+                .satisfies(audit -> {
+                    assertThat(audit.getActorMembershipId()).isEqualTo(approver);
+                    assertThat(audit.getReason()).isEqualTo("AUTOMATIC_INVALIDATION; code=EVIDENCE_VERSION_MISMATCH");
+                });
+        assertThat(activities.findByCaseId(fixture.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .stream().filter(activity -> activity.getEventType().equals("APPROVAL_INVALIDATED")))
+                .singleElement().satisfies(activity -> assertThat(activity.getActorRole()).isEqualTo("SYSTEM"));
+
+        // 폐기된 Receipt는 다시 쓸 수 없고, 반복 호출도 무효화 감사를 중복으로 남기지 않는다.
+        assertCode(() -> review.decide(request.getId(), approve, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "APPROVAL_REQUEST_CLOSED");
+        assertCode(() -> review.issueReceipt(request.getId()), HttpStatus.CONFLICT, "APPROVAL_REQUEST_CLOSED");
+        assertThat(invalidation.invalidateIfBasisChanged(request.getId(), approver)).isEmpty();
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
+                .filteredOn(audit -> audit.getEventType().equals("APPROVAL_INVALIDATED")).hasSize(1);
+        assertThat(caseActivityCount(fixture.caseId(), "APPROVAL_INVALIDATED")).isEqualTo(1);
+    }
+
+    @Test
+    void retentionExpiryDetectedAtReceiptIssuanceInvalidatesPendingRequest() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        jdbc.update("UPDATE evidence_assets SET retention_until=? WHERE fan_report_id IN "
+                        + "(SELECT fan_report_id FROM case_source_references WHERE case_id=?)",
+                LocalDateTime.now(ZoneOffset.UTC).minusSeconds(1), fixture.caseId());
+        entityManager.clear();
+        authenticate(approverSubject);
+
+        assertCode(() -> review.issueReceipt(request.getId()), HttpStatus.UNPROCESSABLE_ENTITY,
+                "SOURCE_NOT_AVAILABLE");
+
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.INVALIDATED);
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()))
+                .extracting(ApprovalAuditEvent::getReason)
+                .contains("AUTOMATIC_INVALIDATION; code=SOURCE_NOT_AVAILABLE");
+        assertThat(currentCase(fixture).getStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(receipts.findAll()).noneMatch(receipt -> receipt.getApprovalRequestId().equals(request.getId()));
+    }
+
+    @Test
+    void revokedRequesterMembershipRoleOrEventGrantInvalidatesPendingRequest() {
+        List<Runnable> revocations = List.of(
+                () -> jdbc.update("UPDATE memberships SET status='INACTIVE' WHERE id=?", reviewer),
+                () -> jdbc.update("DELETE FROM membership_roles WHERE membership_id=? AND role='REVIEWER'", reviewer),
+                () -> jdbc.update("DELETE FROM membership_events WHERE membership_id=? AND event_id=?",
+                        reviewer, event));
+        List<Runnable> restorations = List.of(
+                () -> jdbc.update("UPDATE memberships SET status='ACTIVE' WHERE id=?", reviewer),
+                () -> roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), reviewer, AdminRole.REVIEWER)),
+                () -> grants.saveAndFlush(new MembershipEventGrant(UUID.randomUUID(), reviewer, tenant, event)));
+        for (int index = 0; index < revocations.size(); index++) {
+            authenticate(reviewerSubject);
+            Fixture fixture = fixture(true);
+            ApprovalRequest request = pending(fixture);
+            authenticate(approverSubject);
+            ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+            revocations.get(index).run();
+            entityManager.clear();
+
+            assertCode(() -> review.decide(request.getId(), decision(fixture, receipt.reviewReceiptToken(),
+                            ApprovalDecision.Outcome.APPROVE, "Requester access was revoked"),
+                    UUID.randomUUID().toString()), HttpStatus.CONFLICT, "APPROVAL_REQUESTER_ACCESS_REVOKED");
+
+            assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                    .isEqualTo(ApprovalRequest.Status.INVALIDATED);
+            assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                    .isEqualTo(ReviewReceipt.Status.REVOKED);
+            assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+            restorations.get(index).run();
+            entityManager.clear();
+        }
+    }
+
+    @Test
+    void sealedRowTamperingAndClientMismatchStayBlockedWithoutInvalidation() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        UUID approver = memberId(approverSubject);
+        String original = jdbc.queryForObject("SELECT content_json FROM report_versions WHERE id=?",
+                String.class, fixture.reportVersionId());
+        jdbc.update("UPDATE report_versions SET content_json='{}' WHERE id=?", fixture.reportVersionId());
+        entityManager.clear();
+        // 봉인된 행이 바뀐 경우는 조작 의심이라 자동으로 상태를 바꾸지 않고 사람 확인이 필요하다.
+        assertCode(() -> review.decide(request.getId(), decision(fixture, receipt.reviewReceiptToken(),
+                        ApprovalDecision.Outcome.APPROVE, "Tampered sealed content"), UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "REPORT_CONTENT_MISMATCH");
+        assertThat(invalidation.invalidateIfBasisChanged(request.getId(), approver)).isEmpty();
+        jdbc.update("UPDATE report_versions SET content_json=? WHERE id=?", original, fixture.reportVersionId());
+        entityManager.clear();
+
+        ApprovalReviewDto.DecisionInput valid = decision(fixture, receipt.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Client sent another snapshot");
+        assertCode(() -> review.decide(request.getId(), new ApprovalReviewDto.DecisionInput(valid.outcome(),
+                        valid.reason(), UUID.randomUUID(), valid.manifestSha256(), valid.reportContentSha256(),
+                        valid.reviewReceiptToken(), valid.reviewConfirmed(), valid.expectedCaseVersion(),
+                        valid.expectedRequestVersion(), valid.expectedReportVersion()), UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "APPROVAL_REVIEW_MISMATCH");
+
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+        assertThat(caseActivityCount(fixture.caseId(), "APPROVAL_INVALIDATED")).isZero();
+        assertThat(review.decide(request.getId(), valid, UUID.randomUUID().toString()).outcome())
+                .isEqualTo(ApprovalDecision.Outcome.APPROVE);
+    }
+
+    @Test
+    void completedDecisionIsNotChangedWhenItsBasisChangesAfterwards() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        review.decide(request.getId(), decision(fixture, receipt.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Approve before the basis changes"), UUID.randomUUID().toString());
+        ApprovalDecision decided = decisions.findByApprovalRequestId(request.getId()).orElseThrow();
+        jdbc.update("UPDATE cases SET evidence_revision=evidence_revision+1 WHERE id=?", fixture.caseId());
+        entityManager.clear();
+
+        assertThat(invalidation.invalidateIfBasisChanged(request.getId(), memberId(approverSubject))).isEmpty();
+        assertCode(() -> reviewWriter.invalidateFromTrustedSystem(request.getId(), memberId(approverSubject),
+                "Approved request cannot be invalidated"), HttpStatus.CONFLICT, "APPROVAL_REQUEST_CLOSED");
+
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.APPROVED);
+        ApprovalDecision after = decisions.findByApprovalRequestId(request.getId()).orElseThrow();
+        assertThat(after.getId()).isEqualTo(decided.getId());
+        assertThat(after.getOutcome()).isEqualTo(decided.getOutcome());
+        assertThat(after.getDecidedAt()).isEqualTo(decided.getDecidedAt());
+        assertThat(caseActivityCount(fixture.caseId(), "APPROVAL_INVALIDATED")).isZero();
+    }
+
+    @Test
+    void automaticInvalidationFailureRollsBackAndKeepsOriginalBlockedResponse() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        authenticate(approverSubject);
+        ApprovalReviewDto.Receipt receipt = review.issueReceipt(request.getId());
+        ApprovalReviewDto.DecisionInput approve = decision(fixture, receipt.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Approve with the original evidence");
+        jdbc.update("UPDATE cases SET evidence_revision=evidence_revision+1 WHERE id=?", fixture.caseId());
+        entityManager.clear();
+        long caseVersion = currentCase(fixture).getCaseVersion();
+        doThrow(new DataAccessResourceFailureException("synthetic invalidation audit failure"))
+                .when(audits).saveAndFlush(any(ApprovalAuditEvent.class));
+        try {
+            assertCode(() -> review.decide(request.getId(), approve, UUID.randomUUID().toString()),
+                    HttpStatus.CONFLICT, "EVIDENCE_VERSION_MISMATCH");
+        } finally {
+            reset(audits);
+        }
+        entityManager.clear();
+        ApprovalRequest unchanged = requests.findById(request.getId()).orElseThrow();
+        assertThat(unchanged.getStatus()).isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(unchanged.getActiveCaseId()).isEqualTo(fixture.caseId());
+        assertThat(currentCase(fixture).getStatus()).isEqualTo(Case.Status.READY_FOR_APPROVAL);
+        assertThat(currentCase(fixture).getCaseVersion()).isEqualTo(caseVersion);
+        assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.PENDING_APPROVAL.name());
+        assertThat(receipts.findById(receipt.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.ISSUED);
+        assertThat(caseActivityCount(fixture.caseId(), "APPROVAL_INVALIDATED")).isZero();
+
+        // 실패 후 다음 승인 시도에서 다시 판정해 정상적으로 무효화된다.
+        assertCode(() -> review.decide(request.getId(), approve, UUID.randomUUID().toString()),
+                HttpStatus.CONFLICT, "EVIDENCE_VERSION_MISMATCH");
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.INVALIDATED);
+    }
+
+    @Test
+    void automaticInvalidationRequiresActorInSameTenantAndEvent() {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        jdbc.update("UPDATE cases SET evidence_revision=evidence_revision+1 WHERE id=?", fixture.caseId());
+        entityManager.clear();
+
+        assertCode(() -> invalidation.invalidateIfBasisChanged(request.getId(), memberId(otherEventReviewerSubject)),
+                HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND");
+        assertThat(invalidation.invalidateIfBasisChanged(UUID.randomUUID(), memberId(approverSubject))).isEmpty();
+        assertThat(requests.findById(request.getId()).orElseThrow().getStatus())
+                .isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(caseActivityCount(fixture.caseId(), "APPROVAL_INVALIDATED")).isZero();
     }
 
     @Test

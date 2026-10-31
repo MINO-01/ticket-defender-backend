@@ -33,12 +33,10 @@ W08b는 각 명령 전에 server-side digest를 다시 계산하고 현재 Case�
 | WITHDRAW | PENDING -> WITHDRAWN | PENDING_APPROVAL -> WITHDRAWN | READY_FOR_APPROVAL -> IN_REVIEW | 미소비분 취소 |
 | trusted invalidation | PENDING -> INVALIDATED | PENDING_APPROVAL -> INVALIDATED | READY_FOR_APPROVAL -> IN_REVIEW | 미소비분 취소 |
 
-시스템 무효화는 현재 외부 API가 아니다. `ApprovalReviewWriteService`의 trusted server hook만
-존재하며, 근거 또는 권한 변경 listener는 후속 작업에서 의도적으로 연결해야 한다.
-이 hook은 활성 멤버십과 tenant/event grant가 확인된 서버 actor만 감사 주체로 사용한다. 근거 변경은
-기존 digest 검증을 통과할 수 없다는 사실 자체가 무효화 사유이므로, PENDING lifecycle과 소유 범위만
-검증한 뒤 상태를 `INVALIDATED`로 닫는다. 이 경로는 변경된 근거를 승인 가능한 것으로 처리하지 않으며,
-현재 listener가 연결되지 않았으므로 자동 무효화가 구현됐다고 주장하지 않는다.
+시스템 무효화는 외부 API가 아니다. `ApprovalReviewWriteService.invalidateFromTrustedSystem()`은
+활성 멤버십과 tenant/event grant가 확인된 서버 actor만 감사 주체로 사용하고, PENDING lifecycle과
+소유 범위만 검증한 뒤 상태를 `INVALIDATED`로 닫는다. 변경된 근거를 승인 가능한 것으로 처리하지 않는다.
+자동 연결 범위와 한계는 아래 "승인 대기 요청 자동 무효화(#47)"에 정리한다.
 
 ## 검토 패키지와 영수증
 
@@ -114,6 +112,72 @@ review receipt token이 포함되지 않고 해당 SHA-256만 포함된다. 인�
 W08b migration은 기존 PENDING 요청을 승인, 반려, 무효화하거나 영수증을 자동 생성하지 않는다.
 `review_receipts`에는 token digest UNIQUE, scope FKs, 상태 shape CHECK와 approver별 활성 receipt UNIQUE가
 있다. `approval_decisions`에는 Request 및 receipt별 UNIQUE와 scope FKs가 있다.
+
+## 승인 대기 요청 자동 무효화(#47)
+
+### 변경 경로 조사 결과
+
+PENDING 요청이 있는 동안 Case는 `READY_FOR_APPROVAL`이며, 앱 안의 쓰기 경로는 다음과 같다.
+
+| 변경 종류 | 앱 내 쓰기 경로 | PENDING 중 가능 여부 |
+| --- | --- | --- |
+| Case 상태 전이, Snapshot, 초안 | `CaseWriteService.transition`, `CasePreparationWriteService` | 불가(`IN_REVIEW` 등 필요) |
+| W06 무결성 검증, W07 보존 기록 | `EvidenceIntegrityWriteService`, `EvidencePreservationWriteService` | 불가(`IN_REVIEW` 필요) |
+| Case 담당자 변경 | `CaseWriteService.assign` | 가능. 승인 근거나 요청자 권한이 아니므로 무효화하지 않음 |
+| 공식 PDF 발급 Hold | `InternalIssuanceHoldWriteService` | 가능. 일시적 차단이므로 무효화하지 않음 |
+| 멤버십, 역할, 이벤트 grant | 없음(앱 밖 또는 DB 직접 변경) | 앱이 변경 시점을 알 수 없음 |
+| 보존 정책 버전, 철회 | 없음(앱 밖 또는 DB 직접 변경) | 앱이 변경 시점을 알 수 없음 |
+| FanReport, 증거 자산 상태, 보존기간 만료 | 접수 시에만 기록, 이후는 시간 경과 또는 DB 직접 변경 | 앱이 변경 시점을 알 수 없음 |
+
+따라서 PENDING 근거를 바꾸는 앱 내 쓰기 경로는 없고, 실제 변경은 앱 밖 변경이나 시간 경과로만 생긴다.
+이를 감지할 수 있는 지점은 승인 검토 영수증 발급(`issueReceipt`)과 결정(`decide`)의 서버 재검증이므로,
+자동 무효화를 이 두 경로에 연결한다. 변경 시점에 즉시 감지하는 listener나 주기 점검 작업은 없다.
+
+### 무효화 조건
+
+`issueReceipt` 또는 `decide`가 아래 코드로 차단되면, 실패한 트랜잭션이 롤백된 뒤
+`ApprovalInvalidationWriteService`가 별도 트랜잭션에서 Case FOR UPDATE, Request FOR UPDATE 순서로 잠그고
+바인딩, 요청자 권한, 근거를 다시 판정한다. 같은 영구 변경이 확인될 때만 `invalidateFromTrustedSystem()`을
+호출한다. 호출자가 넘긴 오류 코드만으로 무효화하지 않는다.
+
+| 코드 | 의미 |
+| --- | --- |
+| `EVIDENCE_VERSION_MISMATCH` | Case, Snapshot, ReportVersion의 evidence revision이 요청과 다름 |
+| `SOURCE_CHANGED` | 고정된 출처 manifest가 현재 DB 출처와 다름 |
+| `SOURCE_NOT_AVAILABLE` | FanReport 또는 증거 자산이 더 이상 사용 가능 상태가 아니거나 보존기간 만료 |
+| `APPROVAL_BASIS_BLOCKED` | W06 MATCH, W07 보존, 보존 정책 승인 및 유효기간, 증거 보존기간 중 하나가 깨짐 |
+| `APPROVAL_REQUESTER_ACCESS_REVOKED` | 요청자 멤버십이 ACTIVE가 아니거나 REVIEWER 역할 또는 해당 event grant가 없음 |
+
+`APPROVAL_REQUESTER_ACCESS_REVOKED`는 #47에서 추가한 검사이며, 요청자 권한이 철회되면 Receipt 발급과 결정이
+HTTP 409로 차단된다.
+
+다음은 무효화하지 않고 차단만 유지한다.
+- 봉인된 행 자체가 바뀐 경우: `APPROVAL_REVIEW_MISMATCH`, `EVIDENCE_REVIEW_MISMATCH`, `REPORT_CONTENT_MISMATCH`,
+  `TEMPLATE_NOT_RETAINED`. 조작 의심이므로 상태를 자동으로 바꾸지 않고 사람이 확인해야 한다.
+- 일시적이거나 클라이언트 원인인 경우: `ISSUANCE_HOLD_ACTIVE`, Receipt 오류, 버전 충돌, 입력 불일치.
+
+### 실행 주체, 감사, 실패 처리
+
+- 실행 주체는 변경을 감지한 승인자 멤버십이다. 활동 기록은 `SYSTEM` 역할의 `APPROVAL_INVALIDATED`이며,
+  사유는 `AUTOMATIC_INVALIDATION; code=<코드>`로 남는다. 승인 감사에도 같은 사유의
+  `APPROVAL_INVALIDATED`가 남는다. 별도 시스템 계정은 정책 미정이라 만들지 않았다.
+- 무효화가 실패하면 그 트랜잭션 전체가 롤백되어 Request, Case, ReportVersion, Receipt, 감사에 부분 변경이
+  남지 않는다. API는 원래 차단 코드를 그대로 반환하고, 서버 로그에 요청 ID와 코드만 기록한다.
+  다음 Receipt 발급이나 결정 시도에서 다시 판정한다. 실패 시도를 DB 감사 테이블에 남기는 기능은
+  새 이벤트 종류와 migration이 필요해 구현하지 않았다.
+- 이미 닫힌 요청(APPROVED, REJECTED, WITHDRAWN, INVALIDATED)은 판정하지 않으므로 중복 무효화가 없고,
+  완료된 `ApprovalDecision`은 바뀌지 않는다. 승인 이후의 근거 변경은 W09의 발급 적격성 `STALE` 계산이
+  다루며, 이 경로와 별개다.
+- 무효화되면 미소비 Receipt는 모두 REVOKED가 되어 재사용할 수 없고, 활성 슬롯이 해제되어 Case는
+  `IN_REVIEW`로 돌아간다.
+
+### 연결되지 않은 경로
+
+- 멤버십, 역할, grant, 보존 정책을 바꾸는 운영 API가 생기면, 그 변경 트랜잭션에서 영향받는 PENDING 요청을
+  찾아 같은 판정 경로를 호출해야 한다. 현재는 승인자가 다음 Receipt 발급이나 결정을 시도할 때까지
+  PENDING 상태가 유지된다.
+- 검토 패키지 조회(`reviewPackage`)는 읽기 전용 GET이라 무효화하지 않는다.
+- 아무도 승인을 시도하지 않는 요청의 시간 경과(보존기간 만료)를 찾아 닫는 주기 점검 작업은 없다.
 
 ## 후속 범위
 

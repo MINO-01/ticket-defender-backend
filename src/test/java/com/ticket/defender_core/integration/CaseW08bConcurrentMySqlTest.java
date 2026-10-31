@@ -237,6 +237,43 @@ class CaseW08bConcurrentMySqlTest {
         }
     }
 
+    /** 근거가 바뀐 요청에 두 승인자가 동시에 결정을 시도해도 자동 무효화는 Case 잠금 아래에서 한 번만 일어난다. */
+    @Test
+    void concurrentBlockedDecisionsAutomaticallyInvalidateOnlyOnce() throws Exception {
+        Fixture fixture = fixture();
+        ApprovalReviewDto.Receipt first = receipt(fixture.approverOneSubject(), fixture.requestId());
+        ApprovalReviewDto.Receipt second = receipt(fixture.approverTwoSubject(), fixture.requestId());
+        ApprovalReviewDto.DecisionInput approve = decision(fixture, first.reviewReceiptToken(),
+                ApprovalDecision.Outcome.APPROVE, "Approve with evidence that has since changed");
+        ApprovalReviewDto.DecisionInput reject = decision(fixture, second.reviewReceiptToken(),
+                ApprovalDecision.Outcome.REJECT, "Reject with evidence that has since changed");
+        assertThat(jdbc.update("UPDATE cases SET evidence_revision=evidence_revision+1 WHERE id=?",
+                fixture.caseId().toString())).isEqualTo(1);
+
+        List<String> outcomes = race(
+                new Attempt(fixture.approverOneSubject(), () -> review.decide(fixture.requestId(), approve,
+                        UUID.randomUUID().toString()).outcome().name()),
+                new Attempt(fixture.approverTwoSubject(), () -> review.decide(fixture.requestId(), reject,
+                        UUID.randomUUID().toString()).outcome().name()));
+
+        assertThat(outcomes).noneMatch(value -> value.startsWith("OK:"))
+                .allSatisfy(value -> assertThat(value).isIn("EVIDENCE_VERSION_MISMATCH", "APPROVAL_REQUEST_CLOSED"))
+                .contains("EVIDENCE_VERSION_MISMATCH");
+        ApprovalRequest request = requests.findById(fixture.requestId()).orElseThrow();
+        assertThat(request.getStatus()).isEqualTo(ApprovalRequest.Status.INVALIDATED);
+        assertThat(request.getActiveCaseId()).isNull();
+        assertThat(cases.findById(fixture.caseId()).orElseThrow().getStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
+                .isEqualTo(ReportVersion.Status.INVALIDATED.name());
+        assertDecisionCount(fixture.requestId(), 0);
+        assertAuditCount(fixture.requestId(), "APPROVAL_DECIDED", 0);
+        assertAuditCount(fixture.requestId(), "APPROVAL_INVALIDATED", 1);
+        assertThat(receipts.findById(first.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.REVOKED);
+        assertThat(receipts.findById(second.reviewReceiptId()).orElseThrow().getStatus())
+                .isEqualTo(ReviewReceipt.Status.REVOKED);
+    }
+
     @Test
     void receiptReissueAndConsumptionRaceCannotUseTheSupersededToken() throws Exception {
         Fixture fixture = fixture();

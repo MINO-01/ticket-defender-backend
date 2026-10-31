@@ -17,6 +17,7 @@ import com.ticket.defender_core.security.AdminAccessService;
 import com.ticket.defender_core.security.AdminResourceScope;
 import com.ticket.defender_core.security.AdminRole;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -35,6 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ApprovalReviewService {
@@ -57,6 +59,7 @@ public class ApprovalReviewService {
     private final CaseIdempotencyRepository idempotency;
     private final ApprovalReviewBindingValidator bindings;
     private final ApprovalReviewWriteService writer;
+    private final ApprovalInvalidationWriteService invalidation;
     private final ObjectMapper json;
     @Value("${ticket-defender.approval.review-receipt-ttl:PT15M}")
     private Duration reviewReceiptTtl;
@@ -74,8 +77,14 @@ public class ApprovalReviewService {
         RequestScope request = requestScope(requestId);
         Authorized actor = approver(request);
         String token = token();
-        com.ticket.defender_core.domain.ReviewReceipt receipt = writer.issueReceipt(requestId, actor.memberId(),
-                CaseSnapshotManifest.sha256(token), LocalDateTime.now(ZoneOffset.UTC), reviewReceiptTtl);
+        com.ticket.defender_core.domain.ReviewReceipt receipt;
+        try {
+            receipt = writer.issueReceipt(requestId, actor.memberId(),
+                    CaseSnapshotManifest.sha256(token), LocalDateTime.now(ZoneOffset.UTC), reviewReceiptTtl);
+        } catch (CaseApiException blocked) {
+            invalidateIfBasisChanged(requestId, actor.memberId(), blocked);
+            throw blocked;
+        }
         return ApprovalReviewDto.Receipt.from(receipt, token);
     }
 
@@ -94,6 +103,7 @@ public class ApprovalReviewService {
         } catch (CaseApiException collision) {
             ApprovalDecision committed = replayDecision(request, approver(request), prepared);
             if (committed != null) return view(committed);
+            invalidateIfBasisChanged(requestId, actor.memberId(), collision);
             throw collision;
         } catch (OptimisticLockingFailureException collision) {
             ApprovalDecision committed = replayDecision(request, approver(request), prepared);
@@ -103,6 +113,20 @@ public class ApprovalReviewService {
             ApprovalDecision committed = replayDecision(request, approver(request), prepared);
             if (committed != null) return view(committed);
             throw conflict("APPROVAL_REQUEST_CLOSED");
+        }
+    }
+
+    /**
+     * 실패한 승인 트랜잭션이 롤백된 뒤 별도 트랜잭션에서 근거 변경 여부를 다시 판정한다. 무효화가 실패해도
+     * 원래 차단 오류를 그대로 돌려주어야 하므로 예외를 삼키고, 원문 사유 없이 식별자와 코드만 기록한다.
+     */
+    private void invalidateIfBasisChanged(UUID requestId, UUID actorMembershipId, CaseApiException blocked) {
+        if (!ApprovalInvalidationWriteService.mayInvalidate(blocked.code())) return;
+        try {
+            invalidation.invalidateIfBasisChanged(requestId, actorMembershipId);
+        } catch (RuntimeException failure) {
+            log.warn("Automatic approval invalidation failed requestId={} blockedCode={} failure={}",
+                    requestId, blocked.code(), failure.getClass().getSimpleName());
         }
     }
 

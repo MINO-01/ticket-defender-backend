@@ -1,0 +1,139 @@
+openapi: 3.0.3
+info:
+  title: Ticket Defender W09 Official PDF API
+  version: 1.0.0
+x-contract-status: IMPLEMENTED_W09_SYNTHETIC_ONLY
+x-operational-policy: >-
+  Disabled by default. The current implementation permits only explicit SYNTHETIC_ISOLATED mode
+  and TENANT_ADMIN for isolated development; this is not an approved production issuance policy.
+security:
+  - adminBearer: []
+paths:
+  /api/v1/approval-decisions/{approvalDecisionId}/official-pdf-eligibility:
+    get:
+      summary: Calculate current official-PDF eligibility without changing the human decision
+      parameters:
+        - $ref: '#/components/parameters/ApprovalDecisionId'
+      responses:
+        '200': { description: Current eligibility, content: { application/json: { schema: { $ref: '#/components/schemas/Eligibility' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/approval-decisions/{approvalDecisionId}/official-pdf-issuances:
+    post:
+      summary: Reserve and process one official-PDF issuance for an APPROVE decision
+      parameters:
+        - $ref: '#/components/parameters/ApprovalDecisionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { description: Issuance state (may be GENERATED or a terminal processing state), content: { application/json: { schema: { $ref: '#/components/schemas/Issuance' } } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Blocked' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/official-pdf-issuances/{issuanceId}:
+    get:
+      summary: Read an issuance state and current eligibility
+      parameters: [ { $ref: '#/components/parameters/IssuanceId' } ]
+      responses:
+        '200': { description: Issuance, content: { application/json: { schema: { $ref: '#/components/schemas/Issuance' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/official-pdf-issuances/{issuanceId}/retry:
+    post:
+      summary: Retry a failed/stale issuance, or safely recover a previously stored candidate object
+      description: >-
+        Returns 409 OFFICIAL_PDF_ISSUANCE_IN_PROGRESS while a RUNNING attempt is inside its lease and starts no
+        second render. After lease expiry the newer attempt fences the older worker, which can no longer record
+        an object, finalize, or overwrite the terminal state.
+      parameters:
+        - $ref: '#/components/parameters/IssuanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { description: Issuance state, content: { application/json: { schema: { $ref: '#/components/schemas/Issuance' } } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Blocked' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/official-pdf-issuances/{issuanceId}/download:
+    get:
+      summary: Download a private, verified, generated official PDF
+      parameters: [ { $ref: '#/components/parameters/IssuanceId' } ]
+      responses:
+        '200': { description: PDF bytes, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-versions/{reportVersionId}/official-pdf-issuances:
+    get:
+      summary: List issuance work and immutable official artifacts for an approved report revision
+      parameters: [ { $ref: '#/components/parameters/ReportVersionId' } ]
+      responses:
+        '200': { description: Issuance history, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Issuance' } } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+components:
+  parameters:
+    ApprovalDecisionId: { name: approvalDecisionId, in: path, required: true, schema: { type: string, format: uuid } }
+    IssuanceId: { name: issuanceId, in: path, required: true, schema: { type: string, format: uuid } }
+    ReportVersionId: { name: reportVersionId, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID version 4 only; other UUID versions are rejected with 400 INVALID_IDEMPOTENCY_KEY.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Eligibility:
+      type: object
+      required: [approvalDecisionId, reportVersionId, state, code]
+      properties:
+        approvalDecisionId: { type: string, format: uuid }
+        reportVersionId: { type: string, format: uuid }
+        state: { type: string, enum: [CURRENT, STALE, BLOCKED] }
+        code: { type: string }
+    Issuance:
+      type: object
+      required: [officialPdfIssuanceId, approvalDecisionId, approvalRequestId, reportVersionId, reportRevision, status, eligibility, eligibilityCode, officialTemplateVersion, officialTemplateSha256, requestedAt]
+      properties:
+        officialPdfIssuanceId: { type: string, format: uuid }
+        approvalDecisionId: { type: string, format: uuid }
+        approvalRequestId: { type: string, format: uuid }
+        reportVersionId: { type: string, format: uuid }
+        reportRevision: { type: integer, format: int64 }
+        status: { type: string, enum: [RESERVED, RENDERING, OBJECT_STORED, GENERATED, FAILED, STALE] }
+        eligibility: { type: string, enum: [CURRENT, STALE, BLOCKED] }
+        eligibilityCode: { type: string }
+        officialTemplateVersion: { type: string }
+        officialTemplateSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        pdfSha256: { type: string, nullable: true, pattern: '^[0-9a-f]{64}$' }
+        pdfSize: { type: integer, format: int64, nullable: true }
+        requestedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+        lastFailureCode: { type: string, nullable: true }
+        artifactId: { type: string, format: uuid, nullable: true }
+  responses:
+    InvalidRequest: { description: Malformed request or idempotency key }
+    Unauthenticated: { description: Verified administrator identity required }
+    Forbidden: { description: Authenticated member lacks the temporary issuance role }
+    NotFound: { description: Resource is outside the caller tenant/event scope or absent }
+    Conflict: { description: Current eligibility is stale, a hold is active, or the feature is safely disabled }
+    Blocked: { description: Approval, preservation, integrity, template, or operating-policy gate blocks issuance }
+    Unavailable: { description: Evidence or private PDF object storage is unavailable, or its object proof fails }

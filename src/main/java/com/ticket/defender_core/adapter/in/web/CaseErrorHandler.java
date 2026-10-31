@@ -19,7 +19,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.UUID;
 
 @RestControllerAdvice(assignableTypes = {CaseController.class, CasePreparationController.class,
-        ReportDraftController.class, EvidenceIntegrityController.class, ApprovalRequestController.class})
+        ReportDraftController.class, EvidenceIntegrityController.class, ApprovalRequestController.class,
+        OfficialPdfIssuanceController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)
     ResponseEntity<ProblemDetail> api(CaseApiException error) {

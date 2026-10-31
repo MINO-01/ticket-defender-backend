@@ -102,6 +102,21 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.CaseW08bConcurrentMySqlTest": (
         7, "Runs after W08b migration on the isolated MySQL CI schema"
     ),
+    "com.ticket.defender_core.integration.CaseW09MigrationMySqlTest": (
+        1, "Runs after W08b migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW09SchemaValidateMySqlTest": (
+        1, "Runs after W09 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.S3OfficialPdfStorageMinioTest": (
+        2, "Runs against the isolated versioned official PDF MinIO bucket"
+    ),
+    "com.ticket.defender_core.integration.CaseW09ConcurrentMySqlTest": (
+        3, "Runs after W09 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.CaseW09MinioMySqlTest": (
+        1, "Runs against isolated MySQL and the versioned official PDF MinIO bucket"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -183,6 +198,18 @@ MYSQL_SUITES = {
     "case-w08b-minio-mysql": (
         "com.ticket.defender_core.integration.CaseW07MinioMySqlTest", 1
     ),
+    "case-w09-migration": (
+        "com.ticket.defender_core.integration.CaseW09MigrationMySqlTest", 1
+    ),
+    "case-w09-schema": (
+        "com.ticket.defender_core.integration.CaseW09SchemaValidateMySqlTest", 1
+    ),
+    "case-w09-concurrency": (
+        "com.ticket.defender_core.integration.CaseW09ConcurrentMySqlTest", 3
+    ),
+    "case-w09-minio-mysql": (
+        "com.ticket.defender_core.integration.CaseW09MinioMySqlTest", 1
+    ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1
     ),
@@ -194,6 +221,9 @@ MYSQL_SUITES = {
     ),
     "minio-mysql": (
         "com.ticket.defender_core.integration.FanReportMinioMySqlTest", 3
+    ),
+    "case-w09-minio-storage": (
+        "com.ticket.defender_core.integration.S3OfficialPdfStorageMinioTest", 2
     ),
 }
 

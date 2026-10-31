@@ -30,7 +30,9 @@ import java.util.UUID;
 @Table(name = "official_pdf_issuances", uniqueConstraints = {
         @UniqueConstraint(name = "uk_official_pdf_issuance_decision", columnNames = "approval_decision_id"),
         @UniqueConstraint(name = "uk_official_pdf_issuance_scope_id", columnNames = {
-                "tenant_id", "event_id", "case_id", "id"})
+                "tenant_id", "event_id", "case_id", "id"}),
+        @UniqueConstraint(name = "uk_official_pdf_issuance_scope_decision", columnNames = {
+                "tenant_id", "event_id", "case_id", "id", "approval_decision_id"})
 }, indexes = @Index(name = "idx_official_pdf_issuance_scope_time",
         columnList = "tenant_id,event_id,case_id,requested_at"))
 public class OfficialPdfIssuance {

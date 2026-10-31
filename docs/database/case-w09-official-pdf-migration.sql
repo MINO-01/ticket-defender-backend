@@ -33,6 +33,9 @@ CREATE TABLE official_pdf_issuances (
     PRIMARY KEY (id),
     UNIQUE KEY uk_official_pdf_issuance_decision (approval_decision_id),
     UNIQUE KEY uk_official_pdf_issuance_scope_id (tenant_id, event_id, case_id, id),
+    -- Lets an artifact prove its approval decision is the one its issuance was reserved for.
+    UNIQUE KEY uk_official_pdf_issuance_scope_decision
+        (tenant_id, event_id, case_id, id, approval_decision_id),
     KEY idx_official_pdf_issuance_scope_time (tenant_id, event_id, case_id, requested_at),
     CONSTRAINT fk_official_pdf_issuance_decision FOREIGN KEY
         (tenant_id, event_id, case_id, approval_decision_id)
@@ -119,8 +122,8 @@ CREATE TABLE official_pdf_artifacts (
     UNIQUE KEY uk_official_pdf_artifact_scope_id (tenant_id, event_id, case_id, id),
     KEY idx_official_pdf_artifact_scope_time (tenant_id, event_id, case_id, generated_at),
     CONSTRAINT fk_official_pdf_artifact_issuance FOREIGN KEY
-        (tenant_id, event_id, case_id, issuance_id)
-        REFERENCES official_pdf_issuances (tenant_id, event_id, case_id, id),
+        (tenant_id, event_id, case_id, issuance_id, approval_decision_id)
+        REFERENCES official_pdf_issuances (tenant_id, event_id, case_id, id, approval_decision_id),
     CONSTRAINT fk_official_pdf_artifact_decision FOREIGN KEY
         (tenant_id, event_id, case_id, approval_decision_id)
         REFERENCES approval_decisions (tenant_id, event_id, case_id, id),

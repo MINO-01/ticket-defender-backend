@@ -83,7 +83,8 @@ public class SecurityConfig {
                                 "/api/v1/cases/*/approval-requests",
                                 "/api/v1/approval-requests/*/review-package",
                                 "/api/v1/approval-requests/*/decision",
-                                "/api/v1/approval-requests/*/withdraw").authenticated()
+                                "/api/v1/approval-requests/*/withdraw",
+                                "/api/v1/admin/fan-reports/*/evidence/*/listing-analyses").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/cases",
                                 "/api/v1/cases/*", "/api/v1/cases/*/sources",
                                 "/api/v1/cases/*/activities",
@@ -94,7 +95,8 @@ public class SecurityConfig {
                                 "/api/v1/cases/*/integrity-evaluation",
                                 "/api/v1/report-versions/*",
                                 "/api/v1/approval-requests/*",
-                                "/api/v1/approval-requests/*/review-package").authenticated()
+                                "/api/v1/approval-requests/*/review-package",
+                                "/api/v1/admin/fan-reports/*/evidence/*/listing-analyses").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/approval-decisions/*/official-pdf-issuances",
                                 "/api/v1/official-pdf-issuances/*/retry").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/approval-decisions/*/official-pdf-eligibility",

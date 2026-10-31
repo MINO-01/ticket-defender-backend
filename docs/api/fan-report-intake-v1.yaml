@@ -24,7 +24,16 @@ paths:
         secret returns the same 404 as an unknown report. Never log either header or the response code.
         A completed replay remains available after public intake closes or object storage becomes unavailable.
         New reports still require an open event and a reachable private bucket.
-        A pending same-key request returns 409; a failed request returns 503 and requires a new key.
+        A pending same-key request returns 409 INTAKE_IN_PROGRESS; retry later with the same key and secret.
+        503 INTAKE_STORAGE_UNAVAILABLE is returned only when the server confirmed a persisted storage
+        failure for this key. That key can never succeed; the client must generate a new key and secret
+        itself. The server never creates a replacement key.
+        503 INTAKE_OUTCOME_UNKNOWN (Retry-After 5) means the server could not confirm whether the report
+        was stored, for example a request quota database lock, a transient database failure, or a lost
+        final commit acknowledgement. Retry with the same key, secret and identical body; the retry
+        returns 200 with the same receipt if the report was stored, 409 while it is still pending, or
+        503 INTAKE_STORAGE_UNAVAILABLE once a failure is confirmed. It never creates a duplicate report.
+        429 RATE_LIMITED keeps Retry-After 60 and the same key may be retried after it.
         A saturated intake admission limit returns 503 INTAKE_BUSY before multipart parsing.
         A report stored before this recovery contract returns 409 on replay and needs a controlled
         migration; it is never duplicated or returned with a null lookup code.
@@ -177,7 +186,11 @@ components:
         type: {type: string}
         title: {type: string}
         status: {type: integer}
-        code: {type: string}
+        code:
+          type: string
+          description: >-
+            Stable machine code. 503 codes are INTAKE_STORAGE_UNAVAILABLE (confirmed failure, new key),
+            INTAKE_OUTCOME_UNKNOWN (same key retry) and INTAKE_BUSY (same key retry).
         requestId: {type: string}
   responses:
     InvalidRequest: {description: Invalid structure or fields, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
@@ -192,4 +205,20 @@ components:
       headers:
         Retry-After: {schema: {type: integer, example: 60}}
       content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
-    Unavailable: {description: Database or private object store unavailable, or intake concurrency saturated with code INTAKE_BUSY; no new success receipt, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Unavailable:
+      description: >-
+        No success receipt is returned. code distinguishes the retry policy.
+        INTAKE_STORAGE_UNAVAILABLE means a persisted storage failure was confirmed for this key; do not
+        retry the same key, and submit again only with a new client-generated key and secret.
+        INTAKE_OUTCOME_UNKNOWN means the result could not be confirmed; keep the same key, secret and
+        body and retry after Retry-After. On lookup it only means the read could not be completed.
+        INTAKE_BUSY means intake concurrency was saturated before parsing; retry the same key after Retry-After.
+      headers:
+        Retry-After: {description: Sent with INTAKE_OUTCOME_UNKNOWN (5) and INTAKE_BUSY (1), schema: {type: integer}}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+          examples:
+            confirmedFailure: {value: {type: about:blank, title: Service Unavailable, status: 503, code: INTAKE_STORAGE_UNAVAILABLE, requestId: 00000000-0000-4000-8000-000000000000}}
+            outcomeUnknown: {value: {type: about:blank, title: Service Unavailable, status: 503, code: INTAKE_OUTCOME_UNKNOWN, requestId: 00000000-0000-4000-8000-000000000000}}
+            busy: {value: {type: about:blank, title: Service Unavailable, status: 503, code: INTAKE_BUSY, requestId: 00000000-0000-4000-8000-000000000000}}

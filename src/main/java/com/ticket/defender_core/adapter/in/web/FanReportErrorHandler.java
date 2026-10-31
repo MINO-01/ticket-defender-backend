@@ -1,6 +1,7 @@
 package com.ticket.defender_core.adapter.in.web;
 
 import com.ticket.defender_core.application.service.FanReportApiException;
+import com.ticket.defender_core.application.service.FanReportIntakeService;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -29,9 +30,13 @@ public class FanReportErrorHandler {
         return problem(HttpStatus.BAD_REQUEST, "INVALID_REPORT_REQUEST");
     }
 
+    /**
+     * 요청 제한 테이블 잠금이나 일시적인 DB 및 저장소 장애는 영속된 실패 상태를 확인한 것이 아니므로
+     * 확정 실패 코드로 바꾸지 않고 같은 키 재시도용 결과 불확실 코드로 응답한다.
+     */
     @ExceptionHandler({DataAccessException.class, SdkException.class, IllegalStateException.class})
     ResponseEntity<ProblemDetail> unavailable(Exception ignored) {
-        return problem(HttpStatus.SERVICE_UNAVAILABLE, "INTAKE_STORAGE_UNAVAILABLE");
+        return problem(HttpStatus.SERVICE_UNAVAILABLE, FanReportIntakeService.OUTCOME_UNKNOWN_CODE);
     }
 
     static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code) {
@@ -41,6 +46,7 @@ public class FanReportErrorHandler {
         detail.setProperty("requestId", UUID.randomUUID().toString());
         ResponseEntity.BodyBuilder response = ResponseEntity.status(status).header("Cache-Control", "no-store");
         if (status == HttpStatus.TOO_MANY_REQUESTS) response.header("Retry-After", "60");
+        if (FanReportIntakeService.OUTCOME_UNKNOWN_CODE.equals(code)) response.header("Retry-After", "5");
         return response.body(detail);
     }
 }

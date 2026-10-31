@@ -90,10 +90,10 @@ public class CasePreparationService {
         CasePreparationDto.Draft previous = replayDraft(caseId, actor, prepared);
         if (previous != null) return previous;
         try {
-            CasePreparationWriteService.validate(input.title(), 3, 160);
-            CasePreparationWriteService.validate(input.assessment(), 10, 6000);
-            CasePreparationWriteService.validate(input.limitations(), 3, 3000);
-            CasePreparationWriteService.validate(input.conclusion(), 3, 3000);
+            CasePreparationWriteService.validateReportText(input.title(), 3, 160);
+            CasePreparationWriteService.validateReportText(input.assessment(), 10, 6000);
+            CasePreparationWriteService.validateReportText(input.limitations(), 3, 3000);
+            CasePreparationWriteService.validateReportText(input.conclusion(), 3, 3000);
             CasePreparationWriteService.validate(input.reason(), 3, 1800);
             Case target = preflightCase(caseId, actor, input.expectedCaseVersion());
             EvidenceSnapshot snapshot = snapshots.findById(input.evidenceSnapshotId())

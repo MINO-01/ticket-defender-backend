@@ -76,10 +76,10 @@ public class CasePreparationWriteService {
             UUID memberId, String keyDigest, String requestDigest, CaseSnapshotManifest.Captured prepared) {
         Case target = reviewerCase(caseId, memberId, input.expectedCaseVersion());
         if (target.getStatus() != Case.Status.IN_REVIEW) throw conflict("CASE_STATE_CONFLICT");
-        validate(input.title(), 3, 160);
-        validate(input.assessment(), 10, 6000);
-        validate(input.limitations(), 3, 3000);
-        validate(input.conclusion(), 3, 3000);
+        validateReportText(input.title(), 3, 160);
+        validateReportText(input.assessment(), 10, 6000);
+        validateReportText(input.limitations(), 3, 3000);
+        validateReportText(input.conclusion(), 3, 3000);
         validate(input.reason(), 3, 1800);
         EvidenceSnapshot snapshot = snapshots.findById(input.evidenceSnapshotId())
                 .orElseThrow(CasePreparationWriteService::notFound);
@@ -135,6 +135,21 @@ public class CasePreparationWriteService {
 
     static void validate(String value, int min, int max) {
         if (value == null || value.trim().length() < min || value.length() > max) throw invalid();
+    }
+
+    /**
+     * 공식 PDF XHTML에 그대로 들어가는 보고서 본문용 검증이다. 봉인 뒤에는 원문을 고칠 수 없으므로
+     * XML 1.0에서 허용하지 않는 문자와 짝이 맞지 않는 surrogate는 삭제나 치환 없이 작성 시점에 거부한다.
+     */
+    static void validateReportText(String value, int min, int max) {
+        validate(value, min, max);
+        if (!value.codePoints().allMatch(CasePreparationWriteService::isXml10Char)) throw invalid();
+    }
+
+    private static boolean isXml10Char(int c) {
+        // 짝이 없는 surrogate는 codePoints()에서 0xD800~0xDFFF 값으로 나오므로 여기서 함께 걸러진다.
+        return c == 0x9 || c == 0xA || c == 0xD || (c >= 0x20 && c <= 0xD7FF)
+                || (c >= 0xE000 && c <= 0xFFFD) || (c >= 0x10000 && c <= 0x10FFFF);
     }
 
     private static CaseApiException invalid() {

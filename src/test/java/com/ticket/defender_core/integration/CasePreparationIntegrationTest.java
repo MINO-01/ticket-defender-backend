@@ -212,22 +212,149 @@ class CasePreparationIntegrationTest {
                         error -> assertThat(error.code()).isEqualTo("SOURCE_CHANGED"));
     }
 
+    /**
+     * XML 1.0 허용 문자 중 직렬화 결과가 가장 큰 문자는 Java 문자 하나당 3바이트(U+0800 이상 BMP, 예: 한글)다.
+     * 네 필드 최대 길이 합 12160자로도 약 36.5KB라서 writer의 60000바이트 제한에는 입력 검증을 통과한 값으로
+     * 도달할 수 없다. 그 제한은 방어용으로 남겨 두고, 여기서는 실제로 도달 가능한 최대 길이 경계만 검증한다.
+     */
     @Test
-    void draftRejectsCanonicalContentThatExceedsTextStorageLimit() {
+    void draftAcceptsMaximumLengthFieldsAndRejectsOneCharacterBeyond() {
         CaseDto.View target = reviewingCase(report());
         var snapshot = preparation.capture(target.caseId(),
                 new CasePreparationDto.Capture(target.caseVersion(), "Capture source"),
                 UUID.randomUUID().toString());
         long expected = cases.findById(target.caseId()).orElseThrow().getCaseVersion();
-        String hugeAssessment = "a" + "\u0001".repeat(5998) + "b";
-        String hugeLimitation = "a" + "\u0001".repeat(2998) + "b";
-        assertThatThrownBy(() -> preparation.draft(target.caseId(), new CasePreparationDto.DraftInput(
-                expected, snapshot.evidenceSnapshotId(), "Synthetic title", hugeAssessment,
-                hugeLimitation, hugeLimitation, "Oversized canonical input"),
-                UUID.randomUUID().toString()))
+        String title = "가".repeat(160);
+        String assessment = "가".repeat(6000);
+        String limitations = "가".repeat(3000);
+        String conclusion = "가".repeat(3000);
+        // 제목 161자 초과는 XML 문자 거부 테스트에서 이미 검증한다.
+        List<String[]> beyond = List.of(
+                new String[]{title, assessment + "가", limitations, conclusion},
+                new String[]{title, assessment, limitations + "가", conclusion},
+                new String[]{title, assessment, limitations, conclusion + "가"});
+        for (String[] fields : beyond) {
+            assertThatThrownBy(() -> preparation.draft(target.caseId(), new CasePreparationDto.DraftInput(
+                    expected, snapshot.evidenceSnapshotId(), fields[0], fields[1], fields[2], fields[3],
+                    "Oversized field input"), UUID.randomUUID().toString()))
+                    .isInstanceOfSatisfying(CaseApiException.class,
+                            error -> assertThat(error.code()).isEqualTo("VALIDATION_FAILED"));
+        }
+        assertThat(drafts.findByCaseIdOrderByRevisionDesc(target.caseId())).isEmpty();
+
+        CasePreparationDto.Draft draft = preparation.draft(target.caseId(), new CasePreparationDto.DraftInput(
+                expected, snapshot.evidenceSnapshotId(), title, assessment, limitations, conclusion,
+                "Maximum field input"), UUID.randomUUID().toString());
+        int storedBytes = draft.contentJson().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        assertThat(storedBytes).isGreaterThanOrEqualTo(12160 * 3).isLessThan(60000);
+        assertThat(draft.contentSha256()).isEqualTo(CaseSnapshotManifest.sha256(draft.contentJson()));
+        var stored = json.readTree(draft.contentJson());
+        assertThat(stored.get("title").asString()).isEqualTo(title);
+        assertThat(stored.get("assessment").asString()).isEqualTo(assessment);
+        assertThat(stored.get("limitations").asString()).isEqualTo(limitations);
+        assertThat(stored.get("conclusion").asString()).isEqualTo(conclusion);
+    }
+
+    /**
+     * 공식 PDF는 보고서 본문을 XHTML에 넣어 렌더링하므로, XML 1.0에서 허용하지 않는 문자가 봉인되면
+     * 승인 뒤에도 발급이 영구 실패한다. 작성 시점에 거부되고 부분 기록이 남지 않아야 한다.
+     */
+    @Test
+    void draftRejectsCharactersOutsideXml10WithoutPartialWrites() {
+        CaseDto.View target = reviewingCase(report());
+        var snapshot = preparation.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"),
+                UUID.randomUUID().toString());
+        long expected = cases.findById(target.caseId()).orElseThrow().getCaseVersion();
+        long activitiesBefore = activities.findByCaseId(target.caseId(),
+                org.springframework.data.domain.Pageable.unpaged()).getTotalElements();
+        String valid = "합성 평가 본문입니다";
+        // trim()이 앞뒤 제어문자를 지우므로 앞에 둔 경우도 원문 기준으로 거부해야 한다.
+        List<String[]> rejected = List.of(
+                new String[]{"\u0001합성 제목", valid, "한계 사항", "결론 문장"},
+                new String[]{"합성 제목", "합성 평가\u0000 본문입니다", "한계 사항", "결론 문장"},
+                new String[]{"합성 제목", valid, "한계 사항\u001F", "결론 문장"},
+                new String[]{"합성 제목", valid, "한계 사항", "결론 문장\u000B"},
+                new String[]{"합성 제목", valid + "\uFFFE", "한계 사항", "결론 문장"},
+                new String[]{"합성 제목", valid, "한계 사항\uFFFF", "결론 문장"},
+                new String[]{"합성 \uD800제목", valid, "한계 사항", "결론 문장"},
+                new String[]{"합성 제목", valid + "\uDC00", "한계 사항", "결론 문장"},
+                new String[]{"합성 제목", valid, "한계 사항", "결론 문장\uDE00\uD83D"},
+                new String[]{"ab", valid, "한계 사항", "결론 문장"},
+                new String[]{"가".repeat(161), valid, "한계 사항", "결론 문장"},
+                new String[]{"합성 제목", "짧은 평가", "한계 사항", "결론 문장"});
+        for (String[] fields : rejected) {
+            String key = UUID.randomUUID().toString();
+            assertThatThrownBy(() -> preparation.draft(target.caseId(), new CasePreparationDto.DraftInput(
+                    expected, snapshot.evidenceSnapshotId(), fields[0], fields[1], fields[2], fields[3],
+                    "Synthetic draft reason"), key))
+                    .isInstanceOfSatisfying(CaseApiException.class, error -> {
+                        assertThat(error.status().value()).isEqualTo(422);
+                        assertThat(error.code()).isEqualTo("VALIDATION_FAILED");
+                    });
+            assertThat(idempotency.findByTenantIdAndActorMembershipIdAndOperationAndTargetCaseIdAndKeyDigest(
+                    TENANT, REVIEWER, "DRAFT_CREATE", target.caseId(), CaseSnapshotManifest.sha256(key))).isEmpty();
+        }
+        // 서비스 사전 검사를 거치지 않는 writer 직접 호출도 같은 규칙으로 막혀야 한다.
+        var current = cases.findById(target.caseId()).orElseThrow();
+        var checked = manifests.capture(current, sources.findByCaseIdOrderByLinkedAtAscIdAsc(target.caseId()),
+                LocalDateTime.now(java.time.ZoneOffset.UTC));
+        assertThatThrownBy(() -> writer.draft(target.caseId(), new CasePreparationDto.DraftInput(
+                expected, snapshot.evidenceSnapshotId(), "합성 제목", "합성 평가\u0007 본문입니다", "한계 사항", "결론 문장",
+                "Synthetic draft reason"), REVIEWER, CaseSnapshotManifest.sha256(UUID.randomUUID().toString()),
+                "e".repeat(64), checked))
                 .isInstanceOfSatisfying(CaseApiException.class,
                         error -> assertThat(error.code()).isEqualTo("VALIDATION_FAILED"));
+        entityManager.flush();
+        entityManager.clear();
         assertThat(drafts.findByCaseIdOrderByRevisionDesc(target.caseId())).isEmpty();
+        Case after = cases.findById(target.caseId()).orElseThrow();
+        assertThat(after.getCaseVersion()).isEqualTo(expected);
+        assertThat(after.getStatus()).isEqualTo(Case.Status.IN_REVIEW);
+        assertThat(activities.findByCaseId(target.caseId(), org.springframework.data.domain.Pageable.unpaged())
+                .getTotalElements()).isEqualTo(activitiesBefore);
+    }
+
+    @Test
+    void draftAcceptsKoreanWhitespaceTabsNewlinesAndSupplementaryCharacters() {
+        CaseDto.View target = reviewingCase(report());
+        var snapshot = preparation.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"),
+                UUID.randomUUID().toString());
+        long expected = cases.findById(target.caseId()).orElseThrow().getCaseVersion();
+        String assessment = "첫째 줄\t탭 구분\n둘째 줄\r\n셋째 줄 \uD83D\uDE00 보충 문자";
+        CasePreparationDto.Draft draft = preparation.draft(target.caseId(), new CasePreparationDto.DraftInput(
+                expected, snapshot.evidenceSnapshotId(), "가".repeat(160), assessment, "한계 사항\n주의", "결론 문장",
+                "Synthetic draft reason"), UUID.randomUUID().toString());
+        assertThat(draft.revision()).isEqualTo(1);
+        // 원문을 바꾸지 않고 기존 규칙대로 앞뒤 공백만 정리한 값이 봉인된다.
+        assertThat(json.readTree(draft.contentJson()).get("assessment").asString()).isEqualTo(assessment);
+        assertThat(draft.contentSha256()).isEqualTo(CaseSnapshotManifest.sha256(draft.contentJson()));
+    }
+
+    @Test
+    void draftRouteReturns422ForCharactersOutsideXml10() throws Exception {
+        CaseDto.View target = reviewingCase(report());
+        var snapshot = preparation.capture(target.caseId(),
+                new CasePreparationDto.Capture(target.caseVersion(), "Capture source"),
+                UUID.randomUUID().toString());
+        long expected = cases.findById(target.caseId()).orElseThrow().getCaseVersion();
+        // 단독 surrogate는 JSON 직렬화기를 거치지 않도록 escape 문자열로 직접 보낸다.
+        for (String assessment : List.of("합성 평가\\u0001 본문입니다", "합성 평가 본문입니다\\ud800")) {
+            String body = "{\"expectedCaseVersion\":" + expected + ",\"evidenceSnapshotId\":\""
+                    + snapshot.evidenceSnapshotId() + "\",\"title\":\"합성 제목\",\"assessment\":\""
+                    + assessment + "\",\"limitations\":\"한계 사항\",\"conclusion\":\"결론 문장\","
+                    + "\"reason\":\"Prepare draft\"}";
+            mvc.perform(post("/api/v1/cases/" + target.caseId() + "/report-versions")
+                            .header("Authorization", "Bearer reviewer")
+                            .header("Idempotency-Key", UUID.randomUUID())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isUnprocessableEntity())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+        }
+        assertThat(drafts.findByCaseIdOrderByRevisionDesc(target.caseId())).isEmpty();
+        assertThat(cases.findById(target.caseId()).orElseThrow().getCaseVersion()).isEqualTo(expected);
     }
 
     @Test

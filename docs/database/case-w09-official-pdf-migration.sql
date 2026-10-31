@@ -33,7 +33,7 @@ CREATE TABLE official_pdf_issuances (
     PRIMARY KEY (id),
     UNIQUE KEY uk_official_pdf_issuance_decision (approval_decision_id),
     UNIQUE KEY uk_official_pdf_issuance_scope_id (tenant_id, event_id, case_id, id),
-    -- Lets an artifact prove its approval decision is the one its issuance was reserved for.
+    -- Artifact의 승인 결정이 해당 Issuance를 예약한 결정과 같은지 복합 FK로 강제하기 위한 키다.
     UNIQUE KEY uk_official_pdf_issuance_scope_decision
         (tenant_id, event_id, case_id, id, approval_decision_id),
     KEY idx_official_pdf_issuance_scope_time (tenant_id, event_id, case_id, requested_at),

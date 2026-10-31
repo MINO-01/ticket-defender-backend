@@ -96,8 +96,8 @@ class CaseW09MigrationMySqlTest {
     }
 
     /**
-     * Builds a second, real REJECT decision chain in the same Case and tries to bind it to the existing
-     * issuance. Everything runs in one transaction that is rolled back, so later CI steps see no extra rows.
+     * 같은 Case 안에 실제 REJECT 결정 체인을 하나 더 만들고, 그 결정을 기존 Issuance의 Artifact에 연결하려 한다.
+     * 전체를 한 트랜잭션에서 실행한 뒤 롤백하므로 이후 CI 단계에는 추가 행이 남지 않는다.
      */
     private static void assertArtifactRejectsOtherDecisionInSameCase(DriverManagerDataSource source,
             LocalDateTime now) throws Exception {

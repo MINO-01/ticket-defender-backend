@@ -15,6 +15,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.security.MessageDigest;
@@ -72,6 +73,17 @@ public class S3EvidenceObjectStorage implements EvidenceObjectStorage {
 
     @Override
     public ByteVerification verifyBytes(String key, String storedMarker, long maximumBytes) {
+        return read(key, storedMarker, maximumBytes, null);
+    }
+
+    @Override
+    public VerifiedBytes readVerifiedBytes(String key, String storedMarker, long maximumBytes) {
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        ByteVerification verification = read(key, storedMarker, maximumBytes, sink);
+        return new VerifiedBytes(verification, sink.toByteArray());
+    }
+
+    private ByteVerification read(String key, String storedMarker, long maximumBytes, ByteArrayOutputStream sink) {
         if (headClient == null) throw new IllegalStateException("Private storage read credentials are not configured");
         if (maximumBytes < 1) throw new IllegalArgumentException("Maximum byte count must be positive");
         HeadObjectResponse head = headClient.headObject(HeadObjectRequest.builder()
@@ -110,6 +122,7 @@ public class S3EvidenceObjectStorage implements EvidenceObjectStorage {
                 total += count;
                 if (total > maximumBytes) throw new ObjectSizeExceededException();
                 digest.update(buffer, 0, count);
+                if (sink != null) sink.write(buffer, 0, count);
             }
             if (response.contentLength() == null || total != response.contentLength()
                     || total != head.contentLength()) throw new ObjectMarkerChangedException();

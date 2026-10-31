@@ -320,6 +320,10 @@ jobs:
         run: bash ./gradlew test --tests '*FanReportMinioMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm all recovery tests ran
         run: python3 .github/scripts/check_junit_results.py minio-mysql
+      - name: Verify fan report retry error contract on MinIO and MySQL
+        run: bash ./gradlew test --tests '*FanReportRetryContractMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm fan report retry contract tests ran
+        run: python3 .github/scripts/check_junit_results.py fan-report-retry-minio-mysql
       - name: Verify W05 private evidence capture on MinIO and MySQL
         run: bash ./gradlew test --tests '*CaseW05MinioMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 private evidence tests ran

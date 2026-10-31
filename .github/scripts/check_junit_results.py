@@ -117,6 +117,18 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.CaseW09MinioMySqlTest": (
         1, "Runs against isolated MySQL and the versioned official PDF MinIO bucket"
     ),
+    "com.ticket.defender_core.integration.Track2ListingAnalysisMigrationMySqlTest": (
+        1, "Runs after W09 migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.Track2ListingAnalysisSchemaValidateMySqlTest": (
+        1, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.Track2ListingAnalysisConcurrentMySqlTest": (
+        2, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
+    ),
+    "com.ticket.defender_core.integration.Track2ListingAnalysisMinioMySqlTest": (
+        1, "Runs with private MinIO, isolated MySQL and a synthetic analysis server"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -209,6 +221,18 @@ MYSQL_SUITES = {
     ),
     "case-w09-minio-mysql": (
         "com.ticket.defender_core.integration.CaseW09MinioMySqlTest", 1
+    ),
+    "track2-listing-migration": (
+        "com.ticket.defender_core.integration.Track2ListingAnalysisMigrationMySqlTest", 1
+    ),
+    "track2-listing-schema": (
+        "com.ticket.defender_core.integration.Track2ListingAnalysisSchemaValidateMySqlTest", 1
+    ),
+    "track2-listing-concurrency": (
+        "com.ticket.defender_core.integration.Track2ListingAnalysisConcurrentMySqlTest", 2
+    ),
+    "track2-listing-minio-mysql": (
+        "com.ticket.defender_core.integration.Track2ListingAnalysisMinioMySqlTest", 1
     ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1

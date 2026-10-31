@@ -92,6 +92,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW09MigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W09 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-w09-migration
+      - name: Apply Track 2 listing analysis migration
+        run: bash ./gradlew test --tests '*Track2ListingAnalysisMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 listing analysis migration test ran
+        run: python3 .github/scripts/check_junit_results.py track2-listing-migration
       - name: Validate JPA schema and MySQL behavior
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
@@ -124,6 +128,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW09SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W09 schema test ran
         run: python3 .github/scripts/check_junit_results.py case-w09-schema
+      - name: Validate Track 2 listing analysis JPA mappings
+        run: bash ./gradlew test --tests '*Track2ListingAnalysisSchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 listing analysis schema test ran
+        run: python3 .github/scripts/check_junit_results.py track2-listing-schema
       - name: Verify W06 idempotency and activity rollback on MySQL
         run: bash ./gradlew test --tests '*CaseW06ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W06 MySQL concurrency tests ran
@@ -144,6 +152,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW09ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W09 MySQL concurrency tests ran
         run: python3 .github/scripts/check_junit_results.py case-w09-concurrency
+      - name: Verify Track 2 listing analysis idempotency and active slot race on MySQL
+        run: bash ./gradlew test --tests '*Track2ListingAnalysisConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 listing analysis MySQL concurrency tests ran
+        run: python3 .github/scripts/check_junit_results.py track2-listing-concurrency
       - name: Validate W05 mappings after concurrency data
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm order-independent W05 schema test ran
@@ -264,6 +276,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW09MigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W09 migration test ran
         run: python3 .github/scripts/check_junit_results.py case-w09-migration
+      - name: Apply Track 2 listing analysis migration
+        run: bash ./gradlew test --tests '*Track2ListingAnalysisMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 listing analysis migration test ran
+        run: python3 .github/scripts/check_junit_results.py track2-listing-migration
       - name: Validate JPA schema
         run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm schema tests ran
@@ -288,6 +304,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW09SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W09 schema test ran
         run: python3 .github/scripts/check_junit_results.py case-w09-schema
+      - name: Validate Track 2 listing analysis JPA mappings
+        run: bash ./gradlew test --tests '*Track2ListingAnalysisSchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 listing analysis schema test ran
+        run: python3 .github/scripts/check_junit_results.py track2-listing-schema
       - name: Verify private MinIO object storage
         run: bash ./gradlew test --tests '*S3EvidenceObjectStorageMinioTest' --rerun-tasks --no-daemon
       - name: Confirm all object storage tests ran
@@ -328,6 +348,10 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW09MinioMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W09 MinIO and MySQL test ran
         run: python3 .github/scripts/check_junit_results.py case-w09-minio-mysql
+      - name: Verify Track 2 listing analysis with private MinIO original and MySQL
+        run: bash ./gradlew test --tests '*Track2ListingAnalysisMinioMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 listing analysis MinIO and MySQL test ran
+        run: python3 .github/scripts/check_junit_results.py track2-listing-minio-mysql
       - name: Remove only this job's MinIO container
         if: always()
         run: docker rm -f td-issue32-ci-minio 2>/dev/null || true

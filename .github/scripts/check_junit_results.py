@@ -131,6 +131,8 @@ CORE_SKIPS = {
     ),
     "com.ticket.defender_core.integration.Track2ListingAnalysisMinioMySqlTest": (
         1, "Runs with private MinIO, isolated MySQL and a synthetic analysis server"
+    ),    "com.ticket.defender_core.integration.AdminFanReportReadMySqlTest": (
+        2, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
     ),
 }
 
@@ -236,6 +238,9 @@ MYSQL_SUITES = {
     ),
     "track2-listing-minio-mysql": (
         "com.ticket.defender_core.integration.Track2ListingAnalysisMinioMySqlTest", 1
+    ),
+    "admin-fan-report-read": (
+        "com.ticket.defender_core.integration.AdminFanReportReadMySqlTest", 2
     ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1

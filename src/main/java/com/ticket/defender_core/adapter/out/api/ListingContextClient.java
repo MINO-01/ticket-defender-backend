@@ -30,6 +30,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 /**
@@ -110,11 +113,11 @@ public class ListingContextClient {
                 .POST(HttpRequest.BodyPublishers.ofByteArray(payload)).build();
         HttpResponse<InputStream> response;
         byte[] raw;
+        long deadline = System.nanoTime() + readTimeout.toNanos();
         try {
             response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream stream = response.body()) {
-                raw = stream.readNBytes(MAX_RESPONSE_BYTES + 1);
-            }
+            raw = readBody(response.body(), deadline - System.nanoTime());
+            if (raw == null) return new Failure("ANALYZER_TIMEOUT", null, null);
         } catch (HttpConnectTimeoutException | ConnectException unreachable) {
             return new Failure("ANALYZER_CONNECTION_FAILED", null, null);
         } catch (HttpTimeoutException timeout) {
@@ -134,6 +137,34 @@ public class ListingContextClient {
             return new Failure("ANALYZER_IDENTITY_MISMATCH", status, null);
         } catch (RuntimeException invalid) {
             return new Failure("ANALYZER_RESPONSE_INVALID", status, null);
+        }
+    }
+
+    /**
+     * 요청 timeout은 응답 헤더 도착까지만 적용되므로, 본문 읽기도 같은 마감 시각으로 제한합니다.
+     * 마감 시각이 지나면 스트림을 닫아 대기 중인 읽기를 끝내고 null을 반환합니다.
+     */
+    private static byte[] readBody(InputStream stream, long remainingNanos) throws IOException {
+        AtomicBoolean expired = new AtomicBoolean();
+        try (stream) {
+            if (remainingNanos <= 0) return null;
+            CompletableFuture<Void> watchdog = CompletableFuture.runAsync(() -> {
+                expired.set(true);
+                try {
+                    stream.close();
+                } catch (IOException ignored) {
+                    // 닫기 실패는 읽기 쪽 예외나 다음 마감 검사로 처리합니다.
+                }
+            }, CompletableFuture.delayedExecutor(remainingNanos, TimeUnit.NANOSECONDS));
+            try {
+                byte[] raw = stream.readNBytes(MAX_RESPONSE_BYTES + 1);
+                return expired.get() ? null : raw;
+            } catch (IOException readFailure) {
+                if (expired.get()) return null;
+                throw readFailure;
+            } finally {
+                watchdog.cancel(false);
+            }
         }
     }
 

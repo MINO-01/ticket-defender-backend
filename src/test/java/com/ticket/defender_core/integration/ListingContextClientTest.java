@@ -63,6 +63,15 @@ class ListingContextClientTest {
     }
 
     @Test
+    void stalledResponseBodyAfterHeadersTimesOutWithinDeadline() {
+        python.responder = body -> new FakeListingContextServer.Reply(200, FakeListingContextServer.success(body,
+                "COMPLETED", FakeListingContextServer.completedFields()).body(), 0, 4000);
+        long started = System.nanoTime();
+        assertThat(analyze()).isEqualTo(new ListingContextClient.Failure("ANALYZER_TIMEOUT", null, null));
+        assertThat(java.time.Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(3000));
+    }
+
+    @Test
     void oversizedInputIsNotSent() {
         ListingContextClient.Result result = client(true, python.baseUrl(), FakeListingContextServer.INTERNAL_KEY)
                 .analyze(UUID.randomUUID(), UUID.randomUUID(), SHA, "image/png",

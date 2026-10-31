@@ -24,7 +24,12 @@ final class FakeListingContextServer implements AutoCloseable {
             "currency", "saleText", "zone", "row", "seat");
 
     record Received(Map<String, String> headers, Map<String, Object> body) { }
-    record Reply(int status, String body, long delayMillis) { }
+    /** bodyDelayMillis는 헤더와 본문 일부를 보낸 뒤 나머지 본문 전송을 지연합니다. */
+    record Reply(int status, String body, long delayMillis, long bodyDelayMillis) {
+        Reply(int status, String body, long delayMillis) {
+            this(status, body, delayMillis, 0);
+        }
+    }
 
     private final HttpServer server;
     final List<Received> received = new CopyOnWriteArrayList<>();
@@ -58,7 +63,17 @@ final class FakeListingContextServer implements AutoCloseable {
             try {
                 exchange.sendResponseHeaders(reply.status(), out.length);
                 try (OutputStream output = exchange.getResponseBody()) {
-                    output.write(out);
+                    int head = reply.bodyDelayMillis() > 0 ? Math.min(1, out.length) : out.length;
+                    output.write(out, 0, head);
+                    output.flush();
+                    if (reply.bodyDelayMillis() > 0) {
+                        try {
+                            Thread.sleep(reply.bodyDelayMillis());
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    output.write(out, head, out.length - head);
                 }
             } catch (IOException clientGone) {
                 exchange.close();

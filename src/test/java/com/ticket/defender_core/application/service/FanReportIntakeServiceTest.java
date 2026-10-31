@@ -220,10 +220,93 @@ class FanReportIntakeServiceTest {
         when(storage.put(anyString(), any())).thenReturn("etag");
         doThrow(new DataAccessResourceFailureException("synthetic db outage"))
                 .when(persistence).markReceived(any(), anyMap());
+        // 최종 커밋 여부와 정리 결과를 다시 확인할 수 없으면 확정 실패로 단정하지 않는다.
         assertThatThrownBy(() -> service.submit(submission(), List.of(file), KEY, RECOVERY_SECRET))
-                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_STORAGE_UNAVAILABLE");
+                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_OUTCOME_UNKNOWN");
         verify(persistence).cleanStale(any(), any());
         verify(storage, never()).delete(anyString(), any());
+    }
+
+    @Test
+    void finalizationAcknowledgementLossIsResolvedAsReceivedByReRead() {
+        doAnswer(invocation -> {
+            throw new DataAccessResourceFailureException("synthetic lost commit acknowledgement");
+        }).when(persistence).markReceived(any(), anyMap());
+        ArgumentCaptor<FanReport> saved = ArgumentCaptor.forClass(FanReport.class);
+        doAnswer(invocation -> {
+            FanReport report = invocation.getArgument(0);
+            when(reports.findById(report.getFanReportId())).thenAnswer(read -> {
+                // 커밋은 이미 반영되었고 응답만 유실된 상황을 재현한다.
+                if (report.getIntakeStatus() == FanReport.IntakeStatus.PENDING_STORAGE) report.markReceived();
+                return Optional.of(report);
+            });
+            return null;
+        }).when(persistence).reserve(saved.capture(), anyList());
+
+        FanReportReceipt receipt = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
+        assertThat(receipt.intakeStatus()).isEqualTo(FanReport.IntakeStatus.RECEIVED);
+        assertThat(receipt.fanReportId()).isEqualTo(saved.getValue().getFanReportId());
+        assertThat(receipt.replayed()).isFalse();
+        verify(persistence, times(1)).reserve(any(), anyList());
+    }
+
+    @Test
+    void finalizationReconciledToStorageFailedIsConfirmedFailure() {
+        doThrow(new DataAccessResourceFailureException("synthetic rejected finalization"))
+                .when(persistence).markReceived(any(), anyMap());
+        doAnswer(invocation -> {
+            FanReport report = invocation.getArgument(0);
+            when(reports.findById(report.getFanReportId())).thenAnswer(read -> {
+                if (report.getIntakeStatus() == FanReport.IntakeStatus.PENDING_STORAGE) report.markStorageFailed();
+                return Optional.of(report);
+            });
+            return null;
+        }).when(persistence).reserve(any(), anyList());
+
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_STORAGE_UNAVAILABLE");
+    }
+
+    @Test
+    void uploadFailureWithoutPersistedFailureStateIsOutcomeUnknown() {
+        MockMultipartFile file = new MockMultipartFile("evidence", "synthetic.png", "image/png", new byte[]{1});
+        when(images.validate(anyList())).thenReturn(List.of(new ValidatedImage(new byte[]{1}, "image/png", 1, "a".repeat(64))));
+        when(storage.put(anyString(), any())).thenThrow(new IllegalStateException("synthetic storage outage"));
+        doThrow(new DataAccessResourceFailureException("synthetic db outage")).when(persistence).markStorageFailed(any());
+        doThrow(new DataAccessResourceFailureException("synthetic db outage")).when(persistence).markCleaned(any());
+
+        assertThatThrownBy(() -> service.submit(submission(), List.of(file), KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_OUTCOME_UNKNOWN");
+        verify(storage).delete(anyString(), isNull());
+    }
+
+    @Test
+    void persistedStorageFailedReplayRequiresNewKeyAndPendingReplayStaysInProgress() {
+        FanReportReceipt first = service.submit(submission(), List.of(), KEY, RECOVERY_SECRET);
+        ArgumentCaptor<FanReport> saved = ArgumentCaptor.forClass(FanReport.class);
+        verify(persistence).reserve(saved.capture(), anyList());
+        FanReport report = saved.getValue();
+        when(reports.findByIdempotencyKeyDigest(crypto.idempotencyDigest(KEY))).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_IN_PROGRESS");
+        report.markStorageFailed();
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_STORAGE_UNAVAILABLE");
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, OTHER_RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("REPORT_NOT_FOUND");
+        assertThat(first.fanReportId()).isEqualTo(report.getFanReportId());
+        // 서버는 새 키를 대신 만들지 않으므로 기존 키 재요청은 새 접수를 예약하지 않는다.
+        verify(persistence, times(1)).reserve(any(), anyList());
+    }
+
+    @Test
+    void reservationConflictWithoutVisibleRowIsOutcomeUnknown() {
+        doThrow(new org.springframework.dao.DataIntegrityViolationException("synthetic unique conflict"))
+                .when(persistence).reserve(any(), anyList());
+        assertThatThrownBy(() -> service.submit(submission(), List.of(), KEY, RECOVERY_SECRET))
+                .isInstanceOf(FanReportApiException.class).hasMessage("INTAKE_OUTCOME_UNKNOWN");
+        verify(storage, never()).put(anyString(), any());
     }
 
     @Test

@@ -1,0 +1,193 @@
+package com.ticket.defender_core.integration;
+
+import com.ticket.defender_core.adapter.out.persistence.AdminMembershipRepository;
+import com.ticket.defender_core.adapter.out.persistence.MembershipEventGrantRepository;
+import com.ticket.defender_core.adapter.out.persistence.MembershipRoleRepository;
+import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
+import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
+import com.ticket.defender_core.domain.AccessRecordStatus;
+import com.ticket.defender_core.domain.AdminMembershipEntity;
+import com.ticket.defender_core.domain.MembershipEventGrant;
+import com.ticket.defender_core.domain.MembershipRole;
+import com.ticket.defender_core.domain.Tenant;
+import com.ticket.defender_core.domain.TenantEvent;
+import com.ticket.defender_core.security.AdminRole;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * 격리 MySQL 8 스키마에서 관리자 접근 가능 공연 목록의 활성 상태 필터, 공연 권한 격리, 다중 tenant 차단, 정렬을 검증합니다.
+ * 운영 DB와 MinIO는 사용하지 않으며, 생성한 합성 행은 테스트 종료 시 삭제합니다.
+ */
+@SpringBootTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
+@AutoConfigureMockMvc
+@EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MYSQL_URL",
+        matches = "jdbc:mysql://127\\.0\\.0\\.1:13307/td_issue32.*")
+class AdminEventReadMySqlTest {
+    @Autowired private MockMvc mvc;
+    @Autowired private TenantRepository tenants;
+    @Autowired private TenantEventRepository events;
+    @Autowired private AdminMembershipRepository memberships;
+    @Autowired private MembershipRoleRepository roles;
+    @Autowired private MembershipEventGrantRepository grants;
+    @Autowired private JdbcTemplate jdbc;
+
+    @MockitoBean(name = "adminJwtDecoder")
+    private JwtDecoder adminDecoder;
+
+    private final List<UUID> tenantIds = new ArrayList<>();
+    private String suffix;
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", () -> System.getenv("TD_ISSUE32_MYSQL_URL"));
+        registry.add("spring.datasource.username", () -> System.getenv("TD_ISSUE32_MYSQL_USER"));
+        registry.add("spring.datasource.password", () -> System.getenv("TD_ISSUE32_MYSQL_PASSWORD"));
+        registry.add("spring.datasource.driver-class-name", () -> "com.mysql.cj.jdbc.Driver");
+    }
+
+    @BeforeEach
+    void setUp() {
+        // 서명 검증은 H2 API 테스트가 담당하며, 여기서는 검증된 subject만 가진 JWT로 MySQL 조회 범위를 확인합니다.
+        given(adminDecoder.decode(anyString())).willAnswer(call -> Jwt.withTokenValue(call.getArgument(0))
+                .header("alg", "RS256").subject(call.getArgument(0)).issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300)).build());
+        suffix = UUID.randomUUID().toString();
+    }
+
+    @AfterEach
+    void cleanup() {
+        for (UUID tenant : tenantIds) {
+            jdbc.update("delete r from membership_roles r join memberships m on m.id = r.membership_id"
+                    + " where m.tenant_id = ?", tenant.toString());
+            jdbc.update("delete from membership_events where tenant_id = ?", tenant.toString());
+            jdbc.update("delete from memberships where tenant_id = ?", tenant.toString());
+            jdbc.update("delete from events where tenant_id = ?", tenant.toString());
+            jdbc.update("delete from tenants where id = ?", tenant.toString());
+        }
+    }
+
+    @Test
+    void activeGrantedEventsAreScopedSortedAndInactiveRecordsAreExcluded() throws Exception {
+        UUID tenantA = tenant(AccessRecordStatus.ACTIVE);
+        UUID tenantB = tenant(AccessRecordStatus.ACTIVE);
+        UUID sameNameHigh = event(tenantA, UUID.fromString("ffffffff-0000-4000-8000-" + tail()), "가 공연",
+                AccessRecordStatus.ACTIVE);
+        UUID sameNameLow = event(tenantA, UUID.fromString("00000000-0000-4000-8000-" + tail()), "가 공연",
+                AccessRecordStatus.ACTIVE);
+        UUID later = event(tenantA, UUID.randomUUID(), "나 공연", AccessRecordStatus.ACTIVE);
+        UUID inactive = event(tenantA, UUID.randomUUID(), "다 비활성", AccessRecordStatus.INACTIVE);
+        UUID ungranted = event(tenantA, UUID.randomUUID(), "라 권한 없음", AccessRecordStatus.ACTIVE);
+        UUID otherTenantEvent = event(tenantB, UUID.randomUUID(), "고객사 B 공연", AccessRecordStatus.ACTIVE);
+        String analyst = "mysql-event-analyst-" + suffix;
+        member(analyst, tenantA, AccessRecordStatus.ACTIVE, AdminRole.ANALYST,
+                List.of(later, sameNameHigh, sameNameLow, inactive));
+        String reviewer = "mysql-event-reviewer-" + suffix;
+        member(reviewer, tenantA, AccessRecordStatus.ACTIVE, AdminRole.REVIEWER, List.of(later));
+        member("mysql-event-other-" + suffix, tenantB, AccessRecordStatus.ACTIVE, AdminRole.REVIEWER,
+                List.of(otherTenantEvent));
+
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(3))
+                .andExpect(jsonPath("$.items[0].id").value(sameNameLow.toString()))
+                .andExpect(jsonPath("$.items[1].id").value(sameNameHigh.toString()))
+                .andExpect(jsonPath("$.items[2].id").value(later.toString()))
+                .andExpect(content().string(not(containsString(inactive.toString()))))
+                .andExpect(content().string(not(containsString(ungranted.toString()))))
+                .andExpect(content().string(not(containsString(otherTenantEvent.toString()))))
+                .andExpect(content().string(not(containsString(tenantA.toString()))));
+        mvc.perform(get("/api/v1/admin/events").param("pageSize", "1")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + reviewer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.hasNext").value(false))
+                .andExpect(jsonPath("$.items[0].id").value(later.toString()));
+    }
+
+    @Test
+    void multipleActiveTenantsAreBlockedWhileInactiveTenantsAndMembershipsAreIgnored() throws Exception {
+        UUID tenantA = tenant(AccessRecordStatus.ACTIVE);
+        UUID tenantB = tenant(AccessRecordStatus.ACTIVE);
+        UUID tenantOff = tenant(AccessRecordStatus.INACTIVE);
+        UUID eventA = event(tenantA, UUID.randomUUID(), "A 공연", AccessRecordStatus.ACTIVE);
+        UUID eventB = event(tenantB, UUID.randomUUID(), "B 공연", AccessRecordStatus.ACTIVE);
+        UUID eventOff = event(tenantOff, UUID.randomUUID(), "비활성 고객사 공연", AccessRecordStatus.ACTIVE);
+        String multi = "mysql-event-multi-" + suffix;
+        member(multi, tenantA, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventA));
+        member(multi, tenantB, AccessRecordStatus.ACTIVE, AdminRole.REVIEWER, List.of(eventB));
+        String withInactive = "mysql-event-inactive-" + suffix;
+        member(withInactive, tenantA, AccessRecordStatus.INACTIVE, AdminRole.ANALYST, List.of(eventA));
+        member(withInactive, tenantOff, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventOff));
+        member(withInactive, tenantB, AccessRecordStatus.ACTIVE, AdminRole.APPROVER, List.of(eventB));
+        String noRole = "mysql-event-no-role-" + suffix;
+        member(noRole, tenantA, AccessRecordStatus.ACTIVE, null, List.of(eventA));
+
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + multi))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                .andExpect(content().string(not(containsString(eventA.toString()))))
+                .andExpect(content().string(not(containsString(eventB.toString()))));
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + withInactive))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(eventB.toString()));
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + noRole))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/admin/events")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer mysql-event-nobody-" + suffix))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(0));
+    }
+
+    private String tail() {
+        return suffix.substring(24);
+    }
+
+    private UUID tenant(AccessRecordStatus status) {
+        UUID id = UUID.randomUUID();
+        tenants.saveAndFlush(new Tenant(id, "MySQL 합성 고객사", status));
+        tenantIds.add(id);
+        return id;
+    }
+
+    private UUID event(UUID tenant, UUID id, String name, AccessRecordStatus status) {
+        events.saveAndFlush(new TenantEvent(id, tenant, "ext-" + id, name, status));
+        return id;
+    }
+
+    private void member(String subject, UUID tenant, AccessRecordStatus status, AdminRole role, List<UUID> eventIds) {
+        UUID membership = UUID.randomUUID();
+        memberships.saveAndFlush(new AdminMembershipEntity(membership, tenant, subject, status));
+        if (role != null) roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), membership, role));
+        eventIds.forEach(event -> grants.saveAndFlush(
+                new MembershipEventGrant(UUID.randomUUID(), membership, tenant, event)));
+    }
+}

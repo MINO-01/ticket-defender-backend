@@ -22,3 +22,7 @@
 ## 관리자 팬 제보 조회 MySQL 검증
 
 `mysql8-integration` 작업은 Track 2 Listing Context 마이그레이션 이후 `AdminFanReportReadMySqlTest` 2건을 실행하고 `check_junit_results.py admin-fan-report-read`로 2건 통과와 0 Skip을 확인한다. 이 테스트는 JPA `ddl-auto=validate` 스키마에서 고객사와 공연 범위 격리, DATETIME(6) 동일 시각 제보의 ID 보조 정렬, 페이지별 증거 수 집계, 상세 증거 소속과 저장소 키 비노출을 확인하며, 생성한 합성 행은 테스트 종료 시 삭제한다. 기본 빌드에서는 같은 2건이 예상 Skip 목록에 포함된다.
+
+## 관리자 접근 가능 공연 목록 MySQL 검증
+
+`mysql8-integration` 작업은 관리자 팬 제보 조회 검증 다음에 `AdminEventReadMySqlTest` 2건을 실행하고 `check_junit_results.py admin-event-read`로 2건 통과와 0 Skip을 확인한다. JPA `ddl-auto=validate` 스키마에서 활성 고객사, 멤버십, 공연 필터와 공연 권한 격리, 같은 이름 공연의 ID 보조 정렬, 여러 활성 고객사 소속 subject의 409 차단을 확인하며, 생성한 합성 행은 테스트 종료 시 삭제한다. 기본 빌드에서는 같은 2건이 예상 Skip 목록에 포함된다.

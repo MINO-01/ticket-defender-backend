@@ -160,6 +160,10 @@ jobs:
         run: bash ./gradlew test --tests '*AdminFanReportReadMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm admin fan report MySQL read tests ran
         run: python3 .github/scripts/check_junit_results.py admin-fan-report-read
+      - name: Verify admin accessible event list scope on MySQL
+        run: bash ./gradlew test --tests '*AdminEventReadMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm admin accessible event MySQL tests ran
+        run: python3 .github/scripts/check_junit_results.py admin-event-read
       - name: Validate W05 mappings after concurrency data
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm order-independent W05 schema test ran

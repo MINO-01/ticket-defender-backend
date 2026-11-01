@@ -75,6 +75,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/track1/clusters",
                                 "/api/v1/admin/track1/clusters/detail").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/events").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/fan-reports",
                                 "/api/v1/admin/fan-reports/*").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/cases",

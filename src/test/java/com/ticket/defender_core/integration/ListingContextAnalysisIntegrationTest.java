@@ -436,6 +436,24 @@ class ListingContextAnalysisIntegrationTest {
         assertThat(rows(fixture)).hasSize(2);
     }
 
+    @Test
+    void multiTenantAnalystIsBlockedBeforeStorageReadAnalyzerCallOrRecording() throws Exception {
+        Fixture fixture = fixture();
+        UUID extraTenant = UUID.randomUUID();
+        tenants.save(new Tenant(extraTenant, "Extra synthetic tenant", AccessRecordStatus.ACTIVE));
+        memberships.save(new AdminMembershipEntity(UUID.randomUUID(), extraTenant, analyst, AccessRecordStatus.ACTIVE));
+
+        analyze(fixture, UUID.randomUUID().toString(), analyst).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"));
+        mvc.perform(get(url(fixture)).header("Authorization", "Bearer " + analyst))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"));
+
+        assertThat(rows(fixture)).isEmpty();
+        assertThat(PYTHON.received).isEmpty();
+        verify(storage, never()).readVerifiedBytes(anyString(), anyString(), anyLong());
+    }
+
     private ResultActions analyze(Fixture fixture, String key, String subject) throws Exception {
         return mvc.perform(post(url(fixture)).header("Authorization", "Bearer " + subject)
                 .header("Idempotency-Key", key));

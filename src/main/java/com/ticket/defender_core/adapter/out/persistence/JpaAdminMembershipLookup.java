@@ -5,6 +5,7 @@ import com.ticket.defender_core.domain.MembershipEventGrant;
 import com.ticket.defender_core.security.AdminMembership;
 import com.ticket.defender_core.security.AdminMembershipLookup;
 import com.ticket.defender_core.security.AdminRole;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,5 +47,15 @@ public class JpaAdminMembershipLookup implements AdminMembershipLookup {
                         eventGrants.findAllByMembershipIdAndTenantId(membership.getId(), tenantId).stream()
                                 .map(MembershipEventGrant::getEventId)
                                 .collect(Collectors.toUnmodifiableSet())));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean hasActiveMembershipsInMultipleTenants(String subject) {
+        // MySQL 기본 collation은 대소문자를 구분하지 않으므로 대소문자만 다른 subject 행이 건수 제한을 차지해
+        // 실제 두 번째 고객사를 놓치지 않도록 제한 없이 읽고 정확히 같은 subject만 셉니다. subject당 행은 소속 고객사 수만큼입니다.
+        return memberships.findActiveBySubject(subject, Pageable.unpaged()).stream()
+                .filter(membership -> subject.equals(membership.getSubject()))
+                .map(membership -> membership.getTenantId()).distinct().count() > 1;
     }
 }

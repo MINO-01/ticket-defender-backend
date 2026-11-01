@@ -26,6 +26,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
@@ -40,6 +41,9 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(properties = {
@@ -1060,6 +1064,121 @@ class ApprovalRequestApiIntegrationTest {
         }
         return new Fixture(opened.caseId(), snapshot.evidenceSnapshotId(), draft.reportVersionId(),
                 snapshot.manifestSha256(), draft.contentSha256(), policyId, UUID.randomUUID().toString());
+    }
+
+    @Test
+    void multiTenantAdminsAreBlockedOnCaseEvidenceReportAndApprovalApisWithoutChangingState() throws Exception {
+        Fixture fixture = fixture(true);
+        ApprovalRequest request = pending(fixture);
+        Case before = currentCase(fixture);
+        int auditCount = audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId()).size();
+        long receiptCount = receipts.count();
+        long activityCount = activities.count();
+        long snapshotCount = snapshots.count();
+        long reportCount = reports.count();
+        long holdCount = holds.count();
+        // 검토자와 승인자가 각각 두 번째 활성 고객사에도 활성 멤버십을 가지게 됩니다.
+        UUID reviewerExtra = extraTenantMembership(reviewerSubject);
+        UUID approverExtra = extraTenantMembership(approverSubject);
+        String caseId = fixture.caseId().toString();
+        String requestId = request.getId().toString();
+
+        List<MockHttpServletRequestBuilder> reviewerCalls = List.of(
+                get("/api/v1/cases").param("eventId", event.toString()),
+                get("/api/v1/cases/{id}", caseId),
+                get("/api/v1/cases/{id}/sources", caseId),
+                get("/api/v1/cases/{id}/activities", caseId),
+                withBody(post("/api/v1/cases"), new CaseDto.Create(event, Case.Type.FAN_REPORT, List.of(),
+                        List.of(), List.of(), "Blocked synthetic case", null, null)),
+                withBody(post("/api/v1/cases/{id}/transitions", caseId), new CaseDto.Transition(
+                        Case.Status.TRIAGED, before.getCaseVersion(), "Blocked transition",
+                        null, null, null, null, null, null)),
+                withBody(put("/api/v1/cases/{id}/assignee", caseId),
+                        new CaseDto.Assign(reviewer, before.getCaseVersion(), "Blocked assignment")),
+                get("/api/v1/cases/{id}/evidence-snapshots", caseId),
+                get("/api/v1/cases/{id}/evidence-snapshots/{snapshotId}", caseId, fixture.snapshotId()),
+                withBody(post("/api/v1/cases/{id}/evidence-snapshots", caseId),
+                        new CasePreparationDto.Capture(before.getCaseVersion(), "Blocked capture")),
+                get("/api/v1/cases/{id}/report-versions", caseId),
+                get("/api/v1/report-versions/{id}", fixture.reportVersionId()),
+                withBody(post("/api/v1/cases/{id}/report-versions", caseId), new CasePreparationDto.DraftInput(
+                        before.getCaseVersion(), fixture.snapshotId(), "Blocked report",
+                        "Blocked synthetic assessment that is long enough", "Blocked limitations",
+                        "Blocked conclusion", "Blocked draft")),
+                get("/api/v1/cases/{id}/evidence-verifications", caseId),
+                get("/api/v1/cases/{id}/integrity-evaluation", caseId)
+                        .param("reportVersionId", fixture.reportVersionId().toString()),
+                withBody(post("/api/v1/cases/{id}/evidence-verifications", caseId),
+                        new EvidenceIntegrityDto.VerifyInput(before.getCaseVersion(), fixture.snapshotId(),
+                                sources.findByCaseIdOrderByLinkedAtAscIdAsc(fixture.caseId()).getFirst().getId(),
+                                UUID.randomUUID(), "Blocked verification")),
+                withBody(post("/api/v1/cases/{id}/approval-requests", caseId), command(fixture)),
+                get("/api/v1/approval-requests/{id}", requestId),
+                withBody(post("/api/v1/approval-requests/{id}/withdraw", requestId),
+                        withdraw(fixture, "Blocked withdrawal")));
+        List<MockHttpServletRequestBuilder> approverCalls = List.of(
+                get("/api/v1/approval-requests/{id}/review-package", requestId),
+                post("/api/v1/approval-requests/{id}/review-package", requestId),
+                withBody(post("/api/v1/approval-requests/{id}/decision", requestId), decision(fixture,
+                        "x".repeat(43), ApprovalDecision.Outcome.APPROVE, "Blocked approval decision")));
+        for (var call : reviewerCalls) expectTenantSelectionRequired(call, reviewerSubject, fixture);
+        for (var call : approverCalls) expectTenantSelectionRequired(call, approverSubject, fixture);
+
+        // 차단은 저장된 승인 요청, 증거, 보고서를 바꾸거나 자동으로 무효화하지 않습니다.
+        ApprovalRequest unchanged = requests.findById(request.getId()).orElseThrow();
+        assertThat(unchanged.getStatus()).isEqualTo(ApprovalRequest.Status.PENDING);
+        assertThat(unchanged.getVersion()).isEqualTo(request.getVersion());
+        assertThat(currentCase(fixture).getCaseVersion()).isEqualTo(before.getCaseVersion());
+        assertThat(currentCase(fixture).getStatus()).isEqualTo(before.getStatus());
+        assertThat(decisions.findByApprovalRequestId(request.getId())).isEmpty();
+        assertThat(receipts.count()).isEqualTo(receiptCount);
+        assertThat(audits.findByApprovalRequestIdOrderByOccurredAtAscIdAsc(request.getId())).hasSize(auditCount);
+        assertThat(activities.count()).isEqualTo(activityCount);
+        assertThat(snapshots.count()).isEqualTo(snapshotCount);
+        assertThat(reports.count()).isEqualTo(reportCount);
+        assertThat(holds.count()).isEqualTo(holdCount);
+
+        // 추가 멤버십이 비활성화되면 단일 고객사 관리자로 돌아와 독립 승인 흐름이 그대로 동작합니다.
+        jdbc.update("update memberships set status = 'INACTIVE' where id in (?, ?)",
+                reviewerExtra.toString(), approverExtra.toString());
+        var receiptResult = mvc.perform(post("/api/v1/approval-requests/{id}/review-package", requestId)
+                        .header("Authorization", "Bearer " + approverSubject))
+                .andExpect(status().isCreated()).andReturn();
+        ApprovalReviewDto.Receipt receipt = json.readValue(
+                receiptResult.getResponse().getContentAsString(), ApprovalReviewDto.Receipt.class);
+        mvc.perform(withBody(post("/api/v1/approval-requests/{id}/decision", requestId), decision(fixture,
+                        receipt.reviewReceiptToken(), ApprovalDecision.Outcome.APPROVE, "Independent approval"))
+                        .header("Authorization", "Bearer " + approverSubject))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.outcome").value("APPROVE"));
+    }
+
+    private void expectTenantSelectionRequired(MockHttpServletRequestBuilder call, String subject,
+            Fixture fixture) throws Exception {
+        mvc.perform(call.header("Authorization", "Bearer " + subject))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                .andExpect(content().string(not(containsString(tenant.toString()))))
+                .andExpect(content().string(not(containsString(event.toString()))))
+                // instance에는 요청자가 보낸 경로만 담기며 저장된 증거 digest나 고객사, 공연 정보는 담지 않습니다.
+                .andExpect(content().string(not(containsString(fixture.manifestSha256()))))
+                .andExpect(content().string(not(containsString(fixture.reportContentSha256()))));
+    }
+
+    private MockHttpServletRequestBuilder withBody(MockHttpServletRequestBuilder builder, Object body)
+            throws Exception {
+        return builder.header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json").content(json.writeValueAsString(body));
+    }
+
+    private UUID extraTenantMembership(String subject) {
+        UUID extraTenant = UUID.randomUUID();
+        tenants.saveAndFlush(new Tenant(extraTenant, "Extra synthetic tenant", AccessRecordStatus.ACTIVE));
+        UUID membership = UUID.randomUUID();
+        memberships.saveAndFlush(new AdminMembershipEntity(membership, extraTenant, subject,
+                AccessRecordStatus.ACTIVE));
+        roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), membership, AdminRole.ANALYST));
+        return membership;
     }
 
     private ApprovalRequestDto.Submit command(Fixture fixture) {

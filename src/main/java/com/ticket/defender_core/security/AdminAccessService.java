@@ -49,6 +49,11 @@ public class AdminAccessService {
                 || !membership.eventIds().contains(storedScope.eventId())) {
             throw notFound();
         }
+        // 권한 없는 고객사와 공연은 위에서 404로 숨긴 뒤에만 확인하므로 409가 다른 고객사 자원의 존재를 드러내지 않습니다.
+        // 고객사 선택 정책(DEC-02) 확정 전에는 여러 고객사 소속 관리자의 업무를 임의 고객사로 처리하지 않습니다.
+        if (memberships.hasActiveMembershipsInMultipleTenants(subject)) {
+            throw new TenantSelectionRequiredException();
+        }
         if (allowedRoles == null || allowedRoles.isEmpty()) {
             throw new IllegalArgumentException("At least one role is required");
         }

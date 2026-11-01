@@ -292,6 +292,52 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(status().isConflict());
     }
 
+    @Test
+    void multiTenantAdminIsBlockedOnDirectListAndDetailWithoutLeakingScope() throws Exception {
+        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", "run-1", "cluster-1", 0.82, "2026-10-08T10:15:30");
+        // 같은 subject가 두 번째 활성 고객사에도 활성 멤버십을 가지면 DEC-02 확정 전까지 업무 API를 쓸 수 없습니다.
+        extraMembership("admin-a", AccessRecordStatus.ACTIVE, AccessRecordStatus.ACTIVE);
+
+        for (var request : List.of(list(EVENT_A), detail(EVENT_A, "run-1", "cluster-1"))) {
+            mvc.perform(request.header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                    .andExpect(jsonPath("$.items").doesNotExist())
+                    .andExpect(content().string(not(containsString(EVENT_A.toString()))))
+                    .andExpect(content().string(not(containsString(TENANT_A.toString()))))
+                    .andExpect(content().string(not(containsString(TENANT_B.toString()))))
+                    .andExpect(content().string(not(containsString("reservation-1"))));
+        }
+        // 권한 없는 다른 고객사 공연과 없는 공연은 409가 아니라 기존처럼 404로 숨깁니다.
+        mvc.perform(list(EVENT_B).header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isNotFound());
+        mvc.perform(list(UUID.randomUUID()).header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isNotFound());
+        mvc.perform(list(EVENT_A)).andExpect(status().isUnauthorized());
+        // 단일 고객사 관리자는 기존과 같이 조회합니다.
+        mvc.perform(list(EVENT_B).header(HttpHeaders.AUTHORIZATION, bearer("admin-b")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void inactiveTenantOrInactiveMembershipDoesNotCountAsAnotherTenant() throws Exception {
+        extraMembership("admin-a", AccessRecordStatus.INACTIVE, AccessRecordStatus.ACTIVE);
+        extraMembership("admin-a", AccessRecordStatus.ACTIVE, AccessRecordStatus.INACTIVE);
+
+        mvc.perform(list(EVENT_A).header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.event.id").value(EVENT_A.toString()));
+    }
+
+    private void extraMembership(String subject, AccessRecordStatus tenantStatus,
+            AccessRecordStatus membershipStatus) {
+        UUID tenant = UUID.randomUUID();
+        tenants.save(new Tenant(tenant, "추가 합성 고객사", tenantStatus));
+        UUID membership = UUID.randomUUID();
+        memberships.save(new AdminMembershipEntity(membership, tenant, subject, membershipStatus));
+        roles.save(new MembershipRole(UUID.randomUUID(), membership, AdminRole.ANALYST));
+    }
+
     private void saveEvidence(UUID tenantId, UUID eventId, String accountId, String reservationNo,
             String analysisRequestId, String clusterId, double riskScore, String analyzedAt) {
         audits.saveAndFlush(TicketAudit.createMacroAudit(new MacroAnalysisEvidence(

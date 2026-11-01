@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.InsufficientAuthenticationException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -54,7 +55,11 @@ public class CaseErrorHandler {
         return problem(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
     }
 
-    @ExceptionHandler(DataAccessException.class)
+    /**
+     * 트랜잭션 시작 단계의 DB 연결 획득 실패는 DataAccessException 계층이 아니므로 별도로 503에 연결합니다.
+     * 다른 TransactionException과 일반 RuntimeException은 의존 서비스 장애로 단정하지 않고 기본 처리에 맡깁니다.
+     */
+    @ExceptionHandler({DataAccessException.class, CannotCreateTransactionException.class})
     ResponseEntity<ProblemDetail> database(Exception ignored) {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
     }

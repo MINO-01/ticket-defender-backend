@@ -27,14 +27,20 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.CannotCreateTransactionException;
+import com.zaxxer.hikari.HikariDataSource;
 
+import javax.sql.DataSource;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -43,10 +49,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 격리 MySQL 8 스키마에서 관리자 접근 가능 공연 목록의 활성 상태 필터, 공연 권한 격리, 다중 tenant 차단, 정렬을 검증합니다.
+ * 격리 MySQL 8 스키마에서 관리자 접근 가능 공연 목록의 활성 상태 필터, 공연 권한 격리, 다중 tenant 차단, 정렬과
+ * DB 연결 실패 시 503 응답 및 복구 후 정상 조회를 검증합니다.
  * 운영 DB와 MinIO는 사용하지 않으며, 생성한 합성 행은 테스트 종료 시 삭제합니다.
  */
-@SpringBootTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
+// 연결 장애 검증이 30초 기본 대기 시간에 묶이지 않도록 연결 획득 대기 시간만 줄입니다.
+@SpringBootTest(properties = {"spring.jpa.hibernate.ddl-auto=validate",
+        "spring.datasource.hikari.connection-timeout=2000"})
 @AutoConfigureMockMvc
 @EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MYSQL_URL",
         matches = "jdbc:mysql://127\\.0\\.0\\.1:13307/td_issue32.*")
@@ -58,6 +67,7 @@ class AdminEventReadMySqlTest {
     @Autowired private MembershipRoleRepository roles;
     @Autowired private MembershipEventGrantRepository grants;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private DataSource dataSource;
 
     @MockitoBean(name = "adminJwtDecoder")
     private JwtDecoder adminDecoder;
@@ -163,6 +173,65 @@ class AdminEventReadMySqlTest {
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/admin/events")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer mysql-event-nobody-" + suffix))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(0));
+    }
+
+    @Test
+    void connectionFailureAtTransactionStartIsReported503AndRecoveryRestoresTheList() throws Exception {
+        UUID tenant = tenant(AccessRecordStatus.ACTIVE);
+        UUID eventId = event(tenant, UUID.randomUUID(), "장애 복구 공연", AccessRecordStatus.ACTIVE);
+        String analyst = "mysql-event-outage-" + suffix;
+        member(analyst, tenant, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventId));
+        String nobody = "mysql-event-outage-nobody-" + suffix;
+
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + nobody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(0));
+
+        HikariDataSource pool = dataSource.unwrap(HikariDataSource.class);
+        String password = pool.getPassword();
+        try {
+            // 실제 MySQL이 새 연결을 거부하도록 접속 정보를 바꾸고 기존 연결을 비워 트랜잭션 시작 단계에서 실패시킵니다.
+            pool.getHikariConfigMXBean().setPassword("synthetic-wrong-" + suffix);
+            pool.getHikariPoolMXBean().softEvictConnections();
+            for (String subject : List.of(analyst, nobody)) {
+                var result = mvc.perform(get("/api/v1/admin/events")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + subject))
+                        .andExpect(status().isServiceUnavailable())
+                        .andExpect(jsonPath("$.code").value("DEPENDENCY_UNAVAILABLE"))
+                        .andExpect(jsonPath("$.items").doesNotExist())
+                        .andExpect(content().string(not(containsString("jdbc"))))
+                        .andExpect(content().string(not(containsString("13307"))))
+                        .andExpect(content().string(not(containsString("Access denied"))))
+                        .andExpect(content().string(not(containsString(eventId.toString()))))
+                        .andReturn();
+                assertThat(result.getResolvedException()).isInstanceOf(CannotCreateTransactionException.class)
+                        .hasRootCauseInstanceOf(SQLException.class);
+            }
+        } finally {
+            pool.getHikariConfigMXBean().setPassword(password);
+        }
+
+        // 복구 직후에는 연결 풀의 재시도 대기 때문에 잠시 503이 이어질 수 있으나 200 빈 목록이나 500이 섞이면 안 됩니다.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        int recovered;
+        do {
+            var attempt = mvc.perform(get("/api/v1/admin/events")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst)).andReturn().getResponse();
+            recovered = attempt.getStatus();
+            if (recovered == 503) {
+                assertThat(attempt.getContentAsString()).contains("DEPENDENCY_UNAVAILABLE");
+                Thread.sleep(250);
+            }
+        } while (recovered == 503 && System.nanoTime() < deadline);
+        assertThat(recovered).isEqualTo(200);
+
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalItems").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(eventId.toString()));
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + nobody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalItems").value(0));
     }

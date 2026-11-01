@@ -22,6 +22,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 @ExtendWith(MockitoExtension.class)
@@ -65,6 +68,35 @@ class AdminAccessServiceTest {
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
         verifyNoInteractions(memberships);
+    }
+
+    @Test
+    void multiTenantSubjectIsBlockedAfterScopeIsVerifiedAndBeforeRoleCheck() {
+        authenticate();
+        given(events.findTenantId(EVENT)).willReturn(Optional.of(TENANT));
+        given(memberships.findActiveMembership("admin-1", TENANT)).willReturn(Optional.of(
+                new AdminMembership("admin-1", TENANT, Set.of(AdminRole.REVIEWER), Set.of(EVENT))));
+        given(memberships.hasActiveMembershipsInMultipleTenants("admin-1")).willReturn(true);
+        AdminAccessService access = new AdminAccessService(memberships, events);
+
+        assertThatThrownBy(() -> access.requireEventAccess(EVENT, Set.of(AdminRole.REVIEWER)))
+                .isInstanceOf(TenantSelectionRequiredException.class);
+        // 역할이 없어도 403보다 임시 차단 409가 먼저 적용되어 고객사 선택 전 업무를 막습니다.
+        assertThatThrownBy(() -> access.requireEventAccess(EVENT, Set.of(AdminRole.APPROVER)))
+                .isInstanceOf(TenantSelectionRequiredException.class);
+    }
+
+    @Test
+    void multiTenantCheckRunsOnlyAfterHiddenScopesAreRejectedAs404() {
+        authenticate();
+        given(events.findTenantId(EVENT)).willReturn(Optional.of(TENANT));
+        given(memberships.findActiveMembership("admin-1", TENANT)).willReturn(Optional.empty());
+        AdminAccessService access = new AdminAccessService(memberships, events);
+
+        assertThatThrownBy(() -> access.requireEventAccess(EVENT, Set.of(AdminRole.REVIEWER)))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+        verify(memberships, never()).hasActiveMembershipsInMultipleTenants(anyString());
     }
 
     @Test

@@ -50,7 +50,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * 격리 MySQL 8 스키마에서 관리자 접근 가능 공연 목록의 활성 상태 필터, 공연 권한 격리, 다중 tenant 차단, 정렬과
- * DB 연결 실패 시 503 응답 및 복구 후 정상 조회를 검증합니다.
+ * DB 연결 실패 시 503 응답 및 복구 후 정상 조회, 다중 고객사 관리자의 업무 API 임시 차단을 검증합니다.
  * 운영 DB와 MinIO는 사용하지 않으며, 생성한 합성 행은 테스트 종료 시 삭제합니다.
  */
 // 연결 장애 검증이 30초 기본 대기 시간에 묶이지 않도록 연결 획득 대기 시간만 줄입니다.
@@ -234,6 +234,59 @@ class AdminEventReadMySqlTest {
         mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + nobody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalItems").value(0));
+    }
+
+    @Test
+    void multiTenantAdminsAreBlockedOnBusinessApisWhileInactiveAndCaseVariantRowsAreExcluded() throws Exception {
+        UUID tenantA = tenant(AccessRecordStatus.ACTIVE);
+        UUID tenantB = tenant(AccessRecordStatus.ACTIVE);
+        UUID tenantOff = tenant(AccessRecordStatus.INACTIVE);
+        UUID eventA = event(tenantA, UUID.randomUUID(), "A 공연", AccessRecordStatus.ACTIVE);
+        UUID eventB = event(tenantB, UUID.randomUUID(), "B 공연", AccessRecordStatus.ACTIVE);
+        String multi = "mysql-guard-multi-" + suffix;
+        member(multi, tenantA, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventA));
+        member(multi, tenantB, AccessRecordStatus.ACTIVE, AdminRole.REVIEWER, List.of(eventB));
+        String excluded = "mysql-guard-excluded-" + suffix;
+        member(excluded, tenantA, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventA));
+        member(excluded, tenantB, AccessRecordStatus.INACTIVE, AdminRole.ANALYST, List.of(eventB));
+        member(excluded, tenantOff, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of());
+        // MySQL 기본 collation에서 대소문자만 다른 subject는 같은 관리자가 아니므로 고객사 수에 넣지 않습니다.
+        String exact = "mysql-guard-case-" + suffix;
+        member(exact, tenantA, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventA));
+        member(exact.toUpperCase(), tenantB, AccessRecordStatus.ACTIVE, AdminRole.ANALYST, List.of(eventB));
+
+        for (var request : List.of(
+                get("/api/v1/admin/events"),
+                get("/api/v1/admin/track1/clusters").param("eventId", eventA.toString()),
+                get("/api/v1/admin/track1/clusters/detail").param("eventId", eventA.toString())
+                        .param("analysisRequestId", "run-" + suffix).param("clusterId", "cluster-1"),
+                get("/api/v1/admin/fan-reports").param("eventId", eventB.toString()),
+                get("/api/v1/cases").param("eventId", eventB.toString()))) {
+            mvc.perform(request.header(HttpHeaders.AUTHORIZATION, "Bearer " + multi))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                    .andExpect(content().string(not(containsString(tenantA.toString()))))
+                    .andExpect(content().string(not(containsString(tenantB.toString()))))
+                    .andExpect(content().string(not(containsString("A 공연"))));
+        }
+        // 공연 권한이 없는 다른 고객사 공연과 없는 공연은 409 대신 기존 404로 숨깁니다.
+        mvc.perform(get("/api/v1/admin/track1/clusters").param("eventId", UUID.randomUUID().toString())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + multi))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/admin/track1/clusters").param("eventId", eventB.toString())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + excluded))
+                .andExpect(status().isNotFound());
+
+        for (String single : List.of(excluded, exact)) {
+            mvc.perform(get("/api/v1/admin/track1/clusters").param("eventId", eventA.toString())
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + single))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.event.id").value(eventA.toString()));
+            mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + single))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalItems").value(1))
+                    .andExpect(jsonPath("$.items[0].id").value(eventA.toString()));
+        }
     }
 
     private String tail() {

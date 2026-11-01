@@ -7,6 +7,7 @@ import com.ticket.defender_core.domain.MembershipRole;
 import com.ticket.defender_core.domain.Tenant;
 import com.ticket.defender_core.domain.TenantEvent;
 import com.ticket.defender_core.security.AdminAccessService;
+import com.ticket.defender_core.security.TenantSelectionRequiredException;
 import com.ticket.defender_core.security.AdminActor;
 import com.ticket.defender_core.security.AdminMembershipLookup;
 import com.ticket.defender_core.security.AdminResourceScope;
@@ -174,7 +175,7 @@ class JpaAdminAccessIntegrationTest {
     }
 
     @Test
-    void rolesAndEventGrantsStayWithinEachMembership() {
+    void rolesAndEventGrantsStayWithinEachMembershipWhileMultiTenantWorkIsBlocked() {
         UUID secondMembership = UUID.randomUUID();
         memberships.save(new AdminMembershipEntity(secondMembership, TENANT_B, "admin-1", AccessRecordStatus.ACTIVE));
         roles.save(new MembershipRole(UUID.randomUUID(), secondMembership, AdminRole.REVIEWER));
@@ -182,9 +183,36 @@ class JpaAdminAccessIntegrationTest {
         authenticate("admin-1");
         assertThat(membershipLookup.findActiveMembership("admin-1", TENANT_B))
                 .get().extracting(m -> m.roles()).isEqualTo(Set.of(AdminRole.REVIEWER));
-        assertThat(access.requireEventAccess(EVENT_B, Set.of(AdminRole.REVIEWER)).tenantId()).isEqualTo(TENANT_B);
-        assertThatThrownBy(() -> access.requireEventAccess(EVENT_B, Set.of(AdminRole.ANALYST)))
+        assertThat(membershipLookup.hasActiveMembershipsInMultipleTenants("admin-1")).isTrue();
+        // DEC-02 확정 전 임시 정책: 두 활성 고객사 소속이면 어느 고객사 공연이든 업무 접근을 409로 차단합니다.
+        assertThatThrownBy(() -> access.requireEventAccess(EVENT_B, Set.of(AdminRole.REVIEWER)))
+                .isInstanceOf(TenantSelectionRequiredException.class);
+        assertThatThrownBy(() -> access.requireEventAccess(EVENT_A, Set.of(AdminRole.ANALYST)))
+                .isInstanceOf(TenantSelectionRequiredException.class);
+
+        // 두 번째 멤버십이 비활성화되면 첫 고객사 역할만 그대로 적용되고 다른 고객사 역할은 섞이지 않습니다.
+        jdbc.update("update memberships set status = 'INACTIVE' where id = ?", secondMembership.toString());
+        entityManager.clear();
+        assertThat(membershipLookup.hasActiveMembershipsInMultipleTenants("admin-1")).isFalse();
+        assertThat(access.requireEventAccess(EVENT_A, Set.of(AdminRole.ANALYST)).tenantId()).isEqualTo(TENANT_A);
+        assertThatThrownBy(() -> access.requireEventAccess(EVENT_A, Set.of(AdminRole.REVIEWER)))
                 .isInstanceOf(AccessDeniedException.class);
+        assertNotFound(() -> access.requireEventAccess(EVENT_B, Set.of(AdminRole.REVIEWER)));
+    }
+
+    @Test
+    void inactiveTenantIsExcludedAndOtherTenantResourceStaysHiddenForMultiTenantSubject() {
+        UUID secondMembership = UUID.randomUUID();
+        memberships.save(new AdminMembershipEntity(secondMembership, TENANT_B, "admin-1", AccessRecordStatus.ACTIVE));
+        roles.save(new MembershipRole(UUID.randomUUID(), secondMembership, AdminRole.REVIEWER));
+        authenticate("admin-1");
+        // 공연 권한이 없는 다른 고객사 공연은 다중 고객사 여부를 확인하기 전에 404로 숨깁니다.
+        assertNotFound(() -> access.requireEventAccess(EVENT_B, Set.of(AdminRole.REVIEWER)));
+        assertNotFound(() -> access.requireEventAccess(UUID.randomUUID(), Set.of(AdminRole.ANALYST)));
+
+        jdbc.update("update tenants set status = 'INACTIVE' where id = ?", TENANT_B.toString());
+        entityManager.clear();
+        assertThat(membershipLookup.hasActiveMembershipsInMultipleTenants("admin-1")).isFalse();
         assertThat(access.requireEventAccess(EVENT_A, Set.of(AdminRole.ANALYST)).tenantId()).isEqualTo(TENANT_A);
     }
 

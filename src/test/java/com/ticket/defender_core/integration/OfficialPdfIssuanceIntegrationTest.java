@@ -26,6 +26,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.jdbc.core.JdbcTemplate;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -43,6 +47,9 @@ import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:official-pdf;MODE=MySQL;DB_CLOSE_DELAY=-1",
@@ -54,6 +61,7 @@ import static org.mockito.Mockito.*;
         "ticket-defender.official-pdf.enabled=true",
         "ticket-defender.official-pdf.operational-mode=SYNTHETIC_ISOLATED"
 })
+@AutoConfigureMockMvc
 class OfficialPdfIssuanceIntegrationTest {
     private static final String PROFILE = "W09_H2_LOCKED";
     private static final long MAX_BYTES = 20L * 1024 * 1024;
@@ -90,6 +98,9 @@ class OfficialPdfIssuanceIntegrationTest {
     @MockitoSpyBean private OfficialPdfIssuanceWriteService writer;
     @MockitoSpyBean private CaseActivityRepository activities;
     @Autowired private InternalIssuanceHoldWriteService holdWriter;
+    @Autowired private MockMvc mvc;
+    @Autowired private JdbcTemplate jdbc;
+    @MockitoBean(name = "adminJwtDecoder") private JwtDecoder adminDecoder;
 
     private final Map<UUID, Stored> stored = new ConcurrentHashMap<>();
     private UUID tenant;
@@ -102,7 +113,9 @@ class OfficialPdfIssuanceIntegrationTest {
 
     @BeforeEach
     void setup() {
-        reset(objectStorage, preservationStorage, officialStorage, renderer, writer, activities);
+        reset(objectStorage, preservationStorage, officialStorage, renderer, writer, activities, adminDecoder);
+        given(adminDecoder.decode(anyString())).willAnswer(call -> Jwt.withTokenValue(call.getArgument(0))
+                .header("alg", "RS256").subject(call.getArgument(0)).build());
         lease(Duration.ofMinutes(5));
         stored.clear();
         tenant = UUID.randomUUID();
@@ -406,6 +419,63 @@ class OfficialPdfIssuanceIntegrationTest {
         assertThat(artifacts.findByApprovalDecisionId(fixture.decisionId())).isEmpty();
         assertThat(reports.findById(fixture.reportVersionId()).orElseThrow().getStatus())
                 .isEqualTo(ReportVersion.Status.APPROVED.name());
+    }
+
+    @Test
+    void multiTenantAdminIsBlockedOnEveryOfficialPdfApiWithoutNewIssuanceOrDownload() throws Exception {
+        Fixture fixture = approvedFixture();
+        authenticate(adminSubject);
+        OfficialPdfDto.Issuance issued = official.request(fixture.decisionId(), UUID.randomUUID().toString());
+        SecurityContextHolder.clearContext();
+        long issuanceCount = issuances.count();
+        long artifactCount = artifacts.count();
+        long attemptCount = attempts.count();
+        int auditCount = audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(issued.officialPdfIssuanceId()).size();
+        clearInvocations(officialStorage, renderer);
+        // 발급 권한이 있는 TENANT_ADMIN이 두 번째 활성 고객사에도 활성 멤버십을 가지게 됩니다.
+        UUID otherTenant = UUID.randomUUID();
+        tenants.saveAndFlush(new Tenant(otherTenant, "Extra synthetic W09 tenant", AccessRecordStatus.ACTIVE));
+        UUID extra = UUID.randomUUID();
+        memberships.saveAndFlush(new AdminMembershipEntity(extra, otherTenant, adminSubject, AccessRecordStatus.ACTIVE));
+        roles.saveAndFlush(new MembershipRole(UUID.randomUUID(), extra, AdminRole.TENANT_ADMIN));
+
+        String issuanceId = issued.officialPdfIssuanceId().toString();
+        for (var call : List.of(
+                get("/api/v1/approval-decisions/{id}/official-pdf-eligibility", fixture.decisionId()),
+                post("/api/v1/approval-decisions/{id}/official-pdf-issuances", fixture.decisionId())
+                        .header("Idempotency-Key", UUID.randomUUID().toString()),
+                get("/api/v1/official-pdf-issuances/{id}", issuanceId),
+                post("/api/v1/official-pdf-issuances/{id}/retry", issuanceId)
+                        .header("Idempotency-Key", UUID.randomUUID().toString()),
+                get("/api/v1/report-versions/{id}/official-pdf-issuances", fixture.reportVersionId()),
+                get("/api/v1/official-pdf-issuances/{id}/download", issuanceId))) {
+            mvc.perform(call.header("Authorization", "Bearer " + adminSubject))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                    .andExpect(header().string("Content-Type", org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("application/pdf"))))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString(tenant.toString()))))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString(event.toString()))));
+        }
+
+        // 차단된 요청은 발급 기록, 산출물, 시도, 감사 기록을 만들지 않고 저장소의 PDF를 읽지 않습니다.
+        assertThat(issuances.count()).isEqualTo(issuanceCount);
+        assertThat(artifacts.count()).isEqualTo(artifactCount);
+        assertThat(attempts.count()).isEqualTo(attemptCount);
+        assertThat(audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(issued.officialPdfIssuanceId()))
+                .hasSize(auditCount);
+        verify(officialStorage, never()).putIfAbsent(any(UUID.class), anyString(), any(byte[].class));
+        verify(officialStorage, never()).download(any(UUID.class), anyString(), anyString(), anyString(), anyLong());
+        verify(renderer, never()).render(any());
+        assertThat(decisions.findById(fixture.decisionId())).isPresent();
+
+        // 추가 멤버십이 비활성화되면 기존 권한 검사에 따라 다운로드할 수 있습니다.
+        jdbc.update("update memberships set status = 'INACTIVE' where id = ?", extra.toString());
+        mvc.perform(get("/api/v1/official-pdf-issuances/{id}/download", issuanceId)
+                        .header("Authorization", "Bearer " + adminSubject))
+                .andExpect(status().isOk());
     }
 
     private Fixture approvedFixture() {

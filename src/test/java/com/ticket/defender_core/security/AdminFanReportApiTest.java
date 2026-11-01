@@ -314,6 +314,34 @@ class AdminFanReportApiTest {
                 .andExpect(jsonPath("$.items[0].fanReportId").value(low.toString()));
     }
 
+    @Test
+    void multiTenantAdminIsBlockedOnFanReportListAndDetailWithoutLeakingReports() throws Exception {
+        UUID reportId = report(TENANT_A, EVENT_A, UUID.randomUUID().toString(), RECEIVED, true);
+        // 같은 subject가 두 번째 활성 고객사에도 활성 멤버십을 가지게 됩니다.
+        UUID extraTenant = UUID.randomUUID();
+        tenants.save(new Tenant(extraTenant, "추가 합성 고객사", AccessRecordStatus.ACTIVE));
+        memberships.save(new AdminMembershipEntity(UUID.randomUUID(), extraTenant, "analyst-a",
+                AccessRecordStatus.ACTIVE));
+
+        for (var request : List.of(list(EVENT_A), detail(reportId))) {
+            mvc.perform(request.header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                    .andExpect(jsonPath("$.items").doesNotExist())
+                    .andExpect(jsonPath("$.evidence").doesNotExist())
+                    .andExpect(content().string(not(containsString(EVENT_A.toString()))))
+                    .andExpect(content().string(not(containsString(TENANT_A.toString()))));
+        }
+        // 다른 고객사 공연과 없는 제보는 기존처럼 404로 숨깁니다.
+        mvc.perform(list(EVENT_B).header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                .andExpect(status().isNotFound());
+        mvc.perform(detail(UUID.randomUUID()).header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                .andExpect(status().isNotFound());
+        // 단일 고객사 관리자는 기존처럼 조회합니다.
+        mvc.perform(list(EVENT_A).header(HttpHeaders.AUTHORIZATION, bearer("reviewer-a")))
+                .andExpect(status().isOk());
+    }
+
     private void member(UUID tenant, UUID event, String subject, AdminRole role) {
         UUID membership = UUID.randomUUID();
         memberships.save(new AdminMembershipEntity(membership, tenant, subject, AccessRecordStatus.ACTIVE));

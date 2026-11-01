@@ -1,0 +1,107 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender admin accessible events API
+  version: 1.0.0
+  description: >-
+    인증된 관리자가 Track 1, Track 2, Case 화면에서 사용할 공연을 고르기 위해 접근 가능한 공연 목록을 조회합니다.
+    조회 전용이며 분석, Case 생성, 승인, PDF 발급을 수행하지 않습니다. 목록에 공연이 보인다는 사실은 해당 공연의 개별 업무 API
+    실행 권한을 뜻하지 않으며, 각 업무 API가 저장된 tenant/event 범위와 역할을 다시 검사합니다.
+    tenant 선택 방식: 요청에서 tenantId, 역할, 공연 이름을 받지 않습니다. 서버가 JWT subject의 활성 멤버십 중 활성 고객사 소속을
+    조회합니다. 정확히 1개이면 그 고객사 범위만 반환하고, 2개 이상이면 고객사를 임의로 고르거나 합치지 않고 409
+    TENANT_SELECTION_REQUIRED로 차단합니다. 여러 고객사 소속 관리자의 고객사 선택 방식은 Specs 결정 로그 DEC-02(PENDING)
+    확정 전까지 미지원입니다. 전달된 tenantId 같은 알 수 없는 쿼리 값은 무시되며 권한 근거로 쓰이지 않습니다.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+paths:
+  /api/v1/admin/events:
+    get:
+      operationId: listAdminAccessibleEvents
+      description: >-
+        TENANT_ADMIN, ANALYST, REVIEWER, APPROVER 중 하나 이상의 역할이 있는 활성 멤버십만 조회할 수 있습니다.
+        활성 고객사, 활성 멤버십, 활성 공연이면서 해당 멤버십에 공연 권한이 부여된 공연만 반환합니다.
+        정렬은 name 오름차순, 같은 이름이면 id 오름차순입니다. 활성 멤버십이 없거나 권한이 부여된 활성 공연이 없으면 200 빈 목록입니다.
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: 조회 성공. items가 비어 있어도 정상 조회입니다. DB 장애는 200 빈 목록이 아니라 503입니다.
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPage' }
+              example:
+                items:
+                  - { id: 3f0b8f0e-6a51-4c8e-9d65-1f2f7f0d1a11, externalEventId: concert-2026-12-01, name: 합성 공연 A }
+                page: 0
+                pageSize: 50
+                totalItems: 1
+                hasNext: false
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: >-
+            이 엔드포인트는 404를 반환하지 않습니다. 권한 밖 공연과 다른 고객사 공연은 목록에서 제외됩니다.
+            개별 업무 API에서 권한 밖 eventId를 쓰면 해당 API가 404 RESOURCE_NOT_FOUND를 반환합니다.
+        '409': { $ref: '#/components/responses/TenantSelectionRequired' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Event:
+      type: object
+      description: tenantId, 고객사 이름, 공연 상태, 멤버십, 역할은 반환하지 않습니다.
+      required: [id, externalEventId, name]
+      properties:
+        id: { type: string, format: uuid, description: Track 1, Track 2, Case API의 eventId로 그대로 사용합니다. }
+        externalEventId: { type: string, description: 고객사가 등록한 외부 공연 참조입니다. 다른 고객사와 같을 수 있어 식별자로 쓰지 않습니다. }
+        name: { type: string }
+    EventPage:
+      type: object
+      required: [items, page, pageSize, totalItems, hasNext]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Event' } }
+        page: { type: integer, minimum: 0 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        totalItems: { type: integer, minimum: 0 }
+        hasNext: { type: boolean }
+    Problem:
+      type: object
+      required: [status, code, requestId]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, FORBIDDEN, TENANT_SELECTION_REQUIRED, DEPENDENCY_UNAVAILABLE] }
+        requestId: { type: string, format: uuid }
+  responses:
+    Invalid:
+      description: page 음수, pageSize 1 미만 또는 100 초과, 숫자가 아닌 값
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthenticated:
+      description: >-
+        관리자 JWT가 없거나 서명, issuer, audience, 만료 검증에 실패했습니다. 필터 단계 실패는 본문 없이 WWW-Authenticate 헤더를 반환합니다.
+    Forbidden:
+      description: 활성 고객사의 활성 멤버십은 있으나 관리자 역할이 하나도 없습니다. code는 FORBIDDEN입니다.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TenantSelectionRequired:
+      description: >-
+        같은 subject가 2개 이상의 활성 고객사에 활성 멤버십을 가집니다. 고객사 이름, ID, 공연 정보는 응답에 포함하지 않습니다.
+        고객사 선택 정책(DEC-02)이 확정될 때까지 해당 관리자는 이 API를 사용할 수 없습니다.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: 데이터베이스 조회 실패입니다. 빈 목록으로 대체하지 않습니다. code는 DEPENDENCY_UNAVAILABLE입니다.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

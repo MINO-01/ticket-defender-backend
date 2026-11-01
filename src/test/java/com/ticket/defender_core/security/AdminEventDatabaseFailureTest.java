@@ -13,12 +13,15 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.CannotCreateTransactionException;
 
 import com.ticket.defender_core.adapter.out.persistence.AdminMembershipRepository;
+import org.hibernate.exception.JDBCConnectionException;
 
+import java.sql.SQLException;
 import java.sql.SQLTransientConnectionException;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -64,17 +67,67 @@ class AdminEventDatabaseFailureTest {
     @Test
     void transactionStartFailureIsReportedAs503WithoutConnectionDetails() throws Exception {
         authenticate();
+        // 실제 MySQL 장애에서 관찰한 원인 체인과 같은 형태입니다.
         given(memberships.findActiveBySubject(anyString(), any())).willThrow(new CannotCreateTransactionException(
                 "Could not open JPA EntityManager for transaction",
-                new SQLTransientConnectionException("jdbc:mysql://10.0.0.9:3306/secret_db user=root")));
+                new JDBCConnectionException("Unable to acquire JDBC Connection",
+                        new SQLTransientConnectionException("jdbc:mysql://10.0.0.9:3306/secret_db user=root"))));
 
         mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer synthetic"))
                 .andExpect(status().isServiceUnavailable())
+                // ProblemDetail 기본 type(about:blank)은 직렬화에서 생략되며 본문은 아래 5개 필드로 고정됩니다.
+                .andExpect(jsonPath("$.*", hasSize(5)))
+                .andExpect(jsonPath("$.type").doesNotExist())
+                .andExpect(jsonPath("$.instance").value("/api/v1/admin/events"))
+                .andExpect(jsonPath("$.title").value("Service Unavailable"))
+                .andExpect(jsonPath("$.status").value(503))
                 .andExpect(jsonPath("$.code").value("DEPENDENCY_UNAVAILABLE"))
+                .andExpect(jsonPath("$.requestId").isNotEmpty())
+                .andExpect(jsonPath("$.detail").doesNotExist())
                 .andExpect(jsonPath("$.items").doesNotExist())
                 .andExpect(content().string(not(containsString("10.0.0.9"))))
                 .andExpect(content().string(not(containsString("secret_db"))))
                 .andExpect(content().string(not(containsString("JPA EntityManager"))));
+    }
+
+    @Test
+    void driverConnectionFailureSqlStateAtTransactionStartIsReportedAs503() throws Exception {
+        authenticate();
+        // SQLState 08 계열은 SQL 표준의 연결 예외 분류입니다.
+        given(memberships.findActiveBySubject(anyString(), any())).willThrow(new CannotCreateTransactionException(
+                "Could not open JDBC Connection for transaction",
+                new SQLException("Communications link failure", "08S01")));
+
+        mvc.perform(get("/api/v1/admin/events").header(HttpHeaders.AUTHORIZATION, "Bearer synthetic"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("DEPENDENCY_UNAVAILABLE"))
+                .andExpect(content().string(not(containsString("Communications link failure"))));
+    }
+
+    @Test
+    void transactionStartFailureUnrelatedToConnectionsKeepsTheServerErrorPath() {
+        authenticate();
+        given(memberships.findActiveBySubject(anyString(), any())).willThrow(new CannotCreateTransactionException(
+                "Could not open JPA EntityManager for transaction",
+                new IllegalStateException("synthetic JPA initialization defect")));
+
+        // 연결 획득 실패가 아닌 트랜잭션 시작 오류는 503으로 바꾸지 않고 기본 500 처리로 넘깁니다.
+        assertThatThrownBy(() -> mvc.perform(get("/api/v1/admin/events")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer synthetic")))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void nonConnectionSqlFailureAtTransactionStartKeepsTheServerErrorPath() {
+        authenticate();
+        given(memberships.findActiveBySubject(anyString(), any())).willThrow(new CannotCreateTransactionException(
+                "Could not open JDBC Connection for transaction",
+                new SQLException("synthetic statement defect", "42000")));
+
+        // SQLException이라는 이유만으로 503이 되지 않아야 합니다.
+        assertThatThrownBy(() -> mvc.perform(get("/api/v1/admin/events")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer synthetic")))
+                .hasRootCauseInstanceOf(SQLException.class);
     }
 
     @Test

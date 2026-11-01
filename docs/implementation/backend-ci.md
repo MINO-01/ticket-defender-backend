@@ -18,3 +18,7 @@
 [MinIO Community Edition](https://github.com/minio/minio/blob/master/README.md)은 현재 소스 배포 방식이며 AGPLv3 적용 여부를 운영 도입 전에 검토해야 한다. 공식 `minio/minio:RELEASE.2025-04-22T22-12-26Z` 태그는 로컬 레지스트리 조회에서 접근이 거부됐다. 따라서 [고정 소스 빌드](../../.github/docker/minio-ci.Dockerfile)는 MinIO 서버 커밋 `7aac2a2c5b7c`, MinIO Client 릴리스 `RELEASE.2025-08-13T08-35-41Z`, Go 및 Alpine 이미지 digest를 고정한다. 빌드 시간과 네트워크 의존성이 있으며, 고정 버전은 유지보수 과정에서 갱신해야 한다. [초기화 스크립트](../../.github/scripts/start_minio_ci.sh)는 이번 작업 전용 컨테이너, 비공개 버킷, `fan-reports/*` 쓰기·삭제 및 버킷 확인 권한만 가진 임시 사용자를 생성한다. 컨테이너는 작업 종료 시 제거되며 공유 볼륨을 만들지 않는다.
 
 로컬 actionlint와 격리 DB·MinIO 테스트는 GitHub 원격 Runner 통과를 대신하지 않는다. 기존 PR HEAD `43950b6`의 GitHub Actions 실행은 기본 빌드 159통과·18 Skip, MySQL 작업 8통과·0 Skip을 기록했다. 새 `minio-integration` 작업은 해당 원격 실행에 포함되지 않았으므로 Push 후 GitHub Actions 실행과 필수 테스트 6건의 0 Skip 결과를 확인해야 한다. 외부 공개 전에는 서버 측 암호화, 버전·변경 방지 정책, 보유기간 만료 후 실제 삭제, 프록시 업로드 제한과 분산 요청 제한, 개인정보 안내 및 운영 승인 절차를 별도로 확인해야 한다.
+
+## 관리자 팬 제보 조회 MySQL 검증
+
+`mysql8-integration` 작업은 Track 2 Listing Context 마이그레이션 이후 `AdminFanReportReadMySqlTest` 2건을 실행하고 `check_junit_results.py admin-fan-report-read`로 2건 통과와 0 Skip을 확인한다. 이 테스트는 JPA `ddl-auto=validate` 스키마에서 고객사와 공연 범위 격리, DATETIME(6) 동일 시각 제보의 ID 보조 정렬, 페이지별 증거 수 집계, 상세 증거 소속과 저장소 키 비노출을 확인하며, 생성한 합성 행은 테스트 종료 시 삭제한다. 기본 빌드에서는 같은 2건이 예상 Skip 목록에 포함된다.

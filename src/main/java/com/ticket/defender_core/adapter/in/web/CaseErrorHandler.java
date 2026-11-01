@@ -20,7 +20,8 @@ import java.util.UUID;
 
 @RestControllerAdvice(assignableTypes = {CaseController.class, CasePreparationController.class,
         ReportDraftController.class, EvidenceIntegrityController.class, ApprovalRequestController.class,
-        OfficialPdfIssuanceController.class, ListingContextAnalysisController.class})
+        OfficialPdfIssuanceController.class, ListingContextAnalysisController.class,
+        AdminFanReportController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)
     ResponseEntity<ProblemDetail> api(CaseApiException error) {

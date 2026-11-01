@@ -1,0 +1,179 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender admin fan report read API
+  version: 1.0.0
+  description: >-
+    관리자가 권한 있는 공연의 팬 제보 목록과 상세를 조회합니다. 조회 전용이며 분석 실행, 예매 후보 확정, Case 생성, 제재, 승인,
+    PDF 발급을 수행하지 않습니다. 접수 상태는 저장된 FanReport.intakeStatus 값 그대로이며 분석 결과나 부정 거래 판정이 아닙니다.
+    응답에는 객체 저장 키, 객체 버전, 접수번호, 조회 비밀 digest, 멱등성 digest, 요청 digest, tenantId를 포함하지 않습니다.
+    원본 이미지 다운로드와 미리보기 URL은 별도 보안 계약 전까지 제공하지 않습니다.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+paths:
+  /api/v1/admin/fan-reports:
+    get:
+      operationId: listAdminFanReports
+      description: >-
+        ANALYST 또는 REVIEWER. 서버가 eventId의 실제 tenant를 조회하고, JWT subject의 활성 멤버십과 공연 권한을 확인합니다.
+        클라이언트가 보낸 tenant나 역할 이름은 받지 않습니다. 정렬은 receivedAt 내림차순, 같은 시각이면 fanReportId 내림차순으로 고정됩니다.
+        권한이 있는 공연에 제보가 없으면 빈 items와 totalItems 0을 반환합니다.
+      parameters:
+        - { name: eventId, in: query, required: true, schema: { type: string, format: uuid } }
+        - name: intakeStatus
+          in: query
+          required: false
+          description: 지정하면 해당 저장 상태의 제보만 반환합니다.
+          schema: { $ref: '#/components/schemas/IntakeStatus' }
+        - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: 조회 성공
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FanReportPage' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/admin/fan-reports/{fanReportId}:
+    get:
+      operationId: getAdminFanReport
+      description: >-
+        ANALYST 또는 REVIEWER. 저장된 FanReport의 tenantId와 eventId로 권한을 확인합니다. 다른 고객사, 권한 없는 공연,
+        존재하지 않는 제보는 모두 같은 404로 응답합니다. evidence[].evidenceId는 기존
+        GET /api/v1/admin/fan-reports/{fanReportId}/evidence/{evidenceId}/listing-analyses 분석 이력 API에 그대로 사용합니다.
+      parameters:
+        - { name: fanReportId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 조회 성공
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FanReportDetail' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    IntakeStatus:
+      type: string
+      description: >-
+        저장된 접수 상태입니다. PENDING_STORAGE는 증거 저장 미확정, STORAGE_FAILED는 저장 실패입니다.
+        ANALYSIS_PENDING, ANALYSIS_FAILED, UNVERIFIABLE은 도메인에 정의된 값이며 현재 접수 흐름은 이 값을 기록하지 않습니다.
+        어떤 값도 부정 거래 확정이나 분석 완료를 뜻하지 않습니다.
+      enum: [PENDING_STORAGE, RECEIVED, STORAGE_FAILED, ANALYSIS_PENDING, ANALYSIS_FAILED, UNVERIFIABLE]
+    ReportType:
+      type: string
+      enum: [PREMIUM_RESALE, AUTOMATION_OFFER, FAKE_TICKET, OTHER]
+    Event:
+      type: object
+      required: [id, externalEventId, name]
+      properties:
+        id: { type: string, format: uuid }
+        externalEventId: { type: string }
+        name: { type: string }
+    FanReportSummary:
+      type: object
+      required: [fanReportId, reportType, intakeStatus, receivedAt, submittedPerformanceAt, evidenceCount, storedEvidenceCount]
+      properties:
+        fanReportId: { type: string, format: uuid }
+        reportType: { $ref: '#/components/schemas/ReportType' }
+        intakeStatus: { $ref: '#/components/schemas/IntakeStatus' }
+        receivedAt: { type: string, format: date-time, description: UTC }
+        submittedPerformanceAt: { type: string, format: date-time, description: 팬이 입력한 공연 일시이며 검증된 회차가 아닙니다. }
+        evidenceCount: { type: integer, minimum: 0 }
+        storedEvidenceCount: { type: integer, minimum: 0, description: storageStatus가 STORED인 증거 수 }
+    FanReportPage:
+      type: object
+      required: [event, items, page, pageSize, totalItems, hasNext]
+      properties:
+        event: { $ref: '#/components/schemas/Event' }
+        items: { type: array, items: { $ref: '#/components/schemas/FanReportSummary' } }
+        page: { type: integer, minimum: 0 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        totalItems: { type: integer, minimum: 0 }
+        hasNext: { type: boolean }
+    Evidence:
+      type: object
+      description: 증거 메타데이터만 반환합니다. 객체 키, 객체 버전, 원본 바이트, 미리보기 URL은 없습니다.
+      required: [evidenceId, mediaType, byteSize, storageStatus, originalStored, createdAt]
+      properties:
+        evidenceId: { type: string, format: uuid }
+        mediaType: { type: string }
+        byteSize: { type: integer, minimum: 0, description: 접수 시 검증한 크기 }
+        storageStatus: { type: string, enum: [PENDING, STORED, FAILED] }
+        originalStored:
+          type: boolean
+          description: >-
+            storageStatus가 STORED이고 제보가 PENDING_STORAGE 또는 STORAGE_FAILED가 아닐 때만 true입니다.
+            false인 증거는 정상 원본으로 취급하지 않습니다.
+        sha256:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+          description: originalStored가 true일 때만 반환되는 접수 시 원본 SHA-256입니다.
+        createdAt: { type: string, format: date-time, description: UTC }
+    FanReportDetail:
+      type: object
+      required: [fanReportId, event, reportType, intakeStatus, receivedAt, retentionUntil, submittedPerformanceAt, description, evidence]
+      properties:
+        fanReportId: { type: string, format: uuid }
+        event: { $ref: '#/components/schemas/Event' }
+        reportType: { $ref: '#/components/schemas/ReportType' }
+        intakeStatus: { $ref: '#/components/schemas/IntakeStatus' }
+        receivedAt: { type: string, format: date-time, description: UTC }
+        retentionUntil: { type: string, format: date-time, description: UTC 보존 기한 }
+        submittedPerformanceAt: { type: string, format: date-time, description: 팬이 입력한 공연 일시이며 검증된 회차가 아닙니다. }
+        seatArea: { type: [string, 'null'] }
+        description: { type: string, description: 팬 제출 원문입니다. 화면에서는 텍스트로만 표시합니다. }
+        listingUrl:
+          type: [string, 'null']
+          description: >-
+            팬이 입력한 문자열이며 서버가 접속, 다운로드, 검증하지 않았습니다. 클라이언트는 자동 요청, 미리보기, 임베드를 하지 않아야 합니다.
+        platform: { type: [string, 'null'] }
+        seller: { type: [string, 'null'], description: 팬이 입력한 판매자 표시값이며 확인된 신원이 아닙니다. }
+        askingPrice: { type: [number, 'null'] }
+        evidence: { type: array, items: { $ref: '#/components/schemas/Evidence' } }
+    Problem:
+      type: object
+      required: [status, code, requestId]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, FORBIDDEN, RESOURCE_NOT_FOUND, DEPENDENCY_UNAVAILABLE] }
+        requestId: { type: string, format: uuid }
+  responses:
+    Invalid:
+      description: eventId 누락, UUID 형식 오류, page 음수, pageSize 1 미만 또는 100 초과, 알 수 없는 intakeStatus
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthenticated:
+      description: 관리자 JWT가 없거나 서명, issuer, audience, 만료 검증에 실패했습니다. 필터 단계 실패는 본문 없이 WWW-Authenticate 헤더를 반환하고, subject 없는 토큰은 code UNAUTHENTICATED를 반환합니다.
+    Forbidden:
+      description: 같은 고객사의 공연 권한은 있으나 ANALYST 또는 REVIEWER 역할이 없습니다. code는 FORBIDDEN입니다.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: 존재하지 않거나 비활성인 공연과 제보, 다른 고객사 자원, 멤버십이나 공연 권한이 없는 자원입니다. code는 RESOURCE_NOT_FOUND입니다.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: 데이터베이스 조회 실패입니다. 빈 목록으로 대체하지 않습니다. code는 DEPENDENCY_UNAVAILABLE입니다.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

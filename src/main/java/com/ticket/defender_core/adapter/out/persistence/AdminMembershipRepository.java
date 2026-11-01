@@ -15,7 +15,7 @@ public interface AdminMembershipRepository extends JpaRepository<AdminMembership
 
     /**
      * 검증된 JWT subject의 활성 멤버십 중 활성 고객사 소속만 조회합니다.
-     * 호출자는 고객사 수 판단에 필요한 만큼만 limit으로 제한합니다.
+     * MySQL 기본 collation에서는 대소문자만 다른 subject도 일치하므로 호출자는 정확히 같은 subject만 다시 걸러야 합니다.
      */
     @Query("""
             select m from AdminMembershipEntity m

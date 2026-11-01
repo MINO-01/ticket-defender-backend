@@ -9,6 +9,7 @@ import com.ticket.defender_core.security.AdminAccessService;
 import com.ticket.defender_core.security.AdminRole;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -29,8 +30,6 @@ public class AdminEventQueryService {
     private static final Set<AdminRole> LIST_ROLES = Set.of(
             AdminRole.TENANT_ADMIN, AdminRole.ANALYST, AdminRole.REVIEWER, AdminRole.APPROVER);
     private static final int MAX_PAGE_SIZE = 100;
-    /** 고객사가 하나인지 여러 개인지만 판단하면 되므로 2건까지만 읽습니다. */
-    private static final PageRequest TENANT_PROBE = PageRequest.of(0, 2);
 
     private final AdminAccessService access;
     private final AdminMembershipRepository memberships;
@@ -42,7 +41,10 @@ public class AdminEventQueryService {
         if (page < 0 || pageSize < 1 || pageSize > MAX_PAGE_SIZE || (long) page * pageSize > Integer.MAX_VALUE)
             throw new CaseApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
         String subject = access.authenticatedSubject();
-        List<AdminMembershipEntity> active = memberships.findActiveBySubject(subject, TENANT_PROBE);
+        // 업무 API의 다중 고객사 판단(AdminMembershipLookup)과 같게 정확히 같은 subject의 활성 멤버십만 셉니다.
+        // MySQL 기본 collation은 대소문자를 구분하지 않으므로 건수 제한 없이 읽은 뒤 걸러냅니다.
+        List<AdminMembershipEntity> active = memberships.findActiveBySubject(subject, Pageable.unpaged()).stream()
+                .filter(membership -> subject.equals(membership.getSubject())).toList();
         if (active.isEmpty()) return new AdminEventDto.Page(List.of(), page, pageSize, 0, false);
         // 고객사 선택 정책(DEC-02)이 확정되기 전에는 여러 고객사 범위를 합치거나 임의로 고르지 않습니다.
         if (active.size() > 1) throw new CaseApiException(HttpStatus.CONFLICT, "TENANT_SELECTION_REQUIRED");

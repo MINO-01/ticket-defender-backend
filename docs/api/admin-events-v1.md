@@ -53,6 +53,16 @@ TENANT_ADMIN, ANALYST, REVIEWER, APPROVER 중 하나 이상이면 목록을 볼 
 | 409 | `TENANT_SELECTION_REQUIRED` |
 | 503 | `DEPENDENCY_UNAVAILABLE` |
 
+## DB 장애 처리 (Issue #59)
+
+- 조회 중 `DataAccessException`은 503 `DEPENDENCY_UNAVAILABLE`로 응답한다. 빈 목록이나 0건으로 대체하지 않는다.
+- 트랜잭션 시작 단계의 `CannotCreateTransactionException`은 원인 체인에 DB 연결 획득 실패가 있을 때만 503으로 응답한다. 판단 기준은 JDBC 표준 연결 예외 타입(`SQLTransientConnectionException`, `SQLNonTransientConnectionException`) 또는 SQL 표준 연결 예외 분류인 SQLState `08` 계열이다. 예외 메시지 문자열은 비교하지 않는다.
+- 연결과 무관한 원인(예: `IllegalStateException`, SQLState `08`이 아닌 `SQLException`)으로 트랜잭션 시작이 실패하면 503으로 바꾸지 않고 다시 던져 기본 500 처리에 맡긴다. 그 밖의 `TransactionException`과 일반 서버 결함도 기본 500 처리를 유지한다.
+- 503 본문은 `application/problem+json` ProblemDetail이며 `title`(`Service Unavailable`), `status`(503), `instance`(요청 경로), `code`, `requestId`를 담는다. `type`은 기본값 `about:blank`라 직렬화에서 생략되고 `detail`은 넣지 않는다. DB 주소, 포트, 계정, 드라이버 오류 메시지와 내부 예외 메시지는 노출하지 않는다.
+- 같은 `CaseErrorHandler`를 쓰는 Case, 승인, 공식 PDF, Track 2 관리자 API도 같은 기준을 적용한다. Track 1 군집 API는 이 처리기 범위가 아니므로 이번 변경으로 오류 계약이 바뀌지 않는다.
+- 격리 MySQL 8 검증: 연결 풀 접속 정보를 바꿔 실제 MySQL이 새 연결을 거부하게 하면 `CannotCreateTransactionException`(원인 `JDBCConnectionException`, `SQLTransientConnectionException`, MySQL `Access denied`)이 발생하고 수정 전에는 500이었다. 수정 후 503을 반환하며, 접속 정보 복구 후 연결 풀 재시도 대기를 거쳐 같은 요청이 200 정상 목록을 반환한다. 멤버십이 없는 계정은 장애 중 503, 정상 시 200 빈 목록으로 구분된다.
+- 실제 Keycloak 토큰을 쓰는 HTTP E2E 재검증은 Frontend E2E 환경에서 별도로 기록해야 한다.
+
 ## 인덱스 검토
 
 멤버십 조회는 `subject` 조건이며 기존 유니크 키 `(tenant_id, subject)`의 선두 열이 아니어서 멤버십 테이블을 스캔한다. 멤버십 행 수는 관리자 수에 비례해 작고 결과는 최대 2건만 읽으므로 이번에는 migration을 추가하지 않았다. 관리자 규모가 커지면 `subject` 단독 인덱스 추가를 검토한다. 공연 조회는 `idx_events_tenant_id(tenant_id, id)`와 `uk_membership_events_member_event(membership_id, event_id)`를 사용한다.

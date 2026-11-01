@@ -74,9 +74,10 @@ components:
       type: object
       required: [status, code, requestId]
       properties:
-        type: { type: string }
+        type: { type: string, description: 생략되면 about:blank입니다. }
         title: { type: string }
         status: { type: integer }
+        instance: { type: string, description: 요청 경로입니다. }
         code: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, FORBIDDEN, TENANT_SELECTION_REQUIRED, DEPENDENCY_UNAVAILABLE] }
         requestId: { type: string, format: uuid }
   responses:
@@ -101,7 +102,9 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Unavailable:
-      description: 데이터베이스 조회 실패입니다. 빈 목록으로 대체하지 않습니다. code는 DEPENDENCY_UNAVAILABLE입니다.
+      description: >-
+        데이터베이스 조회 실패 또는 트랜잭션 시작 단계의 DB 연결 획득 실패입니다. 빈 목록으로 대체하지 않습니다. code는 DEPENDENCY_UNAVAILABLE입니다.
+        DB 접속 정보와 내부 예외 메시지는 포함하지 않습니다.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

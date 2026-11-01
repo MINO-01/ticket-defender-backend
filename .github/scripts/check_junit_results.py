@@ -135,7 +135,7 @@ CORE_SKIPS = {
         2, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
     ),
     "com.ticket.defender_core.integration.AdminEventReadMySqlTest": (
-        2, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
+        3, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
     ),
 }
 
@@ -246,7 +246,7 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.AdminFanReportReadMySqlTest", 2
     ),
     "admin-event-read": (
-        "com.ticket.defender_core.integration.AdminEventReadMySqlTest", 2
+        "com.ticket.defender_core.integration.AdminEventReadMySqlTest", 3
     ),
     "track1-concurrency": (
         "com.ticket.defender_core.integration.Track1ConcurrentMySqlTest", 1

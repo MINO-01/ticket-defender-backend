@@ -22,7 +22,7 @@ public class AdminAccessService {
 
     /** For list/query filters: derive the tenant from the server's event lookup. */
     public AdminActor requireEventAccess(UUID eventId, Set<AdminRole> allowedRoles) {
-        authenticatedSubject();
+        verifiedSubject();
         UUID tenantId = events.findTenantId(eventId).orElseThrow(AdminAccessService::notFound);
         return requireResourceAccess(new AdminResourceScope(tenantId, eventId), null, allowedRoles);
     }
@@ -33,7 +33,7 @@ public class AdminAccessService {
      */
     public AdminActor requireResourceAccess(AdminResourceScope storedScope,
             AdminResourceScope requestedScope, Set<AdminRole> allowedRoles) {
-        String subject = authenticatedSubject();
+        String subject = verifiedSubject();
         if (storedScope == null || storedScope.tenantId() == null || storedScope.eventId() == null
                 || (requestedScope != null && !storedScope.equals(requestedScope))) {
             throw notFound();
@@ -58,7 +58,12 @@ public class AdminAccessService {
         return new AdminActor(subject, actualTenant, storedScope.eventId());
     }
 
-    private static String authenticatedSubject() {
+    /** 서명과 issuer, audience, 만료 검증을 통과한 관리자 JWT의 subject만 반환합니다. */
+    public String authenticatedSubject() {
+        return verifiedSubject();
+    }
+
+    private static String verifiedSubject() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (!(authentication instanceof JwtAuthenticationToken jwtToken) || !authentication.isAuthenticated()
                 || jwtToken.getToken().getSubject() == null || jwtToken.getToken().getSubject().isBlank()) {

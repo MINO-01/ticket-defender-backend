@@ -116,7 +116,8 @@ try {
                 @('*CaseW08aMigrationMySqlTest', 'case-w08a-migration'),
                 @('*CaseW08bMigrationMySqlTest', 'case-w08b-migration'),
                 @('*CaseW09MigrationMySqlTest', 'case-w09-migration'),
-                @('*Track2ListingAnalysisMigrationMySqlTest', 'track2-listing-migration'))) {
+                @('*Track2ListingAnalysisMigrationMySqlTest', 'track2-listing-migration'),
+                @('*AdminEvidenceContentMigrationMySqlTest', 'admin-evidence-content-migration'))) {
             Invoke-RequiredSuite $suite[0] $suite[1]
         }
     }

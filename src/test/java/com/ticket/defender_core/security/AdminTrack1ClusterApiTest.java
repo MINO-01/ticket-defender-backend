@@ -73,6 +73,10 @@ class AdminTrack1ClusterApiTest {
     private static final UUID EVENT_B = UUID.fromString("44444444-4444-4444-8444-444444444444");
     private static final UUID EVENT_A_OTHER = UUID.fromString("55555555-5555-4555-8555-555555555555");
     private static final UUID MEMBERSHIP_A = UUID.fromString("66666666-6666-4666-8666-666666666666");
+    // 정상 분석 결과의 analysisRequestId는 Spring이 만든 표준 소문자 UUID입니다.
+    private static final String RUN_1 = "7f3c2a10-5b4e-4d6f-9a81-2c3d4e5f6071";
+    private static final String RUN_2 = "8a4d3b21-6c5f-4e70-8b92-3d4e5f607182";
+    private static final String RUN_3 = "9b5e4c32-7d60-4f81-9ca3-4e5f60718293";
     private static KeyPair keyPair;
 
     @Autowired private MockMvc mvc;
@@ -121,8 +125,8 @@ class AdminTrack1ClusterApiTest {
 
     @Test
     void authorizedAdminReadsOnlyStoredMembersAndMetadata() throws Exception {
-        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", "run-1", "cluster-1", 0.82, "2026-10-08T10:15:30");
-        saveEvidence(TENANT_A, EVENT_A, "account-2", "reservation-2", "run-1", "cluster-1", 0.82, "2026-10-08T10:15:30");
+        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", RUN_1, "cluster-1", 0.82, "2026-10-08T10:15:30");
+        saveEvidence(TENANT_A, EVENT_A, "account-2", "reservation-2", RUN_1, "cluster-1", 0.82, "2026-10-08T10:15:30");
 
         mvc.perform(list(EVENT_A).header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
@@ -131,12 +135,12 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(jsonPath("$.event.name").value("공연 A"))
                 .andExpect(jsonPath("$.coverage").value("STORED_EVIDENCE_ONLY"))
                 .andExpect(jsonPath("$.totalItems").value(1))
-                .andExpect(jsonPath("$.items[0].analysisRequestId").value("run-1"))
+                .andExpect(jsonPath("$.items[0].analysisRequestId").value(RUN_1))
                 .andExpect(jsonPath("$.items[0].riskScore").value(0.82))
                 .andExpect(jsonPath("$.items[0].analysisAlgorithm").value("LOUVAIN"))
                 .andExpect(jsonPath("$.items[0].analysisAlgorithmVersion").value("1.0.0"))
                 .andExpect(jsonPath("$.items[0].storedMemberCount").value(2));
-        mvc.perform(detail(EVENT_A, "run-1", "cluster-1").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+        mvc.perform(detail(EVENT_A, RUN_1, "cluster-1").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cluster.analyzedAt").value("2026-10-08T10:15:30Z"))
                 .andExpect(jsonPath("$.members.length()").value(2))
@@ -177,7 +181,7 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(status().isNotFound());
         mvc.perform(list(EVENT_A_OTHER).header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isNotFound());
-        mvc.perform(detail(EVENT_B, "run-1", "cluster-1")
+        mvc.perform(detail(EVENT_B, RUN_1, "cluster-1")
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isNotFound());
     }
@@ -185,17 +189,17 @@ class AdminTrack1ClusterApiTest {
     @Test
     void sameRunAndClusterStaySeparateAcrossEventsInOneTenant() throws Exception {
         eventGrants.save(new MembershipEventGrant(UUID.randomUUID(), MEMBERSHIP_A, TENANT_A, EVENT_A_OTHER));
-        saveEvidence(TENANT_A, EVENT_A, "account-a", "reservation-a", "same-run", "same-cluster", 0.7,
+        saveEvidence(TENANT_A, EVENT_A, "account-a", "reservation-a", RUN_1, "same-cluster", 0.7,
                 "2026-10-08T10:15:30");
-        saveEvidence(TENANT_A, EVENT_A_OTHER, "account-other", "reservation-other", "same-run", "same-cluster",
+        saveEvidence(TENANT_A, EVENT_A_OTHER, "account-other", "reservation-other", RUN_1, "same-cluster",
                 0.7, "2026-10-08T10:15:30");
 
-        mvc.perform(detail(EVENT_A, "same-run", "same-cluster")
+        mvc.perform(detail(EVENT_A, RUN_1, "same-cluster")
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.members.length()").value(1))
                 .andExpect(jsonPath("$.members[0].accountId").value("account-a"));
-        mvc.perform(detail(EVENT_A_OTHER, "same-run", "same-cluster")
+        mvc.perform(detail(EVENT_A_OTHER, RUN_1, "same-cluster")
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.members.length()").value(1))
@@ -204,9 +208,9 @@ class AdminTrack1ClusterApiTest {
 
     @Test
     void legacyEvidenceAndSameExternalEventInOtherTenantStayHidden() throws Exception {
-        saveEvidence(TENANT_A, EVENT_A, "same-account", "same-reservation", "shared-run", "shared-cluster", 0.8,
+        saveEvidence(TENANT_A, EVENT_A, "same-account", "same-reservation", RUN_1, "shared-cluster", 0.8,
                 "2026-10-08T10:15:30");
-        saveEvidence(TENANT_B, EVENT_B, "same-account", "same-reservation", "shared-run", "shared-cluster", 0.8,
+        saveEvidence(TENANT_B, EVENT_B, "same-account", "same-reservation", RUN_1, "shared-cluster", 0.8,
                 "2026-10-08T10:15:30");
         insertLegacyEvidence();
 
@@ -248,11 +252,11 @@ class AdminTrack1ClusterApiTest {
 
     @Test
     void sortingAndPaginationUseStableClusterKeys() throws Exception {
-        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", "run-1", "cluster-a", 0.9,
+        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", RUN_1, "cluster-a", 0.9,
                 "2026-10-08T10:15:30");
-        saveEvidence(TENANT_A, EVENT_A, "account-2", "reservation-2", "run-2", "cluster-b", 0.7,
+        saveEvidence(TENANT_A, EVENT_A, "account-2", "reservation-2", RUN_2, "cluster-b", 0.7,
                 "2026-10-10T10:15:30");
-        saveEvidence(TENANT_A, EVENT_A, "account-3", "reservation-3", "run-3", "cluster-c", 0.5,
+        saveEvidence(TENANT_A, EVENT_A, "account-3", "reservation-3", RUN_3, "cluster-c", 0.5,
                 "2026-10-09T10:15:30");
 
         mvc.perform(list(EVENT_A).param("page", "1").param("pageSize", "1")
@@ -294,11 +298,11 @@ class AdminTrack1ClusterApiTest {
 
     @Test
     void multiTenantAdminIsBlockedOnDirectListAndDetailWithoutLeakingScope() throws Exception {
-        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", "run-1", "cluster-1", 0.82, "2026-10-08T10:15:30");
+        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", RUN_1, "cluster-1", 0.82, "2026-10-08T10:15:30");
         // 같은 subject가 두 번째 활성 고객사에도 활성 멤버십을 가지면 DEC-02 확정 전까지 업무 API를 쓸 수 없습니다.
         extraMembership("admin-a", AccessRecordStatus.ACTIVE, AccessRecordStatus.ACTIVE);
 
-        for (var request : List.of(list(EVENT_A), detail(EVENT_A, "run-1", "cluster-1"))) {
+        for (var request : List.of(list(EVENT_A), detail(EVENT_A, RUN_1, "cluster-1"))) {
             mvc.perform(request.header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))

@@ -413,6 +413,29 @@ class AdminEvidenceContentApiTest {
                 .containsExactlyInAnyOrder("VERIFIED_FOR_RESPONSE", "VERIFIED_FOR_RESPONSE", "EVIDENCE_CONTENT_BUSY");
     }
 
+    @Test
+    void errorWhileReadingTheOriginalStillReturnsTheReadPermit() throws Exception {
+        UUID report = report(tenantA, eventA, LocalDateTime.now(ZoneOffset.UTC));
+        UUID evidence = asset(report, "image/png", PNG, true);
+        given(storage.readVerifiedBytes(eq(key(evidence)), any(), anyLong()))
+                .willThrow(new OutOfMemoryError("synthetic read failure"))
+                .willReturn(bytes(PNG, "image/png"));
+        String token = bearer("analyst");
+        Throwable thrown = null;
+        try {
+            mvc.perform(read(report, evidence).header(HttpHeaders.AUTHORIZATION, token));
+        } catch (Throwable failure) {
+            thrown = failure;
+        }
+        Throwable root = thrown;
+        while (root != null && root.getCause() != null) root = root.getCause();
+        assertThat(root).isInstanceOf(OutOfMemoryError.class);
+        // 동시 읽기 수가 1이므로 허가가 돌아오지 않았다면 다음 요청은 503 EVIDENCE_CONTENT_BUSY가 됩니다.
+        MvcResult next = mvc.perform(read(report, evidence).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(next.getResponse().getContentAsByteArray()).isEqualTo(PNG);
+    }
+
     private MvcResult expect(UUID report, UUID evidence, int status, String code) throws Exception {
         MvcResult result = mvc.perform(read(report, evidence).header(HttpHeaders.AUTHORIZATION, bearer("analyst")))
                 .andExpect(status().is(status))

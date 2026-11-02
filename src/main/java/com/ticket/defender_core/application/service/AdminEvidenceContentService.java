@@ -99,9 +99,15 @@ public class AdminEvidenceContentService {
             acquired = false;
             return content;
         } catch (RuntimeException failure) {
-            if (acquired) limiter.release();
+            if (acquired) {
+                limiter.release();
+                acquired = false;
+            }
             auditFailure(requestId, checked, failure);
             throw failure;
+        } finally {
+            // OutOfMemoryError 같은 Error는 위 catch를 지나지 않으므로 여기서 허가를 돌려줍니다.
+            if (acquired) limiter.release();
         }
     }
 

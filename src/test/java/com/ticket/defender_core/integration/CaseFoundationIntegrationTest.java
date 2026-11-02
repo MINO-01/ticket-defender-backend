@@ -19,8 +19,10 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
@@ -65,6 +67,8 @@ class CaseFoundationIntegrationTest {
     @Autowired private FanReportRepository reports;
     @Autowired private EvidenceAssetRepository assets;
     @Autowired private TicketAuditRepository audits;
+    @Autowired private MacroAuditEvidenceRepository clusterEvidence;
+    @Autowired private CaseIdempotencyRepository idempotency;
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
@@ -260,6 +264,131 @@ class CaseFoundationIntegrationTest {
         assertThatThrownBy(() -> service.create(missing, UUID.randomUUID().toString()))
                 .isInstanceOfSatisfying(CaseApiException.class,
                         error -> assertThat(error.code()).isEqualTo("RESOURCE_NOT_FOUND"));
+    }
+
+    // 관리자 Track 1 조회 API가 돌려준 ID를 그대로 Case 생성에 넣으면 저장된 군집과 같은 출처가 연결되는지 확인합니다.
+    @Test
+    void graphClusterCaseUsesIdsReadFromAdminTrack1Api() throws Exception {
+        String requestId = UUID.randomUUID().toString();
+        List<Long> memberAuditIds = List.of(
+                storeCluster(TENANT, EVENT, "synthetic-show", requestId, "cluster-7", "account-1"),
+                storeCluster(TENANT, EVENT, "synthetic-show", requestId, "cluster-7", "account-2"));
+        // 다른 고객사의 같은 ID 조합은 구성원 수와 출처에 섞이면 안 됩니다.
+        storeCluster(OTHER_TENANT, OTHER_EVENT, "synthetic-show", requestId, "cluster-7", "account-3");
+
+        JsonNode item = json.readTree(mvc.perform(get("/api/v1/admin/track1/clusters")
+                        .param("eventId", EVENT.toString()).header("Authorization", "Bearer analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalItems").value(1))
+                .andReturn().getResponse().getContentAsString()).get("items").get(0);
+        String readRequestId = item.get("analysisRequestId").asText();
+        String readClusterId = item.get("clusterId").asText();
+        assertThat(readRequestId).isEqualTo(requestId);
+        mvc.perform(get("/api/v1/admin/track1/clusters/detail").param("eventId", EVENT.toString())
+                        .param("analysisRequestId", readRequestId).param("clusterId", readClusterId)
+                        .header("Authorization", "Bearer analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.members.length()").value(2));
+
+        JsonNode created = json.readTree(mvc.perform(createGraphCase(readRequestId, readClusterId,
+                        UUID.randomUUID().toString()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.type").value("GRAPH_CLUSTER"))
+                .andReturn().getResponse().getContentAsString());
+        UUID caseId = UUID.fromString(created.get("caseId").asText());
+        mvc.perform(get("/api/v1/cases/" + caseId + "/sources").header("Authorization", "Bearer analyst"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].sourceType").value("STORED_CLUSTER_EVIDENCE"))
+                .andExpect(jsonPath("$[0].analysisRequestId").value(requestId))
+                .andExpect(jsonPath("$[0].clusterId").value("cluster-7"))
+                .andExpect(jsonPath("$[0].storedMemberCount").value(2))
+                .andExpect(jsonPath("$[0].analysisAlgorithm").value("LOUVAIN"));
+        assertThat(sources.findAll()).singleElement().satisfies(source -> {
+            assertThat(source.getTenantId()).isEqualTo(TENANT);
+            assertThat(source.getEventId()).isEqualTo(EVENT);
+            assertThat(source.getAnchorAuditId()).isIn(memberAuditIds);
+        });
+
+        // 같은 군집을 다시 연결하면 기존 중복 출처 정책대로 409를 반환합니다.
+        mvc.perform(createGraphCase(requestId, "cluster-7", UUID.randomUUID().toString()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SOURCE_ALREADY_LINKED"));
+        assertThat(cases.count()).isEqualTo(1);
+        assertThat(sources.count()).isEqualTo(1);
+    }
+
+    // 비표준 분석 ID와 범위 밖 군집은 거부되고, 실패한 요청은 Case, 출처, 멱등성 기록을 남기지 않아야 합니다.
+    @Test
+    void graphClusterRejectsNonCanonicalIdsAndOutOfScopeClustersWithoutWrites() throws Exception {
+        String requestId = UUID.randomUUID().toString();
+        storeCluster(TENANT, EVENT, "synthetic-show", requestId, "cluster-a", "account-1");
+        // 비UUID 합성 행은 조회 API에서는 보이지만 Case 출처로는 쓸 수 없습니다.
+        storeCluster(TENANT, EVENT, "synthetic-show", "run-1", "cluster-1", "account-2");
+        mvc.perform(get("/api/v1/admin/track1/clusters/detail").param("eventId", EVENT.toString())
+                        .param("analysisRequestId", "run-1").param("clusterId", "cluster-1")
+                        .header("Authorization", "Bearer analyst"))
+                .andExpect(status().isOk());
+        String otherTenantRequestId = UUID.randomUUID().toString();
+        storeCluster(OTHER_TENANT, OTHER_EVENT, "synthetic-show", otherTenantRequestId, "cluster-a", "account-3");
+        UUID sameTenantOtherEvent = UUID.randomUUID();
+        events.save(new TenantEvent(sameTenantOtherEvent, TENANT, "other-show", "Other", AccessRecordStatus.ACTIVE));
+        String otherEventRequestId = UUID.randomUUID().toString();
+        storeCluster(TENANT, sameTenantOtherEvent, "other-show", otherEventRequestId, "cluster-a", "account-4");
+
+        String existingRequestId = UUID.randomUUID().toString();
+        storeCluster(TENANT, EVENT, "synthetic-show", existingRequestId, "cluster-existing", "account-5");
+        mvc.perform(createGraphCase(existingRequestId, "cluster-existing", UUID.randomUUID().toString()))
+                .andExpect(status().isCreated());
+        Case existing = cases.findAll().getFirst();
+        long existingVersion = existing.getCaseVersion();
+        long existingRevision = existing.getEvidenceRevision();
+        long caseCount = cases.count();
+        long sourceCount = sources.count();
+        long idempotencyCount = idempotency.count();
+        long activityCount = activities.count();
+        long auditCount = audits.count();
+        long evidenceCount = clusterEvidence.count();
+
+        String key = UUID.randomUUID().toString();
+        mvc.perform(createGraphCase("run-1", "cluster-1", key))
+                .andExpect(status().isUnprocessableContent()).andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+        mvc.perform(createGraphCase(requestId.toUpperCase(java.util.Locale.ROOT), "cluster-a", key))
+                .andExpect(status().isUnprocessableContent()).andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+        mvc.perform(createGraphCase(otherTenantRequestId, "cluster-a", key))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
+        mvc.perform(createGraphCase(otherEventRequestId, "cluster-a", key))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
+
+        assertThat(cases.count()).isEqualTo(caseCount);
+        assertThat(sources.count()).isEqualTo(sourceCount);
+        assertThat(idempotency.count()).isEqualTo(idempotencyCount);
+        assertThat(activities.count()).isEqualTo(activityCount);
+        assertThat(audits.count()).isEqualTo(auditCount);
+        assertThat(clusterEvidence.count()).isEqualTo(evidenceCount);
+        Case reloaded = cases.findById(existing.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(Case.Status.OPEN);
+        assertThat(reloaded.getCaseVersion()).isEqualTo(existingVersion);
+        assertThat(reloaded.getEvidenceRevision()).isEqualTo(existingRevision);
+
+        // 실패한 요청이 멱등성 키를 차지하지 않았으므로 같은 키로 정상 요청을 처리할 수 있습니다.
+        mvc.perform(createGraphCase(requestId, "cluster-a", key)).andExpect(status().isCreated());
+        assertThat(cases.count()).isEqualTo(caseCount + 1);
+        assertThat(idempotency.count()).isEqualTo(idempotencyCount + 1);
+    }
+
+    private long storeCluster(UUID tenantId, UUID eventId, String externalEventId, String requestId,
+            String clusterId, String accountId) {
+        return audits.saveAndFlush(TicketAudit.createMacroAudit(new MacroAnalysisEvidence(
+                accountId, "reservation-" + accountId, externalEventId, "a".repeat(64),
+                null, "b".repeat(64), null, clusterId, 0.8, "LOUVAIN", "1.0.0", requestId,
+                LocalDateTime.parse("2026-10-08T10:15:30"), tenantId, eventId))).getId();
+    }
+
+    private MockHttpServletRequestBuilder createGraphCase(String requestId, String clusterId, String key)
+            throws Exception {
+        CaseDto.Create input = new CaseDto.Create(EVENT, Case.Type.GRAPH_CLUSTER,
+                List.of(new CaseDto.GraphCluster(requestId, clusterId)), List.of(), List.of(),
+                "Investigate stored graph evidence", null, null);
+        return post("/api/v1/cases").header("Authorization", "Bearer analyst")
+                .header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(input));
     }
 
     @Test

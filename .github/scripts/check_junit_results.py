@@ -24,6 +24,9 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.Track1LiveIntegrationTest": (
         2, "Requires a live FastAPI analysis service"
     ),
+    "com.ticket.defender_core.integration.Track1CaseLinkLiveMySqlTest": (
+        1, "Requires live FastAPI, Neo4j GDS and a migrated isolated MySQL"
+    ),
     "com.ticket.defender_core.integration.FanReportMigrationMySqlTest": (
         1, "Runs in the isolated MySQL CI job"
     ),
@@ -253,6 +256,9 @@ MYSQL_SUITES = {
     ),
     "track1-migration": (
         "com.ticket.defender_core.integration.Track1TenantMigrationMySqlTest", 1
+    ),
+    "track1-case-link-live": (
+        "com.ticket.defender_core.integration.Track1CaseLinkLiveMySqlTest", 1
     ),
     "minio-storage": (
         "com.ticket.defender_core.integration.S3EvidenceObjectStorageMinioTest", 4

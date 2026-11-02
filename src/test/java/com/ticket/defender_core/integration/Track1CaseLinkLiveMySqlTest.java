@@ -84,6 +84,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @EnabledIfEnvironmentVariable(named = "TD_TRACK1_FASTAPI_URL", matches = "http://127\\.0\\.0\\.1:[1-9][0-9]*")
 @EnabledIfEnvironmentVariable(named = "TD_MYSQL_MIGRATION_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:[1-9][0-9]*/.*")
 class Track1CaseLinkLiveMySqlTest {
+    private static final String ADMIN_ISSUER = "https://issuer.example.test/admin";
     private static final String SERVICE_ISSUER = "https://issuer.example.test/service";
     private static final String SERVICE_CLIENT = "trusted-ingest";
     private static final String UUID_PATTERN =
@@ -137,11 +138,14 @@ class Track1CaseLinkLiveMySqlTest {
 
     @BeforeEach
     void seed() {
-        // 서명 검증과 만료 및 발급자 검증은 실제 Nimbus 디코더로 수행합니다.
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey((RSAPublicKey) keyPair.getPublic()).build();
-        decoder.setJwtValidator(JwtValidators.createDefault());
-        given(adminDecoder.decode(anyString())).willAnswer(call -> decoder.decode(call.getArgument(0)));
-        given(analysisDecoder.decode(anyString())).willAnswer(call -> decoder.decode(call.getArgument(0)));
+        // 서명, 만료, 발급자는 실제 Nimbus 디코더로 검사합니다. 관리자와 내부 서비스는 기대 발급자가 다르므로 디코더를 나눕니다.
+        // audience와 client_id 검사는 이 테스트 범위가 아니며 기존 인증 API 테스트가 담당합니다.
+        NimbusJwtDecoder admin = NimbusJwtDecoder.withPublicKey((RSAPublicKey) keyPair.getPublic()).build();
+        admin.setJwtValidator(JwtValidators.createDefaultWithIssuer(ADMIN_ISSUER));
+        NimbusJwtDecoder service = NimbusJwtDecoder.withPublicKey((RSAPublicKey) keyPair.getPublic()).build();
+        service.setJwtValidator(JwtValidators.createDefaultWithIssuer(SERVICE_ISSUER));
+        given(adminDecoder.decode(anyString())).willAnswer(call -> admin.decode(call.getArgument(0)));
+        given(analysisDecoder.decode(anyString())).willAnswer(call -> service.decode(call.getArgument(0)));
 
         tenants.saveAndFlush(new Tenant(tenantA, "E2E 합성 고객사 A", AccessRecordStatus.ACTIVE));
         tenants.saveAndFlush(new Tenant(tenantB, "E2E 합성 고객사 B", AccessRecordStatus.ACTIVE));
@@ -335,7 +339,7 @@ class Track1CaseLinkLiveMySqlTest {
     }
 
     private static String admin(String subject) throws Exception {
-        return "Bearer " + sign(new JWTClaimsSet.Builder().issuer("https://issuer.example.test/admin")
+        return "Bearer " + sign(new JWTClaimsSet.Builder().issuer(ADMIN_ISSUER)
                 .audience("ticket-defender-admin").subject(subject));
     }
 

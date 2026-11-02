@@ -25,11 +25,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -198,27 +196,15 @@ public class ListingContextAnalysisService {
     }
 
     private static String sniff(byte[] bytes) {
-        if (bytes.length >= 8 && (bytes[0] & 255) == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G'
-                && bytes[4] == 13 && bytes[5] == 10 && bytes[6] == 26 && bytes[7] == 10) return "image/png";
-        if (bytes.length >= 3 && (bytes[0] & 255) == 0xff && (bytes[1] & 255) == 0xd8 && (bytes[2] & 255) == 0xff)
-            return "image/jpeg";
-        return null;
+        return EvidenceImageBytes.sniff(bytes);
     }
 
     private static boolean sameDigest(String actual, String expected) {
-        try {
-            return MessageDigest.isEqual(HexFormat.of().parseHex(actual), HexFormat.of().parseHex(expected));
-        } catch (RuntimeException malformed) {
-            return false;
-        }
+        return EvidenceImageBytes.sameDigest(actual, expected);
     }
 
     private static String sha256(byte[] bytes) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        } catch (Exception impossible) {
-            throw new IllegalStateException(impossible);
-        }
+        return EvidenceImageBytes.sha256(bytes);
     }
 
     private static CaseApiException notFound() {

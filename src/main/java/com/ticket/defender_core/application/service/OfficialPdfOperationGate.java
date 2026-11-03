@@ -90,13 +90,28 @@ public class OfficialPdfOperationGate {
     }
 
     /**
-     * 환경 조건과 함께 대상 Case가 서버 소유 합성 등록부 범위에 속하는지 확인합니다. 발급 예약, 렌더링, 최종화,
-     * 조회와 다운로드마다 다시 호출하며 결과를 캐시하지 않습니다.
+     * 환경 조건과 함께 대상 Case가 서버 소유 합성 등록부 범위에 속하는지 확인합니다. 조회와 렌더링 준비처럼
+     * 상태를 확정하지 않는 경로에서 사용하며 결과를 캐시하지 않습니다.
      */
     public void requireSyntheticScope(Case target) {
+        requireSyntheticScope(target, false);
+    }
+
+    /**
+     * 발급 예약, 최종화, 다운로드 감사처럼 상태를 확정하는 쓰기 트랜잭션 안에서 사용합니다. Case 잠금 다음에 등록
+     * 행을 공유 잠금으로 읽어, 트랜잭션이 끝날 때까지 등록 해제가 확정되지 못하게 합니다. 이미 확정된 해제는
+     * 최신 상태로 보이므로 차단됩니다. 호출자는 활성 쓰기 트랜잭션 안에 있어야 합니다.
+     */
+    public void requireSyntheticScopeLocked(Case target) {
+        requireSyntheticScope(target, true);
+    }
+
+    private void requireSyntheticScope(Case target, boolean lockRegistration) {
         requireEnabled();
         if (target == null || target.getTenantId() == null || target.getCreatedAt() == null) throw conflict(SCOPE_UNVERIFIED);
-        OfficialPdfSyntheticTenant registration = syntheticTenants.findById(target.getTenantId()).orElse(null);
+        OfficialPdfSyntheticTenant registration = (lockRegistration
+                ? syntheticTenants.findByTenantIdForShare(target.getTenantId())
+                : syntheticTenants.findById(target.getTenantId())).orElse(null);
         if (registration == null || !isolationId.equals(registration.getIsolationId())) throw conflict(SCOPE_UNVERIFIED);
         LocalDateTime registeredAt = registration.getRegisteredAt();
         if (!notBefore(target.getCreatedAt(), registeredAt)) throw conflict(SCOPE_UNVERIFIED);

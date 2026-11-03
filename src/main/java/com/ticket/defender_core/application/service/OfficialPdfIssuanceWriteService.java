@@ -82,7 +82,8 @@ public class OfficialPdfIssuanceWriteService {
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireDecisionScope(target, decision);
         UUID actor = tenantAdmin(target, expectedMemberId);
-        operations.requireSyntheticScope(target);
+        // Case 잠금 다음에 등록부를 공유 잠금으로 읽어, 예약이 확정될 때까지 등록 해제와 직렬화합니다.
+        operations.requireSyntheticScopeLocked(target);
         Bound bound = bound(target, decision);
 
         OfficialPdfIssuance issuance = issuances.findByApprovalDecisionIdForUpdate(decisionId).orElse(null);
@@ -158,8 +159,9 @@ public class OfficialPdfIssuanceWriteService {
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireIssuanceScope(target, issuance);
         UUID actor = tenantAdmin(target, expectedMemberId);
-        // 예약 뒤 등록이나 격리 조건이 사라졌다면 Case 잠금 아래에서 최종화를 거부합니다.
-        operations.requireSyntheticScope(target);
+        // 예약 뒤 등록이나 격리 조건이 사라졌다면 Case 잠금 아래에서 최종화를 거부합니다. 등록부 공유 잠금은
+        // 산출물이 확정될 때까지 유지되어, 확정되지 않은 등록 해제가 이 최종화를 앞질러 끝나지 못합니다.
+        operations.requireSyntheticScopeLocked(target);
         OfficialPdfArtifact prior = artifacts.findByIssuanceId(issuanceId).orElse(null);
         if (prior != null) {
             if (!Objects.equals(issuance.getCandidateObjectKey(), prior.getObjectKey())
@@ -263,6 +265,8 @@ public class OfficialPdfIssuanceWriteService {
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireIssuanceScope(target, issuance);
         UUID actor = tenantAdmin(target, expectedMemberId);
+        // 다운로드 응답은 이 감사 기록이 확정된 뒤에만 나가므로, 그 사이 확정된 등록 해제도 여기서 차단합니다.
+        operations.requireSyntheticScopeLocked(target);
         OfficialPdfArtifact artifact = artifacts.findById(artifactId).orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         if (!issuance.getId().equals(artifact.getIssuanceId())
                 || issuance.getStatus() != OfficialPdfIssuance.Status.GENERATED) throw conflict("OFFICIAL_PDF_NOT_GENERATED");

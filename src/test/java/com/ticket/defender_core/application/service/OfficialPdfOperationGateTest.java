@@ -123,6 +123,21 @@ class OfficialPdfOperationGateTest {
     }
 
     @Test
+    void lockedScopeReadsRegistrationWithShareLockAndStillAppliesEveryCondition() {
+        Case target = target(REGISTERED.plusMinutes(5));
+        given(registry.findByTenantIdForShare(tenant)).willReturn(Optional.of(
+                new OfficialPdfSyntheticTenant(tenant, UUID.fromString(ISOLATION), REGISTERED)));
+        assertThatCode(() -> verified().requireSyntheticScopeLocked(target)).doesNotThrowAnyException();
+        org.mockito.Mockito.verify(registry).findByTenantIdForShare(tenant);
+        // 잠금 조회에서 이미 확정된 등록 해제가 보이면 차단합니다.
+        given(registry.findByTenantIdForShare(tenant)).willReturn(Optional.empty());
+        assertCode(() -> verified().requireSyntheticScopeLocked(target), "OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED");
+        given(registry.findByTenantIdForShare(tenant)).willReturn(Optional.of(
+                new OfficialPdfSyntheticTenant(tenant, UUID.fromString(ISOLATION), REGISTERED.plusHours(2))));
+        assertCode(() -> verified().requireSyntheticScopeLocked(target), "OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED");
+    }
+
+    @Test
     void caseOrSourceEvidenceCreatedBeforeRegistrationIsNotTreatedAsSynthetic() {
         assertCode(() -> verified().requireSyntheticScope(target(REGISTERED.minusSeconds(1))),
                 "OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED");

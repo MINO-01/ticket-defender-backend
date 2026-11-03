@@ -23,10 +23,16 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -34,6 +40,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -43,8 +50,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.reset;
 
 /**
@@ -82,6 +91,8 @@ class CaseW09ConcurrentMySqlTest {
     @Autowired private ApprovalDecisionRepository decisions;
     @Autowired private OfficialPdfIssuanceRepository issuances;
     @Autowired private OfficialPdfArtifactRepository artifacts;
+    @MockitoSpyBean private OfficialPdfEligibilityValidator eligibility;
+    @Autowired private DataSource dataSource;
     @Autowired private OfficialPdfIssuanceAttemptRepository attempts;
     @Autowired private OfficialPdfAuditEventRepository audits;
     @Autowired private IssuanceHoldRepository holds;
@@ -103,6 +114,7 @@ class CaseW09ConcurrentMySqlTest {
 
     private final Map<UUID, Stored> stored = new ConcurrentHashMap<>();
     private volatile StorageGate storageGate = StorageGate.open();
+    private volatile StorageGate finalizeGate = StorageGate.open();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -114,9 +126,21 @@ class CaseW09ConcurrentMySqlTest {
 
     @BeforeEach
     void setupStorage() {
-        reset(objectStorage, preservationStorage, officialStorage, renderer);
+        reset(objectStorage, preservationStorage, officialStorage, renderer, eligibility);
         stored.clear();
         storageGate = StorageGate.open();
+        finalizeGate = StorageGate.open();
+        // 최종화 트랜잭션이 Case 잠금과 등록부 게이트 검사를 마친 뒤, 산출물을 쓰기 전 적격성 재검증에서 멈출 수 있게 합니다.
+        doAnswer(call -> {
+            StorageGate gate = finalizeGate;
+            boolean finalizing = java.util.Arrays.stream(Thread.currentThread().getStackTrace())
+                    .anyMatch(frame -> "finalizeIssuance".equals(frame.getMethodName()));
+            if (finalizing && gate.blockFirst().compareAndSet(true, false)) {
+                gate.entered().countDown();
+                awaitLatch(gate.release(), "official PDF finalization release");
+            }
+            return call.callRealMethod();
+        }).when(eligibility).assess(any(), anyString(), anyString(), any());
         given(preservationStorage.profile()).willReturn(PROFILE);
         given(renderer.render(any())).willReturn(
                 "%PDF-1.7\n% W09 synthetic concurrent PDF\n%%EOF\n".getBytes(StandardCharsets.US_ASCII));
@@ -268,6 +292,162 @@ class CaseW09ConcurrentMySqlTest {
         } finally {
             SecurityContextHolder.clearContext();
         }
+    }
+
+    @Test
+    void finalizationHoldingRegistrationLockMakesDirectRevocationWaitThenBlocksLaterDownload() throws Exception {
+        Fixture fixture = approvedFixture();
+        finalizeGate = StorageGate.blockFirstGate();
+        var workers = Executors.newFixedThreadPool(2, Thread.ofPlatform().daemon(true).factory());
+        Future<OfficialPdfDto.Issuance> request = workers.submit(() -> request(fixture.adminSubject(), fixture.decisionId()));
+        Future<Integer> revocation = null;
+        try {
+            // 최종화가 게이트 검사를 마치고 산출물을 쓰기 직전에 멈춥니다.
+            assertThat(finalizeGate.entered().await(20, TimeUnit.SECONDS)).isTrue();
+            CompletableFuture<Long> revokerThread = new CompletableFuture<>();
+            revocation = workers.submit(() -> revokeRegistration(fixture.tenantId(), revokerThread));
+            long revoker = revokerThread.get(10, TimeUnit.SECONDS);
+            // 직접 DELETE는 최종화가 잡은 등록부 공유 잠금 때문에 확정 전까지 대기해야 합니다.
+            assertThat(awaitLockWait(revoker, revocation)).as("registration revocation waits for finalization").isTrue();
+            finalizeGate.release().countDown();
+
+            OfficialPdfDto.Issuance generated = request.get(30, TimeUnit.SECONDS);
+            assertThat(generated.status()).isEqualTo(OfficialPdfIssuance.Status.GENERATED);
+            assertThat(revocation.get(30, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(syntheticTenants.findById(fixture.tenantId())).isEmpty();
+            assertThat(artifacts.findAll().stream().filter(value -> fixture.decisionId()
+                    .equals(value.getApprovalDecisionId()))).hasSize(1);
+            assertGeneratedInvariant(fixture, generated.officialPdfIssuanceId());
+
+            // 등록 해제가 확정된 뒤에는 기존 문서도 내보내지 않고 이력은 보존합니다.
+            authenticate(fixture.adminSubject());
+            assertThatThrownBy(() -> official.download(generated.officialPdfIssuanceId()))
+                    .isInstanceOfSatisfying(CaseApiException.class, error ->
+                            assertThat(error.code()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+            assertThat(issuances.findById(generated.officialPdfIssuanceId())).hasValueSatisfying(issuance ->
+                    assertThat(issuance.getStatus()).isEqualTo(OfficialPdfIssuance.Status.GENERATED));
+            assertApprovedHumanDecisionInvariant(fixture);
+        } finally {
+            SecurityContextHolder.clearContext();
+            finalizeGate.release().countDown();
+            request.cancel(true);
+            if (revocation != null) revocation.cancel(true);
+            workers.shutdownNow();
+            assertThat(workers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void uncommittedRevocationMakesReservationWaitAndCommittedRevocationBlocksIssuance() throws Exception {
+        Fixture fixture = approvedFixture();
+        var workers = Executors.newSingleThreadExecutor(Thread.ofPlatform().daemon(true).factory());
+        Future<OfficialPdfDto.Issuance> request = null;
+        try (Connection revoker = dataSource.getConnection()) {
+            revoker.setAutoCommit(false);
+            try (Statement statement = revoker.createStatement()) {
+                statement.execute("SET SESSION innodb_lock_wait_timeout = 30");
+            }
+            try (PreparedStatement delete = revoker.prepareStatement(
+                    "DELETE FROM official_pdf_synthetic_tenants WHERE tenant_id = ?")) {
+                delete.setString(1, fixture.tenantId().toString());
+                assertThat(delete.executeUpdate()).isEqualTo(1);
+            }
+            long issuancesBefore = issuances.count();
+            request = workers.submit(() -> request(fixture.adminSubject(), fixture.decisionId()));
+            // 확정 전 삭제가 잡은 배타 잠금 때문에 발급 예약의 잠금 조회가 대기해야 합니다.
+            assertThat(awaitAnyOtherLockWait(revokerThreadId(revoker), request))
+                    .as("reservation waits for the uncommitted revocation").isTrue();
+            revoker.commit();
+
+            Future<OfficialPdfDto.Issuance> blocked = request;
+            assertThatThrownBy(() -> blocked.get(30, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(CaseApiException.class)
+                    .satisfies(error -> assertThat(((CaseApiException) error.getCause()).code())
+                            .isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+            assertThat(issuances.count()).isEqualTo(issuancesBefore);
+            assertThat(issuances.findByApprovalDecisionId(fixture.decisionId())).isEmpty();
+            assertApprovedHumanDecisionInvariant(fixture);
+        } finally {
+            if (request != null) request.cancel(true);
+            workers.shutdownNow();
+            assertThat(workers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void revocationCommittedBetweenObjectStorageAndFinalizationLeavesNoArtifact() throws Exception {
+        Fixture fixture = approvedFixture();
+        storageGate = StorageGate.blockFirstGate();
+        var workers = Executors.newSingleThreadExecutor(Thread.ofPlatform().daemon(true).factory());
+        Future<OfficialPdfDto.Issuance> request = workers.submit(() -> request(fixture.adminSubject(), fixture.decisionId()));
+        try {
+            assertThat(storageGate.entered().await(20, TimeUnit.SECONDS)).isTrue();
+            assertThat(jdbc.update("DELETE FROM official_pdf_synthetic_tenants WHERE tenant_id = ?",
+                    fixture.tenantId().toString())).isEqualTo(1);
+            storageGate.release().countDown();
+
+            OfficialPdfDto.Issuance terminal = request.get(30, TimeUnit.SECONDS);
+            assertThat(terminal.status()).isEqualTo(OfficialPdfIssuance.Status.FAILED);
+            assertThat(terminal.lastFailureCode()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED");
+            OfficialPdfIssuance issuance = issuances.findById(terminal.officialPdfIssuanceId()).orElseThrow();
+            // 후보 객체 정리는 DEC-09 정책 범위이며, 산출물과 GENERATED 상태는 만들지 않습니다.
+            assertThat(issuance.hasCandidateObject()).isTrue();
+            assertThat(artifacts.findByIssuanceId(issuance.getId())).isEmpty();
+            assertThat(audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(issuance.getId()))
+                    .extracting(OfficialPdfAuditEvent::getEventType)
+                    .contains("OBJECT_STORED", "ISSUANCE_FAILED").doesNotContain("ISSUANCE_GENERATED");
+            assertApprovedHumanDecisionInvariant(fixture);
+        } finally {
+            storageGate.release().countDown();
+            request.cancel(true);
+            workers.shutdownNow();
+            assertThat(workers.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    /** 별도 연결에서 운영자 직접 SQL과 같은 자동 커밋 DELETE를 실행하고, 대기 판정에 쓸 연결 스레드 ID를 먼저 알립니다. */
+    private Integer revokeRegistration(UUID tenantId, CompletableFuture<Long> threadId) throws Exception {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(true);
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("SET SESSION innodb_lock_wait_timeout = 30");
+            }
+            threadId.complete(revokerThreadId(connection));
+            try (PreparedStatement delete = connection.prepareStatement(
+                    "DELETE FROM official_pdf_synthetic_tenants WHERE tenant_id = ?")) {
+                delete.setString(1, tenantId.toString());
+                return delete.executeUpdate();
+            }
+        }
+    }
+
+    private static long revokerThreadId(Connection connection) throws Exception {
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT CONNECTION_ID()")) {
+            result.next();
+            return result.getLong(1);
+        }
+    }
+
+    /** 고정 sleep 대신 InnoDB 트랜잭션 상태로 해당 연결이 실제 잠금 대기 중인지 확인합니다. 작업이 먼저 끝나면 대기하지 않은 것입니다. */
+    private boolean awaitLockWait(long threadId, Future<?> work) throws Exception {
+        for (int i = 0; i < 200 && !work.isDone(); i++) {
+            Integer waiting = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.innodb_trx "
+                    + "WHERE trx_mysql_thread_id = ? AND trx_state = 'LOCK WAIT'", Integer.class, threadId);
+            if (waiting != null && waiting > 0) return true;
+            Thread.sleep(50);
+        }
+        return false;
+    }
+
+    private boolean awaitAnyOtherLockWait(long excludedThreadId, Future<?> work) throws Exception {
+        for (int i = 0; i < 200 && !work.isDone(); i++) {
+            Integer waiting = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.innodb_trx "
+                    + "WHERE trx_mysql_thread_id <> ? AND trx_state = 'LOCK WAIT'", Integer.class, excludedThreadId);
+            if (waiting != null && waiting > 0) return true;
+            Thread.sleep(50);
+        }
+        return false;
     }
 
     private void assertGeneratedInvariant(Fixture fixture, UUID issuanceId) {

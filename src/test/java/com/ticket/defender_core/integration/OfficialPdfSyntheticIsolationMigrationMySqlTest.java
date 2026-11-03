@@ -64,9 +64,32 @@ class OfficialPdfSyntheticIsolationMigrationMySqlTest {
                 + "(tenant_id, isolation_id, registered_at) VALUES (?,?,?)", other, "NOT-A-UUID", NOW))
                 .isInstanceOf(DataAccessException.class);
 
+        // 등록 절차처럼 registered_at을 생략하면 음수 오프셋 세션에서도 세션 시각(NOW())이 아니라 UTC가 기록됩니다.
+        String utcTenant = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO tenants (id, name, status) VALUES (?, 'Synthetic #66 UTC tenant', 'ACTIVE')", utcTenant);
+        try (Connection connection = source.getConnection();
+             java.sql.Statement statement = connection.createStatement()) {
+            statement.execute("SET time_zone = '-09:00'");
+            try (java.sql.PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO official_pdf_synthetic_tenants (tenant_id, isolation_id) VALUES (?, ?)")) {
+                insert.setString(1, utcTenant);
+                insert.setString(2, UUID.randomUUID().toString());
+                insert.executeUpdate();
+            }
+            try (java.sql.ResultSet result = statement.executeQuery("SELECT "
+                    + "TIMESTAMPDIFF(MICROSECOND, registered_at, UTC_TIMESTAMP(6)), "
+                    + "TIMESTAMPDIFF(HOUR, NOW(6), UTC_TIMESTAMP(6)) "
+                    + "FROM official_pdf_synthetic_tenants WHERE tenant_id = '" + utcTenant + "'")) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isBetween(0L, 60_000_000L);
+                // 같은 세션의 NOW()는 UTC보다 9시간 늦어, 직접 지정했다면 등록 이전 데이터를 허용했을 것입니다.
+                assertThat(result.getLong(2)).isEqualTo(9L);
+            }
+        }
+
         // 이후 CI 단계의 고객사 데이터에 영향을 주지 않도록 이 테스트가 만든 행만 정리합니다.
-        jdbc.update("DELETE FROM official_pdf_synthetic_tenants WHERE tenant_id = ?", tenant);
-        jdbc.update("DELETE FROM tenants WHERE id IN (?, ?)", tenant, other);
+        jdbc.update("DELETE FROM official_pdf_synthetic_tenants WHERE tenant_id IN (?, ?)", tenant, utcTenant);
+        jdbc.update("DELETE FROM tenants WHERE id IN (?, ?, ?)", tenant, other, utcTenant);
         assertThat(count(jdbc, "official_pdf_synthetic_tenants")).isZero();
     }
 

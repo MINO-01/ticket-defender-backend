@@ -58,6 +58,8 @@ PR #48의 게이트는 `enabled=true`와 `operational-mode=SYNTHETIC_ISOLATED` �
 | 범위 | Case 고객사가 `official_pdf_synthetic_tenants`에 같은 `isolation_id`로 등록되어 있고, Case 생성 시각과 모든 출처(연결 시각, 제보 접수 시각, 증거 생성 시각, Track 1 분석 완료 시각)가 `registered_at` 이후 | `OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED` |
 
 - 등록부(`docs/database/official-pdf-synthetic-isolation-migration.sql`)는 마이그레이션이 비워 둔 채 만든다. 공개 API가 없고 격리 환경 준비 절차(테스트 fixture 또는 격리 DB의 SQL)만 등록한다. 따라서 운영 DB는 설정을 바꿔도 등록 행이 없어 발급되지 않는다.
+- `registered_at`은 UTC다. 애플리케이션의 Case, 제보, 증거, 출처 시각도 `LocalDateTime.now(ZoneOffset.UTC)` 기준이다. SQL 등록은 열을 생략해 기본값 `UTC_TIMESTAMP(6)`를 쓰며(`INSERT INTO official_pdf_synthetic_tenants (tenant_id, isolation_id) VALUES (...)`), 세션 시간대를 따르는 `NOW()`나 `CURRENT_TIMESTAMP`는 쓰지 않는다. 음수 오프셋 세션의 `NOW()`는 등록 시각을 과거로 기록해 등록 이전 데이터를 허용할 수 있다. 테스트 fixture는 UTC 값을 직접 넣는다.
+- 상태를 확정하는 쓰기 트랜잭션(`reserveForDecision`, `finalizeIssuance`, 다운로드 감사 `auditDownload`)은 Case `FOR UPDATE` 다음에 등록 행을 `FOR SHARE`로 읽는다. 최종화가 먼저 잠금을 잡으면 직접 SQL의 등록 해제(DELETE)는 산출물이 확정될 때까지 대기하고, 확정 전 해제가 진행 중이면 최종화의 잠금 조회가 대기한 뒤 해제 결과를 보고 실패한다. 해제가 확정된 뒤의 신규 발급과 다운로드는 차단된다. 해제 DELETE는 등록 행만 잠그므로 Case 우선 잠금 순서와 교착이 생기지 않는다. 조회와 렌더링 준비(`renderSource`, 읽기 전용 트랜잭션)는 잠그지 않고 최종화가 다시 확인한다.
 - `registered_at` 조건은 기존 실제 고객사를 나중에 합성으로 등록해 과거 데이터로 발급하는 것을 막는다.
 - 호출 위치: eligibility(BLOCKED와 코드 반환), request, retry, detail, history, download는 권한 확인 뒤에 검사해 범위 밖 사용자에게 등록 여부를 드러내지 않는다. 쓰기 경로는 `reserveForDecision`과 `finalizeIssuance`가 Case 잠금 아래에서, `renderSource`가 렌더링과 객체 저장 전에 다시 검사한다.
 - 예약 전 차단은 발급 기록, 시도, 감사 행을 만들지 않는다. 예약 뒤 등록이나 격리 조건이 사라지면 기존 `markTerminal`이 `FAILED`와 실패 코드를 시도와 감사 기록에 남기고 아티팩트와 `GENERATED`는 만들지 않는다.

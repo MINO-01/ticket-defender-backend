@@ -353,12 +353,24 @@ class CaseW09ConcurrentMySqlTest {
                 assertThat(delete.executeUpdate()).isEqualTo(1);
             }
             long issuancesBefore = issuances.count();
-            request = workers.submit(() -> request(fixture.adminSubject(), fixture.decisionId()));
+            java.util.concurrent.atomic.AtomicReference<Thread> worker = new java.util.concurrent.atomic.AtomicReference<>();
+            request = workers.submit(() -> {
+                worker.set(Thread.currentThread());
+                return request(fixture.adminSubject(), fixture.decisionId());
+            });
             // 확정 전 삭제가 잡은 배타 잠금 때문에 발급 예약의 잠금 조회가 대기해야 합니다.
             long revokerThread = revokerThreadId(revoker);
             boolean waited = awaitAnyOtherLockWait(revokerThread, request);
-            assertThat(waited).as("reservation waits for the uncommitted revocation; %s",
-                    lockDiagnostics(revokerThread, request)).isTrue();
+            if (!waited) {
+                Thread thread = worker.get();
+                String stack = thread == null ? "no worker" : java.util.Arrays.stream(thread.getStackTrace())
+                        .limit(40).map(StackTraceElement::toString)
+                        .collect(java.util.stream.Collectors.joining(" <- "));
+                List<Map<String, Object>> processes = jdbc.queryForList("SELECT ID id, STATE state, "
+                        + "LEFT(COALESCE(INFO, ''), 160) info FROM information_schema.PROCESSLIST WHERE COMMAND <> 'Sleep'");
+                assertThat(waited).as("reservation waits for the uncommitted revocation; %s; processlist=%s; worker=%s",
+                        lockDiagnostics(revokerThread, request), processes, stack).isTrue();
+            }
             revoker.commit();
 
             Future<OfficialPdfDto.Issuance> blocked = request;

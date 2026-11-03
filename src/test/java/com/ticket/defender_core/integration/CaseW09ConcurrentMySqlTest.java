@@ -364,12 +364,18 @@ class CaseW09ConcurrentMySqlTest {
             if (!waited) {
                 Thread thread = worker.get();
                 String stack = thread == null ? "no worker" : java.util.Arrays.stream(thread.getStackTrace())
-                        .limit(40).map(StackTraceElement::toString)
+                        .map(StackTraceElement::toString).filter(frame -> frame.startsWith("com.ticket"))
                         .collect(java.util.stream.Collectors.joining(" <- "));
                 List<Map<String, Object>> processes = jdbc.queryForList("SELECT ID id, STATE state, "
-                        + "LEFT(COALESCE(INFO, ''), 160) info FROM information_schema.PROCESSLIST WHERE COMMAND <> 'Sleep'");
-                assertThat(waited).as("reservation waits for the uncommitted revocation; %s; processlist=%s; worker=%s",
-                        lockDiagnostics(revokerThread, request), processes, stack).isTrue();
+                        + "RIGHT(COALESCE(INFO, ''), 80) info FROM information_schema.PROCESSLIST WHERE COMMAND <> 'Sleep'");
+                List<Map<String, Object>> rowWaits = jdbc.queryForList("SELECT REQUESTING_THREAD_ID requester, "
+                        + "BLOCKING_THREAD_ID blocker FROM performance_schema.data_lock_waits");
+                List<Map<String, Object>> metadataWaits = jdbc.queryForList("SELECT OBJECT_NAME object, LOCK_TYPE type, "
+                        + "LOCK_STATUS status, OWNER_THREAD_ID owner FROM performance_schema.metadata_locks "
+                        + "WHERE OBJECT_SCHEMA = DATABASE() AND LOCK_STATUS = 'PENDING'");
+                assertThat(waited).as("reservation waits for the uncommitted revocation; %s; processlist=%s; "
+                                + "rowWaits=%s; metadataWaits=%s; worker=%s",
+                        lockDiagnostics(revokerThread, request), processes, rowWaits, metadataWaits, stack).isTrue();
             }
             revoker.commit();
 

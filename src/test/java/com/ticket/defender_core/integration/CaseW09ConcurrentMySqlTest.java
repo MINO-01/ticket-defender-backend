@@ -56,11 +56,13 @@ import static org.mockito.Mockito.reset;
         "ticket-defender.evidence-preservation.enabled=true",
         "ticket-defender.evidence-preservation.max-bytes=20971520",
         "ticket-defender.official-pdf.enabled=true",
-        "ticket-defender.official-pdf.operational-mode=SYNTHETIC_ISOLATED"
+        "ticket-defender.official-pdf.operational-mode=SYNTHETIC_ISOLATED",
+        "ticket-defender.official-pdf.synthetic-isolation-id=" + CaseW09ConcurrentMySqlTest.ISOLATION
 })
 @EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MYSQL_URL",
         matches = "jdbc:mysql://127\\.0\\.0\\.1:13307/td_issue32.*")
 class CaseW09ConcurrentMySqlTest {
+    static final String ISOLATION = "2b9c4e1a-7d3f-4a6b-8e21-5c0f9d3a7b14";
     private static final String PROFILE = "W09_MYSQL_LOCKED";
     private static final long MAX_BYTES = 20L * 1024 * 1024;
 
@@ -85,6 +87,7 @@ class CaseW09ConcurrentMySqlTest {
     @Autowired private IssuanceHoldRepository holds;
     @Autowired private EvidencePreservationPolicyRepository policies;
     @Autowired private TenantRepository tenants;
+    @Autowired private OfficialPdfSyntheticTenantRepository syntheticTenants;
     @Autowired private TenantEventRepository events;
     @Autowired private AdminMembershipRepository memberships;
     @Autowired private MembershipRoleRepository roles;
@@ -308,6 +311,9 @@ class CaseW09ConcurrentMySqlTest {
         String approverSubject = "w09-mysql-approver-" + UUID.randomUUID();
         String adminSubject = "w09-mysql-admin-" + UUID.randomUUID();
         tenants.saveAndFlush(new Tenant(tenant, "Synthetic W09 MySQL tenant", AccessRecordStatus.ACTIVE));
+        // 합성 고객사 등록은 서버 소유 fixture로만 만들며 Case와 증거보다 먼저 등록합니다.
+        syntheticTenants.saveAndFlush(new OfficialPdfSyntheticTenant(tenant, UUID.fromString(ISOLATION),
+                LocalDateTime.now(ZoneOffset.UTC).minusSeconds(5)));
         events.saveAndFlush(new TenantEvent(event, tenant, "w09-mysql-" + event,
                 "Synthetic W09 MySQL event", AccessRecordStatus.ACTIVE));
         member(reviewer, reviewerSubject, AdminRole.REVIEWER, tenant, event);

@@ -59,10 +59,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "ticket-defender.evidence-preservation.enabled=true",
         "ticket-defender.evidence-preservation.max-bytes=20971520",
         "ticket-defender.official-pdf.enabled=true",
-        "ticket-defender.official-pdf.operational-mode=SYNTHETIC_ISOLATED"
+        "ticket-defender.official-pdf.operational-mode=SYNTHETIC_ISOLATED",
+        "ticket-defender.official-pdf.synthetic-isolation-id=" + OfficialPdfIssuanceIntegrationTest.ISOLATION
 })
 @AutoConfigureMockMvc
 class OfficialPdfIssuanceIntegrationTest {
+    static final String ISOLATION = "6f7d2f4e-3c1a-4b8e-9d55-0a6c1e2b7f31";
     private static final String PROFILE = "W09_H2_LOCKED";
     private static final long MAX_BYTES = 20L * 1024 * 1024;
 
@@ -91,6 +93,7 @@ class OfficialPdfIssuanceIntegrationTest {
     @Autowired private MembershipEventGrantRepository grants;
     @Autowired private FanReportRepository fanReports;
     @Autowired private EvidenceAssetRepository assets;
+    @Autowired private OfficialPdfSyntheticTenantRepository syntheticTenants;
     @MockitoBean private EvidenceObjectStorage objectStorage;
     @MockitoBean private EvidencePreservationStorage preservationStorage;
     @MockitoBean private OfficialPdfStorage officialStorage;
@@ -125,6 +128,9 @@ class OfficialPdfIssuanceIntegrationTest {
         approverSubject = "w09-approver-" + UUID.randomUUID();
         adminSubject = "w09-admin-" + UUID.randomUUID();
         tenants.saveAndFlush(new Tenant(tenant, "Synthetic W09 tenant", AccessRecordStatus.ACTIVE));
+        // 합성 고객사 등록은 API가 아니라 서버 소유 fixture로만 만들며, Case와 증거보다 먼저 등록합니다.
+        syntheticTenants.saveAndFlush(new OfficialPdfSyntheticTenant(tenant, UUID.fromString(ISOLATION),
+                LocalDateTime.now(ZoneOffset.UTC).minusSeconds(5)));
         events.saveAndFlush(new TenantEvent(event, tenant, "w09-" + event, "Synthetic W09 event", AccessRecordStatus.ACTIVE));
         member(reviewer, reviewerSubject, AdminRole.REVIEWER);
         member(UUID.randomUUID(), approverSubject, AdminRole.APPROVER);
@@ -476,6 +482,131 @@ class OfficialPdfIssuanceIntegrationTest {
         mvc.perform(get("/api/v1/official-pdf-issuances/{id}/download", issuanceId)
                         .header("Authorization", "Bearer " + adminSubject))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void unregisteredSyntheticTenantBlocksEveryOfficialPdfApiWithoutTouchingExistingHistory() throws Exception {
+        Fixture fixture = approvedFixture();
+        authenticate(adminSubject);
+        OfficialPdfDto.Issuance issued = official.request(fixture.decisionId(), UUID.randomUUID().toString());
+        assertThat(issued.status()).isEqualTo(OfficialPdfIssuance.Status.GENERATED);
+        SecurityContextHolder.clearContext();
+        long issuanceCount = issuances.count();
+        long artifactCount = artifacts.count();
+        long attemptCount = attempts.count();
+        int auditCount = audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(issued.officialPdfIssuanceId()).size();
+        String pdfSha256 = artifacts.findByIssuanceId(issued.officialPdfIssuanceId()).orElseThrow().getPdfSha256();
+        clearInvocations(officialStorage, renderer);
+        // 서버 소유 등록이 사라지면 환경 설정이 그대로여도 합성 범위를 확인할 수 없습니다.
+        syntheticTenants.deleteById(tenant);
+
+        String issuanceId = issued.officialPdfIssuanceId().toString();
+        mvc.perform(get("/api/v1/approval-decisions/{id}/official-pdf-eligibility", fixture.decisionId())
+                        .header("Authorization", "Bearer " + adminSubject))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("BLOCKED"))
+                .andExpect(jsonPath("$.code").value("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+        for (var call : List.of(
+                post("/api/v1/approval-decisions/{id}/official-pdf-issuances", fixture.decisionId())
+                        .header("Idempotency-Key", UUID.randomUUID().toString()),
+                get("/api/v1/official-pdf-issuances/{id}", issuanceId),
+                post("/api/v1/official-pdf-issuances/{id}/retry", issuanceId)
+                        .header("Idempotency-Key", UUID.randomUUID().toString()),
+                get("/api/v1/report-versions/{id}/official-pdf-issuances", fixture.reportVersionId()),
+                get("/api/v1/official-pdf-issuances/{id}/download", issuanceId))) {
+            mvc.perform(call.header("Authorization", "Bearer " + adminSubject))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"))
+                    .andExpect(header().string("Content-Type", org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("application/pdf"))))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString(pdfSha256))));
+        }
+        // 인증 없는 호출은 합성 범위 판정보다 먼저 차단됩니다.
+        mvc.perform(get("/api/v1/official-pdf-issuances/{id}/download", issuanceId))
+                .andExpect(status().isUnauthorized());
+
+        // 차단은 기존 발급 이력, 산출물, 감사 기록을 지우거나 새로 만들지 않습니다.
+        assertThat(issuances.count()).isEqualTo(issuanceCount);
+        assertThat(artifacts.count()).isEqualTo(artifactCount);
+        assertThat(attempts.count()).isEqualTo(attemptCount);
+        assertThat(audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(issued.officialPdfIssuanceId()))
+                .hasSize(auditCount);
+        assertThat(issuances.findById(issued.officialPdfIssuanceId())).hasValueSatisfying(
+                issuance -> assertThat(issuance.getStatus()).isEqualTo(OfficialPdfIssuance.Status.GENERATED));
+        verify(renderer, never()).render(any());
+        verify(officialStorage, never()).putIfAbsent(any(UUID.class), anyString(), any(byte[].class));
+        verify(officialStorage, never()).download(any(UUID.class), anyString(), anyString(), anyString(), anyLong());
+    }
+
+    @Test
+    void registrationRevokedAfterReservationStopsRenderingAndRetryCannotBypassTheGate() {
+        Fixture fixture = approvedFixture();
+        authenticate(adminSubject);
+        doAnswer(call -> {
+            Object reservation = call.callRealMethod();
+            syntheticTenants.deleteById(tenant);
+            return reservation;
+        }).when(writer).reserveForDecision(any(), any(), anyString(), anyString(), anyBoolean());
+
+        OfficialPdfDto.Issuance failed = official.request(fixture.decisionId(), UUID.randomUUID().toString());
+
+        assertThat(failed.status()).isEqualTo(OfficialPdfIssuance.Status.FAILED);
+        assertThat(failed.lastFailureCode()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED");
+        assertThat(artifacts.findByIssuanceId(failed.officialPdfIssuanceId())).isEmpty();
+        verify(renderer, never()).render(any());
+        verify(officialStorage, never()).putIfAbsent(any(UUID.class), anyString(), any(byte[].class));
+        assertThat(audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(failed.officialPdfIssuanceId()))
+                .extracting(OfficialPdfAuditEvent::getEventType, OfficialPdfAuditEvent::getDetailCode)
+                .contains(tuple("ISSUANCE_FAILED", "OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+
+        long attemptCount = attempts.count();
+        assertThatThrownBy(() -> official.retry(failed.officialPdfIssuanceId(), UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+        assertThat(attempts.count()).isEqualTo(attemptCount);
+        assertThat(artifacts.findByIssuanceId(failed.officialPdfIssuanceId())).isEmpty();
+    }
+
+    @Test
+    void registrationRevokedAfterObjectStorageBlocksFinalizationWithoutArtifact() {
+        Fixture fixture = approvedFixture();
+        authenticate(adminSubject);
+        doAnswer(call -> {
+            call.callRealMethod();
+            syntheticTenants.deleteById(tenant);
+            return null;
+        }).when(writer).recordObject(any(), any(), any(), any());
+
+        OfficialPdfDto.Issuance failed = official.request(fixture.decisionId(), UUID.randomUUID().toString());
+
+        assertThat(failed.status()).isEqualTo(OfficialPdfIssuance.Status.FAILED);
+        assertThat(failed.lastFailureCode()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED");
+        assertThat(artifacts.findByIssuanceId(failed.officialPdfIssuanceId())).isEmpty();
+        assertThat(audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(failed.officialPdfIssuanceId()))
+                .extracting(OfficialPdfAuditEvent::getEventType).doesNotContain("ISSUANCE_GENERATED");
+    }
+
+    @Test
+    void retroactiveRegistrationOrDifferentIsolationIdentityBlocksIssuanceBeforeAnyRecord() {
+        Fixture fixture = approvedFixture();
+        authenticate(adminSubject);
+        long issuanceCount = issuances.count();
+        // 이미 존재하던 Case를 나중에 합성 고객사로 등록한 경우입니다.
+        jdbc.update("UPDATE official_pdf_synthetic_tenants SET registered_at = ? WHERE tenant_id = ?",
+                LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1), tenant.toString());
+        assertThatThrownBy(() -> official.request(fixture.decisionId(), UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+        // 다른 격리 환경에서 만든 등록 행은 이 서버의 격리 식별자와 대조되지 않습니다.
+        jdbc.update("UPDATE official_pdf_synthetic_tenants SET registered_at = ?, isolation_id = ? WHERE tenant_id = ?",
+                LocalDateTime.now(ZoneOffset.UTC).minusDays(1), UUID.randomUUID().toString(), tenant.toString());
+        assertThatThrownBy(() -> official.request(fixture.decisionId(), UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED"));
+        assertThat(issuances.count()).isEqualTo(issuanceCount);
+        verify(renderer, never()).render(any());
+        verify(officialStorage, never()).putIfAbsent(any(UUID.class), anyString(), any(byte[].class));
     }
 
     private Fixture approvedFixture() {

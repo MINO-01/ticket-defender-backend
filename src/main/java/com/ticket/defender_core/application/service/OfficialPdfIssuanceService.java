@@ -72,6 +72,12 @@ public class OfficialPdfIssuanceService {
                     OfficialPdfEligibilityValidator.State.BLOCKED,
                     operationsCode());
         }
+        try {
+            requireSyntheticScope(decision.getCaseId());
+        } catch (CaseApiException unverified) {
+            return new OfficialPdfDto.Eligibility(decisionId, decision.getReportVersionId(),
+                    OfficialPdfEligibilityValidator.State.BLOCKED, unverified.code());
+        }
         OfficialPdfIssuance issuance = issuances.findByApprovalDecisionId(decisionId).orElse(null);
         String templateVersion = issuance == null ? templates.current().version()
                 : issuance.getOfficialTemplateVersion();
@@ -85,6 +91,7 @@ public class OfficialPdfIssuanceService {
         operations.requireEnabled();
         ApprovalDecision decision = decisions.findById(decisionId).orElseThrow(OfficialPdfIssuanceService::notFound);
         Actor actor = tenantAdmin(decision.getTenantId(), decision.getEventId());
+        requireSyntheticScope(decision.getCaseId());
         Prepared prepared = prepare(key, decisionId);
         OfficialPdfIssuance replay = replay(decision.getCaseId(), actor, OfficialPdfIssuanceWriteService.ISSUE_OPERATION,
                 prepared, decisionId);
@@ -107,6 +114,7 @@ public class OfficialPdfIssuanceService {
         operations.requireEnabled();
         OfficialPdfIssuance original = issuances.findById(issuanceId).orElseThrow(OfficialPdfIssuanceService::notFound);
         Actor actor = tenantAdmin(original.getTenantId(), original.getEventId());
+        requireSyntheticScope(original.getCaseId());
         ApprovalDecision decision = decisions.findById(original.getApprovalDecisionId())
                 .orElseThrow(OfficialPdfIssuanceService::notFound);
         Prepared prepared = prepare(key, issuanceId);
@@ -131,6 +139,7 @@ public class OfficialPdfIssuanceService {
         operations.requireEnabled();
         OfficialPdfIssuance issuance = issuances.findById(issuanceId).orElseThrow(OfficialPdfIssuanceService::notFound);
         tenantAdmin(issuance.getTenantId(), issuance.getEventId());
+        requireSyntheticScope(issuance.getCaseId());
         return view(issuance);
     }
 
@@ -138,6 +147,7 @@ public class OfficialPdfIssuanceService {
         operations.requireEnabled();
         ReportVersion report = reports.findById(reportVersionId).orElseThrow(OfficialPdfIssuanceService::notFound);
         tenantAdmin(report.getTenantId(), report.getEventId());
+        requireSyntheticScope(report.getCaseId());
         return issuances.findByReportVersionIdOrderByRequestedAtDesc(reportVersionId).stream().map(this::view).toList();
     }
 
@@ -145,6 +155,8 @@ public class OfficialPdfIssuanceService {
         operations.requireEnabled();
         OfficialPdfIssuance issuance = issuances.findById(issuanceId).orElseThrow(OfficialPdfIssuanceService::notFound);
         Actor actor = tenantAdmin(issuance.getTenantId(), issuance.getEventId());
+        // 합성 범위를 확인할 수 없는 기존 아티팩트는 이력은 보존하되 원본 PDF를 내보내지 않습니다.
+        requireSyntheticScope(issuance.getCaseId());
         if (issuance.getStatus() != OfficialPdfIssuance.Status.GENERATED)
             throw new CaseApiException(HttpStatus.CONFLICT, "OFFICIAL_PDF_NOT_GENERATED");
         OfficialPdfArtifact artifact = artifacts.findByIssuanceId(issuanceId)
@@ -235,6 +247,11 @@ public class OfficialPdfIssuanceService {
         } catch (CaseApiException physicalFailure) {
             return resultFor(physicalFailure);
         }
+    }
+
+    /** 권한 확인 뒤에 호출해, 범위 밖 사용자에게 합성 등록 여부가 드러나지 않게 합니다. */
+    private void requireSyntheticScope(UUID caseId) {
+        operations.requireSyntheticScope(cases.findById(caseId).orElseThrow(OfficialPdfIssuanceService::notFound));
     }
 
     private void verifyPhysicalEvidence(ApprovalDecision decision) {

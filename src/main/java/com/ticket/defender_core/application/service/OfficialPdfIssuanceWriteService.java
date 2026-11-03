@@ -82,6 +82,7 @@ public class OfficialPdfIssuanceWriteService {
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireDecisionScope(target, decision);
         UUID actor = tenantAdmin(target, expectedMemberId);
+        operations.requireSyntheticScope(target);
         Bound bound = bound(target, decision);
 
         OfficialPdfIssuance issuance = issuances.findByApprovalDecisionIdForUpdate(decisionId).orElse(null);
@@ -157,6 +158,8 @@ public class OfficialPdfIssuanceWriteService {
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireIssuanceScope(target, issuance);
         UUID actor = tenantAdmin(target, expectedMemberId);
+        // 예약 뒤 등록이나 격리 조건이 사라졌다면 Case 잠금 아래에서 최종화를 거부합니다.
+        operations.requireSyntheticScope(target);
         OfficialPdfArtifact prior = artifacts.findByIssuanceId(issuanceId).orElse(null);
         if (prior != null) {
             if (!Objects.equals(issuance.getCandidateObjectKey(), prior.getObjectKey())
@@ -229,6 +232,8 @@ public class OfficialPdfIssuanceWriteService {
         Case target = cases.findById(issuance.getCaseId()).orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireIssuanceScope(target, issuance);
         tenantAdmin(target, expectedMemberId);
+        // 렌더링과 객체 저장 전에 다시 확인해 범위를 잃은 발급이 PDF 객체를 만들지 않게 합니다.
+        operations.requireSyntheticScope(target);
         ApprovalDecision decision = decisions.findById(issuance.getApprovalDecisionId())
                 .orElseThrow(OfficialPdfIssuanceWriteService::notFound);
         requireDecisionScope(target, decision);

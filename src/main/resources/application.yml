@@ -75,6 +75,9 @@ ticket-defender:
     # This flag alone never authorizes operation; only synthetic isolated mode is currently accepted.
     enabled: ${OFFICIAL_PDF_ENABLED:false}
     operational-mode: ${OFFICIAL_PDF_OPERATIONAL_MODE:DISABLED}
+    # 합성 격리 환경 식별자(UUID)입니다. 서버 소유 official_pdf_synthetic_tenants 등록 행과 일치해야 하며,
+    # 이 값과 운영 모드만으로는 발급되지 않습니다. 비어 있으면 발급을 차단합니다.
+    synthetic-isolation-id: ${OFFICIAL_PDF_SYNTHETIC_ISOLATION_ID:}
     max-bytes: ${OFFICIAL_PDF_MAX_BYTES:10485760}
     # Synthetic isolated initial value; not an approved operating SLA.
     attempt-lease: ${OFFICIAL_PDF_ATTEMPT_LEASE:PT5M}

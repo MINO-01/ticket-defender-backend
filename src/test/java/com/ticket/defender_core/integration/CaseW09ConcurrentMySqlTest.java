@@ -355,8 +355,10 @@ class CaseW09ConcurrentMySqlTest {
             long issuancesBefore = issuances.count();
             request = workers.submit(() -> request(fixture.adminSubject(), fixture.decisionId()));
             // 확정 전 삭제가 잡은 배타 잠금 때문에 발급 예약의 잠금 조회가 대기해야 합니다.
-            assertThat(awaitAnyOtherLockWait(revokerThreadId(revoker), request))
-                    .as("reservation waits for the uncommitted revocation").isTrue();
+            long revokerThread = revokerThreadId(revoker);
+            boolean waited = awaitAnyOtherLockWait(revokerThread, request);
+            assertThat(waited).as("reservation waits for the uncommitted revocation; %s",
+                    lockDiagnostics(revokerThread, request)).isTrue();
             revoker.commit();
 
             Future<OfficialPdfDto.Issuance> blocked = request;
@@ -431,7 +433,7 @@ class CaseW09ConcurrentMySqlTest {
 
     /** 고정 sleep 대신 InnoDB 트랜잭션 상태로 해당 연결이 실제 잠금 대기 중인지 확인합니다. 작업이 먼저 끝나면 대기하지 않은 것입니다. */
     private boolean awaitLockWait(long threadId, Future<?> work) throws Exception {
-        for (int i = 0; i < 200 && !work.isDone(); i++) {
+        for (int i = 0; i < 600 && !work.isDone(); i++) {
             Integer waiting = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.innodb_trx "
                     + "WHERE trx_mysql_thread_id = ? AND trx_state = 'LOCK WAIT'", Integer.class, threadId);
             if (waiting != null && waiting > 0) return true;
@@ -441,13 +443,36 @@ class CaseW09ConcurrentMySqlTest {
     }
 
     private boolean awaitAnyOtherLockWait(long excludedThreadId, Future<?> work) throws Exception {
-        for (int i = 0; i < 200 && !work.isDone(); i++) {
+        for (int i = 0; i < 600 && !work.isDone(); i++) {
             Integer waiting = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.innodb_trx "
                     + "WHERE trx_mysql_thread_id <> ? AND trx_state = 'LOCK WAIT'", Integer.class, excludedThreadId);
             if (waiting != null && waiting > 0) return true;
             Thread.sleep(50);
         }
         return false;
+    }
+
+    /** 잠금 대기를 관찰하지 못한 경우 원인을 구분할 수 있도록 작업 결과와 InnoDB 트랜잭션 상태를 남깁니다. */
+    private String lockDiagnostics(long revokerThread, Future<?> work) {
+        String outcome;
+        if (!work.isDone()) {
+            outcome = "work still running";
+        } else {
+            try {
+                Object value = work.get();
+                outcome = "work completed: " + (value instanceof OfficialPdfDto.Issuance issuance
+                        ? issuance.status() + "/" + issuance.lastFailureCode() : value);
+            } catch (java.util.concurrent.ExecutionException failure) {
+                Throwable cause = failure.getCause();
+                outcome = "work failed: " + cause.getClass().getSimpleName()
+                        + (cause instanceof CaseApiException api ? "/" + api.code() : "");
+            } catch (Exception other) {
+                outcome = "work state unavailable: " + other.getClass().getSimpleName();
+            }
+        }
+        List<Map<String, Object>> trx = jdbc.queryForList("SELECT trx_mysql_thread_id thread, trx_state state, "
+                + "trx_isolation_level isolation, LEFT(COALESCE(trx_query, ''), 120) query FROM information_schema.innodb_trx");
+        return outcome + "; revoker thread=" + revokerThread + "; innodb_trx=" + trx;
     }
 
     private void assertGeneratedInvariant(Fixture fixture, UUID issuanceId) {

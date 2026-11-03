@@ -6,7 +6,7 @@ info:
     관리자가 권한 있는 공연의 팬 제보 목록과 상세를 조회합니다. 조회 전용이며 분석 실행, 예매 후보 확정, Case 생성, 제재, 승인,
     PDF 발급을 수행하지 않습니다. 접수 상태는 저장된 FanReport.intakeStatus 값 그대로이며 분석 결과나 부정 거래 판정이 아닙니다.
     응답에는 객체 저장 키, 객체 버전, 접수번호, 조회 비밀 digest, 멱등성 digest, 요청 digest, tenantId를 포함하지 않습니다.
-    원본 이미지 다운로드와 미리보기 URL은 별도 보안 계약 전까지 제공하지 않습니다.
+    이 API는 원본 이미지 URL을 제공하지 않습니다. 검증된 원본 미리보기는 admin-evidence-content-v1.yaml의 Backend 프록시 API로만 제공합니다.
 servers:
   - url: /
 security:

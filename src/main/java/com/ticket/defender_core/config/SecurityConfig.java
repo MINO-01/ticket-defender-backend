@@ -99,7 +99,8 @@ public class SecurityConfig {
                                 "/api/v1/report-versions/*",
                                 "/api/v1/approval-requests/*",
                                 "/api/v1/approval-requests/*/review-package",
-                                "/api/v1/admin/fan-reports/*/evidence/*/listing-analyses").authenticated()
+                                "/api/v1/admin/fan-reports/*/evidence/*/listing-analyses",
+                                "/api/v1/admin/fan-reports/*/evidence/*/content").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/approval-decisions/*/official-pdf-issuances",
                                 "/api/v1/official-pdf-issuances/*/retry").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/approval-decisions/*/official-pdf-eligibility",

@@ -1,0 +1,97 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender admin evidence original content API
+  version: 1.0.0
+  description: >-
+    권한 있는 관리자가 팬 제보 증거의 비공개 원본 이미지를 Backend 프록시 응답으로 열람합니다. 사전 서명 URL, 저장소 주소,
+    버킷 이름, 객체 키, 객체 버전은 응답에 포함하지 않습니다. 서버는 관리자 JWT와 저장된 제보의 tenant/event 범위로 권한을
+    확인하고, 증거가 경로의 제보 소속인지 확인한 뒤, 저장 상태와 보존 기한을 확인합니다. 그다음 DB 트랜잭션 밖에서 서버에 저장된
+    객체 키와 객체 버전 또는 ETag로 원본을 읽고, 크기와 형식과 SHA-256을 저장값과 비교합니다. 다시 권한과 저장 상태를 확인하고
+    성공 감사 기록을 저장한 뒤에만 이미지 바이트를 보냅니다. 검증이나 감사 저장에 실패하면 이미지 바이트를 보내지 않습니다.
+    SHA-256 일치는 저장 당시 값과 같다는 뜻이며 장기 보존 승인이나 증거의 진정성 보장이 아닙니다. 원본 열람은 조사 지원용이며
+    자동 판정, Case 확정, 제재, 티켓 취소, PDF 발급을 수행하지 않습니다.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+paths:
+  /api/v1/admin/fan-reports/{fanReportId}/evidence/{evidenceId}/content:
+    get:
+      operationId: getAdminEvidenceContent
+      summary: 검증된 팬 제보 원본 이미지 미리보기
+      description: >-
+        ANALYST 또는 REVIEWER 역할만 사용할 수 있습니다. 쿼리 파라미터로 보낸 tenantId나 objectKey 같은 값은 사용하지 않습니다.
+        Content-Disposition은 inline이며 파일명은 서버가 증거 ID와 검증한 형식으로 만듭니다. 별도 다운로드 정책은 정하지 않았습니다.
+        동시에 처리하는 원본 수를 넘으면 기다리지 않고 503 EVIDENCE_CONTENT_BUSY를 반환합니다.
+      parameters:
+        - { name: fanReportId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: evidenceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 검증과 성공 감사(VERIFIED_FOR_RESPONSE, 클라이언트 수신 완료가 아님)가 끝난 원본 이미지입니다.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            X-Content-Type-Options: { schema: { type: string, const: nosniff } }
+            Content-Disposition:
+              description: '예: inline; filename="evidence-{evidenceId}.png". 원본 파일명은 사용하지 않습니다.'
+              schema: { type: string }
+            Content-Length: { schema: { type: integer, minimum: 1, maximum: 20971520 } }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+        '400':
+          description: fanReportId 또는 evidenceId가 UUID 형식이 아닙니다.
+          content:
+            application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+        '401':
+          description: >-
+            관리자 JWT가 없거나 서명, issuer, audience, 만료 검증에 실패했습니다. 관리자를 식별할 수 없으므로 감사 기록을 남기지 않습니다.
+        '403':
+          description: 같은 고객사의 공연 권한은 있으나 ANALYST 또는 REVIEWER 역할이 없습니다. ACCESS_DENIED 실패 감사를 남깁니다.
+          content:
+            application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+        '404':
+          description: >-
+            존재하지 않는 제보, 다른 고객사나 권한 없는 공연의 제보, 경로의 제보에 속하지 않는 evidenceId입니다. code는
+            RESOURCE_NOT_FOUND입니다. 권한이 확인된 제보에서 증거 소속이 맞지 않으면 evidenceId 없이 실패 감사를 남깁니다.
+          content:
+            application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+        '409':
+          description: >-
+            TENANT_SELECTION_REQUIRED는 활성 고객사 멤버십이 둘 이상인 관리자입니다(DEC-02 결정 전 차단, 제보 고객사 멤버십으로 실패 감사).
+            SOURCE_CHANGED는 원본을 읽는 동안 저장된 객체 버전, 형식, 크기, SHA-256 정보가 바뀐 경우입니다.
+          content:
+            application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+        '422':
+          description: >-
+            SOURCE_NOT_AVAILABLE(저장 대기, 저장 실패, 증거 미저장), RETENTION_EXPIRED(제보 또는 증거 보존 기한 만료),
+            UNSUPPORTED_IMAGE_TYPE, EVIDENCE_CONTENT_TOO_LARGE(설정 최대 크기 초과), OBJECT_CHANGED(객체 버전 또는 ETag나
+            저장소 Content-Type 변경), OBJECT_MISSING(버킷은 정상이나 객체 없음), SIZE_MISMATCH, MEDIA_TYPE_MISMATCH(실제
+            바이트 형식 불일치), HASH_MISMATCH(실제 SHA-256 불일치)입니다. 모두 실패 감사를 남깁니다.
+          content:
+            application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+        '503':
+          description: >-
+            STORAGE_UNAVAILABLE(저장소 장애), EVIDENCE_CONTENT_BUSY(동시 읽기 제한 초과), AUDIT_UNAVAILABLE(성공 감사를 저장하지
+            못해 이미지를 보내지 않음), DEPENDENCY_UNAVAILABLE(DB 조회 실패)입니다. 저장소 예외 내용과 주소는 응답에 넣지 않습니다.
+          content:
+            application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Problem:
+      type: object
+      required: [status, code, requestId]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code:
+          type: string
+          enum: [INVALID_REQUEST, UNAUTHENTICATED, FORBIDDEN, RESOURCE_NOT_FOUND, TENANT_SELECTION_REQUIRED,
+                 SOURCE_CHANGED, SOURCE_NOT_AVAILABLE, RETENTION_EXPIRED, UNSUPPORTED_IMAGE_TYPE,
+                 EVIDENCE_CONTENT_TOO_LARGE, OBJECT_CHANGED, OBJECT_MISSING, SIZE_MISMATCH, MEDIA_TYPE_MISMATCH,
+                 HASH_MISMATCH, STORAGE_UNAVAILABLE, EVIDENCE_CONTENT_BUSY, AUDIT_UNAVAILABLE,
+                 DEPENDENCY_UNAVAILABLE]
+        requestId: { type: string, format: uuid }

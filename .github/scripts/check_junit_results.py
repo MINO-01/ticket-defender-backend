@@ -30,6 +30,9 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.AdminEvidenceContentMigrationMySqlTest": (
         1, "Runs after Track 2 listing analysis migration in the isolated MySQL CI jobs"
     ),
+    "com.ticket.defender_core.integration.OfficialPdfSyntheticIsolationMigrationMySqlTest": (
+        1, "Runs after admin evidence content audit migration in the isolated MySQL CI jobs"
+    ),
     "com.ticket.defender_core.integration.AdminEvidenceContentMinioMySqlTest": (
         2, "Runs over real HTTP in the isolated MinIO and MySQL CI job"
     ),
@@ -268,6 +271,9 @@ MYSQL_SUITES = {
     ),
     "admin-evidence-content-migration": (
         "com.ticket.defender_core.integration.AdminEvidenceContentMigrationMySqlTest", 1
+    ),
+    "official-pdf-synthetic-migration": (
+        "com.ticket.defender_core.integration.OfficialPdfSyntheticIsolationMigrationMySqlTest", 1
     ),
     "admin-evidence-content-minio-mysql": (
         "com.ticket.defender_core.integration.AdminEvidenceContentMinioMySqlTest", 2

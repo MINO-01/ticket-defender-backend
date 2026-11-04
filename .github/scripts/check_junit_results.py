@@ -30,6 +30,9 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.AdminEvidenceContentMigrationMySqlTest": (
         1, "Runs after Track 2 listing analysis migration in the isolated MySQL CI jobs"
     ),
+    "com.ticket.defender_core.integration.OfficialPdfSyntheticIsolationMigrationMySqlTest": (
+        1, "Runs after admin evidence content audit migration in the isolated MySQL CI jobs"
+    ),
     "com.ticket.defender_core.integration.AdminEvidenceContentMinioMySqlTest": (
         2, "Runs over real HTTP in the isolated MinIO and MySQL CI job"
     ),
@@ -124,7 +127,7 @@ CORE_SKIPS = {
         2, "Runs against the isolated versioned official PDF MinIO bucket"
     ),
     "com.ticket.defender_core.integration.CaseW09ConcurrentMySqlTest": (
-        3, "Runs after W09 migration on the isolated MySQL CI schema"
+        6, "Runs after W09 migration on the isolated MySQL CI schema"
     ),
     "com.ticket.defender_core.integration.CaseW09MinioMySqlTest": (
         1, "Runs against isolated MySQL and the versioned official PDF MinIO bucket"
@@ -234,7 +237,7 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.CaseW09SchemaValidateMySqlTest", 1
     ),
     "case-w09-concurrency": (
-        "com.ticket.defender_core.integration.CaseW09ConcurrentMySqlTest", 3
+        "com.ticket.defender_core.integration.CaseW09ConcurrentMySqlTest", 6
     ),
     "case-w09-minio-mysql": (
         "com.ticket.defender_core.integration.CaseW09MinioMySqlTest", 1
@@ -268,6 +271,9 @@ MYSQL_SUITES = {
     ),
     "admin-evidence-content-migration": (
         "com.ticket.defender_core.integration.AdminEvidenceContentMigrationMySqlTest", 1
+    ),
+    "official-pdf-synthetic-migration": (
+        "com.ticket.defender_core.integration.OfficialPdfSyntheticIsolationMigrationMySqlTest", 1
     ),
     "admin-evidence-content-minio-mysql": (
         "com.ticket.defender_core.integration.AdminEvidenceContentMinioMySqlTest", 2

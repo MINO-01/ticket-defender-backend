@@ -6,6 +6,14 @@ x-contract-status: IMPLEMENTED_W09_SYNTHETIC_ONLY
 x-operational-policy: >-
   Disabled by default. The current implementation permits only explicit SYNTHETIC_ISOLATED mode
   and TENANT_ADMIN for isolated development; this is not an approved production issuance policy.
+  Issue #66 synthetic gate: configuration alone never enables issuance. Every eligibility, request, retry,
+  render, finalize, detail, history and download call also requires a UUID synthetic-isolation-id, a loopback
+  MySQL or in-memory H2 datasource, unset or loopback official PDF, fan report and preservation storage, and a
+  server-owned official_pdf_synthetic_tenants row for the Case tenant with the same isolation ID whose
+  registered_at is not after the Case and all of its sources. Failures return 409 OFFICIAL_PDF_DISABLED,
+  OFFICIAL_PDF_OPERATION_NOT_APPROVED, OFFICIAL_PDF_ISOLATION_UNVERIFIED or
+  OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED (eligibility returns BLOCKED with the same code). These checks
+  raise the bar against misconfiguration; they do not prove the absence of real personal data.
 security:
   - adminBearer: []
 paths:
@@ -134,6 +142,6 @@ components:
     Unauthenticated: { description: Verified administrator identity required }
     Forbidden: { description: Authenticated member lacks the temporary issuance role }
     NotFound: { description: Resource is outside the caller tenant/event scope or absent }
-    Conflict: { description: Current eligibility is stale, a hold is active, or the feature is safely disabled }
+    Conflict: { description: Current eligibility is stale, a hold is active, the feature is safely disabled, or synthetic isolation or the synthetic tenant scope cannot be verified }
     Blocked: { description: Approval, preservation, integrity, template, or operating-policy gate blocks issuance }
     Unavailable: { description: Evidence or private PDF object storage is unavailable, or its object proof fails }

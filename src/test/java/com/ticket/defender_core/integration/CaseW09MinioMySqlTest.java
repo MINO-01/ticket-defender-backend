@@ -46,10 +46,12 @@ import static org.mockito.Mockito.reset;
         "ticket-defender.evidence-preservation.max-bytes=20971520",
         "ticket-defender.official-pdf.enabled=true",
         "ticket-defender.official-pdf.operational-mode=SYNTHETIC_ISOLATED",
+        "ticket-defender.official-pdf.synthetic-isolation-id=" + CaseW09MinioMySqlTest.ISOLATION,
         "ticket-defender.official-pdf.max-bytes=10485760"
 })
 @EnabledIfEnvironmentVariable(named = "TD_ISSUE46_MINIO_BUCKET", matches = "td-issue46-ci-official-pdf")
 class CaseW09MinioMySqlTest {
+    static final String ISOLATION = "9e1d7c3b-4f2a-4c8d-a6b5-1f0e2d3c4b5a";
     private static final String PROFILE = "W09_MINIO_MYSQL_LOCKED";
     private static final long MAX_BYTES = 20L * 1024 * 1024;
 
@@ -68,6 +70,7 @@ class CaseW09MinioMySqlTest {
     @Autowired private OfficialPdfIssuanceRepository issuances;
     @Autowired private OfficialPdfArtifactRepository artifacts;
     @Autowired private TenantRepository tenants;
+    @Autowired private OfficialPdfSyntheticTenantRepository syntheticTenants;
     @Autowired private TenantEventRepository events;
     @Autowired private AdminMembershipRepository memberships;
     @Autowired private MembershipRoleRepository roles;
@@ -140,6 +143,9 @@ class CaseW09MinioMySqlTest {
         String approverSubject = "w09-minio-approver-" + UUID.randomUUID();
         String adminSubject = "w09-minio-admin-" + UUID.randomUUID();
         tenants.saveAndFlush(new Tenant(tenant, "Synthetic W09 MinIO tenant", AccessRecordStatus.ACTIVE));
+        // 합성 고객사 등록은 서버 소유 fixture로만 만들며 Case와 증거보다 먼저 등록합니다.
+        syntheticTenants.saveAndFlush(new OfficialPdfSyntheticTenant(tenant, UUID.fromString(ISOLATION),
+                LocalDateTime.now(ZoneOffset.UTC).minusSeconds(5)));
         events.saveAndFlush(new TenantEvent(event, tenant, "w09-minio-" + event,
                 "Synthetic W09 MinIO event", AccessRecordStatus.ACTIVE));
         member(reviewer, reviewerSubject, AdminRole.REVIEWER, tenant, event);

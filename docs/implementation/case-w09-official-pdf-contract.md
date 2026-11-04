@@ -45,3 +45,32 @@ PDF는 봉인된 기록에 있는 값만 표시한다. Case/ReportVersion ID, UT
 
 기본값은 `ticket-defender.official-pdf.enabled=false`다. flag만 켜도 동작하지 않고,
 현재 코드는 명시적 `SYNTHETIC_ISOLATED` 모드에서만 실행된다. `TENANT_ADMIN`은 합성 격리 개발을 위한 잠정 역할일 뿐 최종 운영 권한 정책이 아니다. 개인정보 처리 근거, 위탁/국외 이전, 보존, 파기, 운영 발급, 다운로드 권한이 승인될 때까지 실운영 발급은 안전하게 차단한다.
+
+## 합성 격리 게이트 (Issue #66)
+
+PR #48의 게이트는 `enabled=true`와 `operational-mode=SYNTHETIC_ISOLATED` 두 설정만 확인했다. 운영 서버에 이 두 줄과 loopback PDF 버킷만 지정하면 운영 DB의 실제 고객사 Case와 팬 원본으로 공식 PDF가 발급될 수 있었다. 이제 `OfficialPdfOperationGate`는 아래 조건을 모두 요구하고 하나라도 확인할 수 없으면 차단한다.
+
+| 단계 | 조건 | 실패 코드 (409) |
+| --- | --- | --- |
+| 환경 | `enabled=true` | `OFFICIAL_PDF_DISABLED` |
+| 환경 | `operational-mode=SYNTHETIC_ISOLATED` | `OFFICIAL_PDF_OPERATION_NOT_APPROVED` |
+| 환경 | `synthetic-isolation-id`가 UUID, 데이터소스가 단일 호스트 loopback MySQL 또는 `jdbc:h2:mem:`, 공식 PDF와 제보 원본과 W07 보존 저장소 endpoint가 비어 있거나 사용자 정보 없는 loopback | `OFFICIAL_PDF_ISOLATION_UNVERIFIED` |
+| 범위 | Case 고객사가 `official_pdf_synthetic_tenants`에 같은 `isolation_id`로 등록되어 있고, Case 생성 시각과 모든 출처(연결 시각, 제보 접수 시각, 증거 생성 시각, Track 1 분석 완료 시각)가 `registered_at` 이후 | `OFFICIAL_PDF_SYNTHETIC_SCOPE_UNVERIFIED` |
+
+- 등록부(`docs/database/official-pdf-synthetic-isolation-migration.sql`)는 마이그레이션이 비워 둔 채 만든다. 공개 API가 없고 격리 환경 준비 절차(테스트 fixture 또는 격리 DB의 SQL)만 등록한다. 따라서 운영 DB는 설정을 바꿔도 등록 행이 없어 발급되지 않는다.
+- `registered_at`은 UTC다. 애플리케이션의 Case, 제보, 증거, 출처 시각도 `LocalDateTime.now(ZoneOffset.UTC)` 기준이다. SQL 등록은 열을 생략해 기본값 `UTC_TIMESTAMP(6)`를 쓰며(`INSERT INTO official_pdf_synthetic_tenants (tenant_id, isolation_id) VALUES (...)`), 세션 시간대를 따르는 `NOW()`나 `CURRENT_TIMESTAMP`는 쓰지 않는다. 음수 오프셋 세션의 `NOW()`는 등록 시각을 과거로 기록해 등록 이전 데이터를 허용할 수 있다. 테스트 fixture는 UTC 값을 직접 넣는다.
+- 상태를 확정하는 쓰기 트랜잭션(`reserveForDecision`, `finalizeIssuance`, 다운로드 감사 `auditDownload`)은 Case `FOR UPDATE` 다음에 등록 행을 `FOR SHARE`로 읽는다. 최종화가 먼저 잠금을 잡으면 직접 SQL의 등록 해제(DELETE)는 산출물이 확정될 때까지 대기하고, 확정 전 해제가 진행 중이면 최종화의 잠금 조회가 대기한 뒤 해제 결과를 보고 실패한다. 해제가 확정된 뒤의 신규 발급과 다운로드는 차단된다. 해제 DELETE는 등록 행만 잠그므로 Case 우선 잠금 순서와 교착이 생기지 않는다. 조회와 렌더링 준비(`renderSource`, 읽기 전용 트랜잭션)는 잠그지 않고 최종화가 다시 확인한다.
+- `registered_at` 조건은 기존 실제 고객사를 나중에 합성으로 등록해 과거 데이터로 발급하는 것을 막는다.
+- 호출 위치: eligibility(BLOCKED와 코드 반환), request, retry, detail, history, download는 권한 확인 뒤에 검사해 범위 밖 사용자에게 등록 여부를 드러내지 않는다. 쓰기 경로는 `reserveForDecision`과 `finalizeIssuance`가 Case 잠금 아래에서, `renderSource`가 렌더링과 객체 저장 전에 다시 검사한다.
+- 예약 전 차단은 발급 기록, 시도, 감사 행을 만들지 않는다. 예약 뒤 등록이나 격리 조건이 사라지면 기존 `markTerminal`이 `FAILED`와 실패 코드를 시도와 감사 기록에 남기고 아티팩트와 `GENERATED`는 만들지 않는다.
+- 합성 범위를 확인할 수 없는 기존 아티팩트는 DB 이력을 그대로 보존하고 detail, history, download만 409로 막는다. 적격성이 STALE이 된 기존 문서의 다운로드 정책(DEC-14)은 이번에 정하지 않았다.
+
+검증에 사용한 합성 데이터는 테스트 fixture가 만든 고객사, 제보, 증거와 4바이트 또는 합성 PNG 원본이며, 각 fixture가 Case 생성 전에 등록 행을 만든다. 실제 개인정보나 외부 데이터는 사용하지 않았다.
+
+자동으로 확인할 수 없는 신뢰 경계는 다음과 같다. 이 게이트는 데이터가 실제 개인정보가 아님을 증명하지 않는다.
+
+- DB 쓰기 권한이 있는 관리자는 등록 행을 넣을 수 있다.
+- loopback 주소는 운영 DB나 저장소로 향하는 로컬 프록시나 터널로 위장할 수 있다.
+- 이미지 바이트와 제보 내용이 합성인지는 서버가 판정할 수 없다.
+
+따라서 실운영 발급은 개인정보 처리 근거, 위탁과 국외 이전, 보존과 파기, 발급과 다운로드 권한 정책이 승인될 때까지 계속 차단한다. #46의 남은 항목(한국어 레이아웃 검증), DEC-09(SUPERSEDED, 실패 후보 파기), DEC-14(발급 역할, Hold 운영, 다운로드 재검증)는 이 Issue에서 다루지 않는다.

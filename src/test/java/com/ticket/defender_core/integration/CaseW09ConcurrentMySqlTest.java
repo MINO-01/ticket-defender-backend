@@ -353,30 +353,13 @@ class CaseW09ConcurrentMySqlTest {
                 assertThat(delete.executeUpdate()).isEqualTo(1);
             }
             long issuancesBefore = issuances.count();
-            java.util.concurrent.atomic.AtomicReference<Thread> worker = new java.util.concurrent.atomic.AtomicReference<>();
-            request = workers.submit(() -> {
-                worker.set(Thread.currentThread());
-                return request(fixture.adminSubject(), fixture.decisionId());
-            });
+            request = workers.submit(() -> request(fixture.adminSubject(), fixture.decisionId()));
             // 확정 전 삭제가 잡은 배타 잠금 때문에 발급 예약의 잠금 조회가 대기해야 합니다.
             long revokerThread = revokerThreadId(revoker);
             boolean waited = awaitAnyOtherLockWait(revokerThread, request);
-            if (!waited) {
-                Thread thread = worker.get();
-                String stack = thread == null ? "no worker" : java.util.Arrays.stream(thread.getStackTrace())
-                        .map(StackTraceElement::toString).filter(frame -> frame.startsWith("com.ticket"))
-                        .collect(java.util.stream.Collectors.joining(" <- "));
-                List<Map<String, Object>> processes = jdbc.queryForList("SELECT ID id, STATE state, "
-                        + "RIGHT(COALESCE(INFO, ''), 80) info FROM information_schema.PROCESSLIST WHERE COMMAND <> 'Sleep'");
-                List<Map<String, Object>> rowWaits = jdbc.queryForList("SELECT REQUESTING_THREAD_ID requester, "
-                        + "BLOCKING_THREAD_ID blocker FROM performance_schema.data_lock_waits");
-                List<Map<String, Object>> metadataWaits = jdbc.queryForList("SELECT OBJECT_NAME object, LOCK_TYPE type, "
-                        + "LOCK_STATUS status, OWNER_THREAD_ID owner FROM performance_schema.metadata_locks "
-                        + "WHERE OBJECT_SCHEMA = DATABASE() AND LOCK_STATUS = 'PENDING'");
-                assertThat(waited).as("reservation waits for the uncommitted revocation; %s; processlist=%s; "
-                                + "rowWaits=%s; metadataWaits=%s; worker=%s",
-                        lockDiagnostics(revokerThread, request), processes, rowWaits, metadataWaits, stack).isTrue();
-            }
+            Future<OfficialPdfDto.Issuance> observed = request;
+            assertThat(waited).as(() -> "reservation waits for the uncommitted revocation; "
+                    + lockDiagnostics(revokerThread, observed)).isTrue();
             revoker.commit();
 
             Future<OfficialPdfDto.Issuance> blocked = request;
@@ -449,28 +432,36 @@ class CaseW09ConcurrentMySqlTest {
         }
     }
 
-    /** 고정 sleep 대신 InnoDB 트랜잭션 상태로 해당 연결이 실제 잠금 대기 중인지 확인합니다. 작업이 먼저 끝나면 대기하지 않은 것입니다. */
-    private boolean awaitLockWait(long threadId, Future<?> work) throws Exception {
+    /**
+     * 고정 sleep 대신 performance_schema.data_lock_waits로 해당 연결이 실제 행 잠금을 기다리는지 확인합니다.
+     * 일부 MySQL 실행 환경에서는 information_schema.innodb_trx가 대기 중인 트랜잭션을 RUNNING으로 보고하므로 쓰지 않습니다.
+     * 작업이 먼저 끝나면 대기하지 않은 것입니다.
+     */
+    private boolean awaitLockWait(long connectionId, Future<?> work) throws Exception {
+        return awaitRowLockWait("w.REQUESTING_THREAD_ID", connectionId, work);
+    }
+
+    /** 지정한 연결이 잡은 잠금 때문에 다른 연결이 대기하는지 확인합니다. */
+    private boolean awaitAnyOtherLockWait(long blockingConnectionId, Future<?> work) throws Exception {
+        return awaitRowLockWait("w.BLOCKING_THREAD_ID", blockingConnectionId, work);
+    }
+
+    /** 무관한 대기를 성공으로 보지 않도록 현재 스키마의 합성 등록부 테이블 잠금 대기만 셉니다. */
+    private boolean awaitRowLockWait(String column, long connectionId, Future<?> work) throws Exception {
+        String sql = "SELECT COUNT(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.threads t "
+                + "ON t.THREAD_ID = " + column + " JOIN performance_schema.data_locks l "
+                + "ON l.ENGINE = w.ENGINE AND l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID "
+                + "WHERE t.PROCESSLIST_ID = ? AND l.OBJECT_SCHEMA = DATABASE() "
+                + "AND l.OBJECT_NAME = 'official_pdf_synthetic_tenants'";
         for (int i = 0; i < 600 && !work.isDone(); i++) {
-            Integer waiting = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.innodb_trx "
-                    + "WHERE trx_mysql_thread_id = ? AND trx_state = 'LOCK WAIT'", Integer.class, threadId);
+            Integer waiting = jdbc.queryForObject(sql, Integer.class, connectionId);
             if (waiting != null && waiting > 0) return true;
             Thread.sleep(50);
         }
         return false;
     }
 
-    private boolean awaitAnyOtherLockWait(long excludedThreadId, Future<?> work) throws Exception {
-        for (int i = 0; i < 600 && !work.isDone(); i++) {
-            Integer waiting = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.innodb_trx "
-                    + "WHERE trx_mysql_thread_id <> ? AND trx_state = 'LOCK WAIT'", Integer.class, excludedThreadId);
-            if (waiting != null && waiting > 0) return true;
-            Thread.sleep(50);
-        }
-        return false;
-    }
-
-    /** 잠금 대기를 관찰하지 못한 경우 원인을 구분할 수 있도록 작업 결과와 InnoDB 트랜잭션 상태를 남깁니다. */
+    /** 잠금 대기를 관찰하지 못한 경우에만 원인을 구분할 수 있도록 작업 결과와 행 잠금 대기 관계를 남깁니다. */
     private String lockDiagnostics(long revokerThread, Future<?> work) {
         String outcome;
         if (!work.isDone()) {
@@ -488,9 +479,11 @@ class CaseW09ConcurrentMySqlTest {
                 outcome = "work state unavailable: " + other.getClass().getSimpleName();
             }
         }
-        List<Map<String, Object>> trx = jdbc.queryForList("SELECT trx_mysql_thread_id thread, trx_state state, "
-                + "trx_isolation_level isolation, LEFT(COALESCE(trx_query, ''), 120) query FROM information_schema.innodb_trx");
-        return outcome + "; revoker thread=" + revokerThread + "; innodb_trx=" + trx;
+        List<Map<String, Object>> waits = jdbc.queryForList("SELECT r.PROCESSLIST_ID requester, b.PROCESSLIST_ID blocker "
+                + "FROM performance_schema.data_lock_waits w JOIN performance_schema.threads r "
+                + "ON r.THREAD_ID = w.REQUESTING_THREAD_ID JOIN performance_schema.threads b "
+                + "ON b.THREAD_ID = w.BLOCKING_THREAD_ID");
+        return outcome + "; revoker connection=" + revokerThread + "; data_lock_waits=" + waits;
     }
 
     private void assertGeneratedInvariant(Fixture fixture, UUID issuanceId) {

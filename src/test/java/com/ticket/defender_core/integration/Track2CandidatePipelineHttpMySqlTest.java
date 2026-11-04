@@ -139,7 +139,9 @@ class Track2CandidatePipelineHttpMySqlTest {
         syntheticTenants.saveAndFlush(new SyntheticReservationImportTenant(tenant, UUID.fromString(ISOLATION_ID),
                 now.minusMinutes(1)));
         UUID reportId = UUID.randomUUID();
-        FanReport report = new FanReport(reportId, "FR-HTTP-" + reportId, tenant, event, now.plusDays(1), null,
+        String receiptNumber = "FR-HTTP-" + reportId.toString().replace("-", "");
+        assertThat(receiptNumber).hasSize(40);
+        FanReport report = new FanReport(reportId, receiptNumber, tenant, event, now.plusDays(1), null,
                 FanReport.ReportType.PREMIUM_RESALE, "Synthetic listing report", null, null, null, null, now,
                 UUID.randomUUID().toString(), "a".repeat(64), "b".repeat(64));
         report.markReceived();

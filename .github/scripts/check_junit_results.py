@@ -159,7 +159,7 @@ CORE_SKIPS = {
         1, "Runs over real HTTP with synthetic isolation and isolated MySQL in CI"
     ),
     "com.ticket.defender_core.integration.Track2CandidatePipelineConcurrentMySqlTest": (
-        2, "Runs candidate active-slot and idempotency races in the isolated MySQL CI job"
+        4, "Runs candidate active-slot, lease expiry and idempotency races in the isolated MySQL CI job"
     ),
 }
 
@@ -276,7 +276,7 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.Track2CandidatePipelineHttpMySqlTest", 1
     ),
     "track2-candidate-concurrency": (
-        "com.ticket.defender_core.integration.Track2CandidatePipelineConcurrentMySqlTest", 2
+        "com.ticket.defender_core.integration.Track2CandidatePipelineConcurrentMySqlTest", 4
     ),
     "admin-fan-report-read": (
         "com.ticket.defender_core.integration.AdminFanReportReadMySqlTest", 2

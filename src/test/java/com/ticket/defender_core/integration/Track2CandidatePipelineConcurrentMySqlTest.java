@@ -230,7 +230,9 @@ class Track2CandidatePipelineConcurrentMySqlTest {
         grants.saveAndFlush(new MembershipEventGrant(UUID.randomUUID(), member, tenant, event));
 
         UUID reportId = UUID.randomUUID();
-        FanReport report = new FanReport(reportId, "FR-CANDIDATE-" + reportId, tenant, event, now.plusDays(1), null,
+        String receiptNumber = "FR-CAND-" + reportId.toString().replace("-", "");
+        assertThat(receiptNumber).hasSize(40);
+        FanReport report = new FanReport(reportId, receiptNumber, tenant, event, now.plusDays(1), null,
                 FanReport.ReportType.PREMIUM_RESALE, "Synthetic listing report", null, null, null, null, now,
                 UUID.randomUUID().toString(), "a".repeat(64), "b".repeat(64));
         report.markReceived();

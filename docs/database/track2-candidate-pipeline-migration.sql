@@ -241,6 +241,7 @@ CREATE TABLE listing_candidate_match_runs (
     idempotency_key_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     request_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     active_analysis_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    lease_expires_at DATETIME(6) NULL,
     performance_link_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
     performance_link_revision INT NULL,
     verified_performance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -285,8 +286,9 @@ CREATE TABLE listing_candidate_match_runs (
         ('IN_PROGRESS', 'MATCH_CANDIDATE', 'NO_MATCH', 'AMBIGUOUS', 'UNVERIFIABLE', 'LOOKUP_FAILED', 'ANALYSIS_FAILED')),
     CONSTRAINT chk_listing_candidate_run_lifecycle CHECK (
         (status = 'IN_PROGRESS' AND active_analysis_id = analysis_id AND reason = 'LOOKUP_STARTED'
-            AND completed_at IS NULL)
-        OR (status <> 'IN_PROGRESS' AND active_analysis_id IS NULL AND completed_at IS NOT NULL)),
+            AND completed_at IS NULL AND lease_expires_at IS NOT NULL)
+        OR (status <> 'IN_PROGRESS' AND active_analysis_id IS NULL AND completed_at IS NOT NULL
+            AND lease_expires_at IS NULL)),
     CONSTRAINT chk_listing_candidate_run_candidate CHECK (
         (status = 'MATCH_CANDIDATE' AND candidate_count = 1 AND candidate_id IS NOT NULL)
         OR (status = 'NO_MATCH' AND candidate_count = 0 AND candidate_id IS NULL)

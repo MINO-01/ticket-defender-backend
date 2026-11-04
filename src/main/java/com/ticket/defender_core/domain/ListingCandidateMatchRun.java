@@ -61,6 +61,8 @@ public class ListingCandidateMatchRun {
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "active_analysis_id", length = 36)
     private UUID activeAnalysisId;
+    @Column(name = "lease_expires_at")
+    private LocalDateTime leaseExpiresAt;
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "performance_link_id", length = 36)
     private UUID performanceLinkId;
@@ -109,6 +111,13 @@ public class ListingCandidateMatchRun {
     public ListingCandidateMatchRun(UUID tenantId, UUID eventId, UUID fanReportId, UUID evidenceId, UUID analysisId,
             UUID createdByMembershipId, String idempotencyKeyDigest, String requestDigest, Binding binding,
             LocalDateTime now) {
+        this(tenantId, eventId, fanReportId, evidenceId, analysisId, createdByMembershipId, idempotencyKeyDigest,
+                requestDigest, binding, now, now.plusMinutes(5));
+    }
+
+    public ListingCandidateMatchRun(UUID tenantId, UUID eventId, UUID fanReportId, UUID evidenceId, UUID analysisId,
+            UUID createdByMembershipId, String idempotencyKeyDigest, String requestDigest, Binding binding,
+            LocalDateTime now, LocalDateTime leaseExpiresAt) {
         this.id = UUID.randomUUID();
         this.tenantId = Objects.requireNonNull(tenantId);
         this.eventId = Objects.requireNonNull(eventId);
@@ -123,6 +132,7 @@ public class ListingCandidateMatchRun {
         this.status = CandidateMatchDecision.Status.IN_PROGRESS;
         this.reason = CandidateMatchDecision.Reason.LOOKUP_STARTED;
         this.createdAt = Objects.requireNonNull(now);
+        this.leaseExpiresAt = Objects.requireNonNull(leaseExpiresAt);
     }
 
     public static ListingCandidateMatchRun terminal(UUID tenantId, UUID eventId, UUID fanReportId, UUID evidenceId,
@@ -138,6 +148,7 @@ public class ListingCandidateMatchRun {
             LocalDateTime now) {
         if (activeAnalysisId == null) throw new IllegalStateException("Candidate match run is already closed");
         this.activeAnalysisId = null;
+        this.leaseExpiresAt = null;
         this.status = Objects.requireNonNull(result).status();
         this.reason = result.reason();
         this.candidateCount = candidateCount;
@@ -147,6 +158,17 @@ public class ListingCandidateMatchRun {
 
     public boolean inProgress() {
         return activeAnalysisId != null;
+    }
+
+    public boolean leaseExpired(LocalDateTime now) {
+        return inProgress() && (leaseExpiresAt == null || !leaseExpiresAt.isAfter(Objects.requireNonNull(now)));
+    }
+
+    public void expire(LocalDateTime now) {
+        if (leaseExpired(now)) {
+            complete(new CandidateMatchDecision.Result(CandidateMatchDecision.Status.LOOKUP_FAILED,
+                    CandidateMatchDecision.Reason.RESERVATION_LOOKUP_FAILED), null, null, now);
+        }
     }
 
     private void apply(Binding binding) {

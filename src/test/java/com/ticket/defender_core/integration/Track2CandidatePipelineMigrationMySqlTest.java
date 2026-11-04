@@ -12,6 +12,7 @@ import org.springframework.jdbc.datasource.init.ScriptUtils;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -22,6 +23,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         matches = "jdbc:mysql://127\\.0\\.0\\.1:13307/td_issue32.*")
 class Track2CandidatePipelineMigrationMySqlTest {
     private static final LocalDateTime NOW = LocalDateTime.parse("2026-11-04T12:00:00");
+    private static final List<String> ISSUE68_TABLES = List.of(
+            "verified_performances", "performance_verification_audits", "fan_report_performance_links",
+            "performance_link_audits", "synthetic_reservation_import_tenants", "reservation_import_batches",
+            "reservation_import_errors", "reservation_candidates", "reservation_data_sources",
+            "listing_candidate_match_runs");
+    private static final List<String> ISSUE68_DROP_ORDER = List.of(
+            "listing_candidate_match_runs", "reservation_import_errors", "reservation_candidates",
+            "reservation_data_sources", "reservation_import_batches", "performance_link_audits",
+            "fan_report_performance_links", "performance_verification_audits",
+            "synthetic_reservation_import_tenants", "verified_performances");
 
     @Test
     void additiveMigrationKeepsLegacyReservationAndEnforcesSyntheticSnapshotBoundaries() throws Exception {
@@ -29,15 +40,14 @@ class Track2CandidatePipelineMigrationMySqlTest {
                 System.getenv("TD_ISSUE32_MYSQL_USER"), System.getenv("TD_ISSUE32_MYSQL_PASSWORD"));
         source.setDriverClassName("com.mysql.cj.jdbc.Driver");
         JdbcTemplate jdbc = new JdbcTemplate(source);
+        restorePreIssue68Fixture(jdbc);
         int legacyReservations = jdbc.queryForObject("SELECT COUNT(*) FROM reservation", Integer.class);
         try (Connection connection = source.getConnection()) {
             ScriptUtils.executeSqlScript(connection,
                     new FileSystemResource("docs/database/track2-candidate-pipeline-migration.sql"));
         }
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM reservation", Integer.class)).isEqualTo(legacyReservations);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() "
-                + "AND table_name IN ('verified_performances','reservation_import_batches','reservation_candidates',"
-                + "'reservation_data_sources','listing_candidate_match_runs')", Integer.class)).isEqualTo(5);
+        assertThat(issue68Tables(jdbc)).containsExactlyInAnyOrderElementsOf(ISSUE68_TABLES);
 
         Map<String, Object> scope = jdbc.queryForMap("SELECT r.tenant_id tenant_id, r.event_id event_id, r.id report_id, "
                 + "m.id membership_id FROM fan_reports r JOIN memberships m ON m.tenant_id=r.tenant_id "
@@ -80,6 +90,37 @@ class Track2CandidatePipelineMigrationMySqlTest {
                 performance, "round-candidate-1", membership, "d".repeat(64), "e".repeat(64), "broken", "v1",
                 UUID.randomUUID().toString(), false, "ACCEPTED", 1, 1, 0, NOW, NOW));
         assertThat(report).isNotBlank();
+    }
+
+    /**
+     * FanReportMigrationMySqlTest bootstraps the current JPA model with ddl-auto=create. This test is intentionally
+     * ordered after all pre-#68 migration tests in CI, so only the empty #68 tables are removed to recreate the
+     * pre-#68 schema immediately before this migration. Production DDL is never made idempotent to mask this setup.
+     */
+    private static void restorePreIssue68Fixture(JdbcTemplate jdbc) {
+        String url = System.getenv("TD_ISSUE32_MYSQL_URL");
+        if (url == null || !url.matches("jdbc:mysql://127\\.0\\.0\\.1:13307/td_issue32(?:_ci|_minio_ci)(?:\\?.*)?"))
+            throw new IllegalStateException("Track 2 migration cleanup requires the named disposable CI schema");
+        assertThat(issue68Tables(jdbc)).containsExactlyInAnyOrderElementsOf(ISSUE68_TABLES);
+        for (String table : ISSUE68_TABLES) {
+            Integer rows = jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
+            if (rows == null || rows != 0)
+                throw new IllegalStateException("Track 2 migration fixture requires empty generated table: " + table);
+        }
+        Integer scopeIndex = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.statistics "
+                + "WHERE table_schema=DATABASE() AND table_name='listing_context_analyses' "
+                + "AND index_name='uk_listing_analyses_scope_id'", Integer.class);
+        assertThat(scopeIndex).isZero();
+        for (String table : ISSUE68_DROP_ORDER) jdbc.execute("DROP TABLE " + table);
+        assertThat(issue68Tables(jdbc)).isEmpty();
+    }
+
+    private static List<String> issue68Tables(JdbcTemplate jdbc) {
+        return jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() "
+                + "AND table_name IN ('verified_performances','performance_verification_audits',"
+                + "'fan_report_performance_links','performance_link_audits','synthetic_reservation_import_tenants',"
+                + "'reservation_import_batches','reservation_import_errors','reservation_candidates',"
+                + "'reservation_data_sources','listing_candidate_match_runs')", String.class);
     }
 
     private static void assertCheck(Runnable action) {

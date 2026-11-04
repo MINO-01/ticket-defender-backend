@@ -120,6 +120,35 @@ class ListingCandidateMatchServiceTest {
     }
 
     @Test
+    void unexpectedLookupFailureClosesTheRunAndRethrowsTheOriginalError() {
+        IllegalStateException unexpected = new IllegalStateException("synthetic lookup mapper failure");
+        ListingCandidateMatchRun failed = ListingCandidateMatchRun.terminal(tenantId, eventId, reportId, evidenceId,
+                analysisId, memberId, "c".repeat(64), "d".repeat(64), null,
+                new CandidateMatchDecision.Result(CandidateMatchDecision.Status.LOOKUP_FAILED,
+                        CandidateMatchDecision.Reason.RESERVATION_LOOKUP_FAILED),
+                LocalDateTime.parse("2026-11-04T12:00:01"));
+        when(candidates.findTop2ByBatchIdAndZoneAndRowNumAndSeatNum(any(), any(), any(), any())).thenThrow(unexpected);
+        when(writer.lookupFailed(inProgress.getId())).thenReturn(failed);
+
+        assertThatThrownBy(() -> service.match(reportId, evidenceId, analysisId, UUID.randomUUID().toString()))
+                .isSameAs(unexpected);
+        verify(writer).lookupFailed(inProgress.getId());
+    }
+
+    @Test
+    void unexpectedLookupFailureKeepsAnAuditFailureSuppressedOnTheOriginalError() {
+        IllegalStateException unexpected = new IllegalStateException("synthetic lookup mapper failure");
+        IllegalStateException auditFailure = new IllegalStateException("synthetic audit failure");
+        when(candidates.findTop2ByBatchIdAndZoneAndRowNumAndSeatNum(any(), any(), any(), any())).thenThrow(unexpected);
+        when(writer.lookupFailed(inProgress.getId())).thenThrow(auditFailure);
+
+        assertThatThrownBy(() -> service.match(reportId, evidenceId, analysisId, UUID.randomUUID().toString()))
+                .isSameAs(unexpected)
+                .satisfies(error -> assertThat(error.getSuppressed()).containsExactly(auditFailure));
+        verify(writer).lookupFailed(inProgress.getId());
+    }
+
+    @Test
     void reportsUnrecordedFailureWhenTheDatabaseCannotCreateTheInitialAuditRun() {
         when(writer.start(eq(reportId), eq(evidenceId), eq(analysisId), eq(memberId), any(), any())).thenThrow(
                 new CannotCreateTransactionException("synthetic total database outage before run creation"));

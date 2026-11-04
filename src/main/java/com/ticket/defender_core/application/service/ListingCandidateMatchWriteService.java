@@ -20,9 +20,11 @@ import com.ticket.defender_core.domain.ReservationImportBatch;
 import com.ticket.defender_core.domain.VerifiedPerformance;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.EnumMap;
@@ -36,6 +38,8 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class ListingCandidateMatchWriteService {
+    private static final Duration MINIMUM_LEASE = Duration.ofSeconds(1);
+
     private final ListingCandidateMatchRunRepository runs;
     private final ListingContextAnalysisRepository analyses;
     private final ListingContextObservationRepository observations;
@@ -46,18 +50,28 @@ public class ListingCandidateMatchWriteService {
     private final ReservationDataSourceRepository sources;
     private final ReservationImportBatchRepository batches;
 
+    @Value("${ticket-defender.track2-candidate-match.attempt-lease:PT5M}")
+    private Duration attemptLease;
+
     @Transactional
     public Started start(UUID fanReportId, UUID evidenceId, UUID analysisId, UUID membershipId,
             String idempotencyKeyDigest, String requestDigest) {
+        LocalDateTime now = now();
         Optional<ListingCandidateMatchRun> replay = runs
                 .findByCreatedByMembershipIdAndAnalysisIdAndIdempotencyKeyDigest(membershipId, analysisId,
                         idempotencyKeyDigest);
         if (replay.isPresent()) {
             if (!replay.get().getRequestDigest().equals(requestDigest)) throw conflict("IDEMPOTENCY_KEY_REUSED");
+            if (replay.get().leaseExpired(now)) {
+                replay.get().expire(now);
+                return new Started(runs.saveAndFlush(replay.get()), false, null);
+            }
             return new Started(replay.get(), false, null);
         }
-        runs.findByActiveAnalysisId(analysisId).ifPresent(active -> {
-            throw conflict("CANDIDATE_LOOKUP_IN_PROGRESS");
+        runs.findByActiveAnalysisIdForUpdate(analysisId).ifPresent(active -> {
+            if (!active.leaseExpired(now)) throw conflict("CANDIDATE_LOOKUP_IN_PROGRESS");
+            active.expire(now);
+            runs.saveAndFlush(active);
         });
 
         ListingContextAnalysis analysis = analyses.findById(analysisId).orElseThrow(ListingCandidateMatchWriteService::notFound);
@@ -70,7 +84,6 @@ public class ListingCandidateMatchWriteService {
             throw notFound();
 
         ListingCandidateMatchRun.Binding base = binding(analysis, asset, null, null, null);
-        LocalDateTime now = now();
         if (analysis.getExecutionStatus() != ListingContextAnalysis.Execution.SUCCEEDED) {
             return terminal(report, analysis, asset, membershipId, idempotencyKeyDigest, requestDigest, base,
                     new CandidateMatchDecision.Result(CandidateMatchDecision.Status.ANALYSIS_FAILED,
@@ -122,12 +135,18 @@ public class ListingCandidateMatchWriteService {
         }
         LookupInput lookup = seatInput(analysis);
         CandidateMatchDecision.Result seatResult = CandidateMatchDecision.decide(lookup.analysisInput(), true, true, 1);
+        if (seatResult.status() == CandidateMatchDecision.Status.MATCH_CANDIDATE
+                && (lookup.zone() == null || lookup.row() == null || lookup.seat() == null)) {
+            seatResult = new CandidateMatchDecision.Result(CandidateMatchDecision.Status.UNVERIFIABLE,
+                    CandidateMatchDecision.Reason.SEAT_OBSERVATION_UNAVAILABLE);
+        }
         if (seatResult.status() != CandidateMatchDecision.Status.MATCH_CANDIDATE) {
             return terminal(report, analysis, asset, membershipId, idempotencyKeyDigest, requestDigest, sourced,
                     seatResult, now);
         }
         ListingCandidateMatchRun run = new ListingCandidateMatchRun(report.getTenantId(), report.getEventId(),
-                fanReportId, evidenceId, analysisId, membershipId, idempotencyKeyDigest, requestDigest, sourced, now);
+                fanReportId, evidenceId, analysisId, membershipId, idempotencyKeyDigest, requestDigest, sourced, now,
+                leaseExpiry(now));
         return new Started(runs.saveAndFlush(run), true, lookup);
     }
 
@@ -136,7 +155,12 @@ public class ListingCandidateMatchWriteService {
             UUID candidateId) {
         ListingCandidateMatchRun run = runs.findById(runId).orElseThrow(ListingCandidateMatchWriteService::notFound);
         if (!run.inProgress()) return run;
-        run.complete(result, candidateCount, candidateId, now());
+        LocalDateTime now = now();
+        if (run.leaseExpired(now)) {
+            run.expire(now);
+            return runs.saveAndFlush(run);
+        }
+        run.complete(result, candidateCount, candidateId, now);
         return runs.saveAndFlush(run);
     }
 
@@ -212,6 +236,12 @@ public class ListingCandidateMatchWriteService {
 
     private static LocalDateTime now() {
         return LocalDateTime.now(ZoneOffset.UTC);
+    }
+
+    private LocalDateTime leaseExpiry(LocalDateTime now) {
+        Duration configured = attemptLease == null || attemptLease.compareTo(MINIMUM_LEASE) < 0
+                ? MINIMUM_LEASE : attemptLease;
+        return now.plus(configured);
     }
 
     private static CaseApiException conflict(String code) {

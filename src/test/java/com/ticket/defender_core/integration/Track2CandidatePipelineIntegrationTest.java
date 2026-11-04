@@ -183,6 +183,23 @@ class Track2CandidatePipelineIntegrationTest {
     }
 
     @Test
+    void overlongFoundSeatObservationIsTerminalBeforeItCanHoldTheActiveSlot() throws Exception {
+        Fixture fixture = fixture(ListingContextObservation.State.FOUND, ListingContextObservation.State.FOUND,
+                ListingContextObservation.State.FOUND, "V".repeat(129), "10", "5");
+        String performanceId = createPerformance(fixture);
+        link(fixture, performanceId, 0);
+        importRows(fixture, performanceId, "source-v1", true, "VIP", "10", "5");
+
+        candidate(fixture, UUID.randomUUID().toString()).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("UNVERIFIABLE"))
+                .andExpect(jsonPath("$.reason").value("SEAT_OBSERVATION_UNAVAILABLE"));
+        candidate(fixture, UUID.randomUUID().toString()).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("UNVERIFIABLE"))
+                .andExpect(jsonPath("$.reason").value("SEAT_OBSERVATION_UNAVAILABLE"));
+        history(fixture).andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(2));
+    }
+
+    @Test
     void importRetriesAreIdempotentAndCrossTenantCandidateReadIsHidden() throws Exception {
         Fixture fixture = fixture(ListingContextObservation.State.FOUND, ListingContextObservation.State.FOUND,
                 ListingContextObservation.State.FOUND);
@@ -194,6 +211,8 @@ class Track2CandidatePipelineIntegrationTest {
                         .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", key)
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("ACCEPTED")).andReturn();
+        assertThat(imported.getResponse().getContentAsString()).doesNotContain("synthetic-reservation-0",
+                "referenceHmac", "synthetic-only-master-key-material-that-is-long-enough");
         String batchId = id(imported.getResponse().getContentAsString());
         mvc.perform(post("/api/v1/admin/events/{eventId}/reservation-imports", fixture.eventId())
                         .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", key)
@@ -227,6 +246,11 @@ class Track2CandidatePipelineIntegrationTest {
 
     private Fixture fixture(ListingContextObservation.State zoneState, ListingContextObservation.State rowState,
             ListingContextObservation.State seatState) throws Exception {
+        return fixture(zoneState, rowState, seatState, "VIP", "10", "5");
+    }
+
+    private Fixture fixture(ListingContextObservation.State zoneState, ListingContextObservation.State rowState,
+            ListingContextObservation.State seatState, String zoneValue, String rowValue, String seatValue) throws Exception {
         UUID tenant = UUID.randomUUID();
         UUID event = UUID.randomUUID();
         String subject = "candidate-user-" + UUID.randomUUID();
@@ -258,9 +282,9 @@ class Track2CandidatePipelineIntegrationTest {
         analysis.succeed(ListingContextAnalysis.AnalysisStatus.COMPLETED, "synthetic", "v1", now,
                 "e".repeat(64), "MATCH_SCORE_UNAVAILABLE", now);
         analyses.saveAndFlush(analysis);
-        observation(analysisId, ListingContextObservation.Field.zone, zoneState, "VIP");
-        observation(analysisId, ListingContextObservation.Field.row, rowState, "10");
-        observation(analysisId, ListingContextObservation.Field.seat, seatState, "5");
+        observation(analysisId, ListingContextObservation.Field.zone, zoneState, zoneValue);
+        observation(analysisId, ListingContextObservation.Field.row, rowState, rowValue);
+        observation(analysisId, ListingContextObservation.Field.seat, seatState, seatValue);
         return new Fixture(tenant, event, reportId, evidenceId, analysisId, subject, sha);
     }
 

@@ -90,6 +90,14 @@ public class ListingCandidateMatchService {
                 // A total database failure cannot also be recorded in that same database.
                 throw unrecordedFailure();
             }
+        } catch (RuntimeException unexpected) {
+            // Preserve the primary fault while making a best-effort attempt to release the active analysis slot.
+            try {
+                writer.lookupFailed(started.run().getId());
+            } catch (RuntimeException auditFailure) {
+                unexpected.addSuppressed(auditFailure);
+            }
+            throw unexpected;
         }
     }
 

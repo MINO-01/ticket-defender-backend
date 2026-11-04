@@ -4,6 +4,7 @@ import com.ticket.defender_core.adapter.in.web.dto.CandidatePipelineDto;
 import com.ticket.defender_core.adapter.out.persistence.*;
 import com.ticket.defender_core.application.service.CaseApiException;
 import com.ticket.defender_core.application.service.ListingCandidateMatchService;
+import com.ticket.defender_core.application.service.ListingCandidateMatchWriteService;
 import com.ticket.defender_core.domain.*;
 import com.ticket.defender_core.security.AdminRole;
 import org.junit.jupiter.api.AfterEach;
@@ -58,6 +59,7 @@ class Track2CandidatePipelineConcurrentMySqlTest {
     @Autowired private ReservationImportBatchRepository batches;
     @Autowired private ReservationDataSourceRepository sources;
     @Autowired private ListingCandidateMatchRunRepository runs;
+    @Autowired private ListingCandidateMatchWriteService writer;
     @MockitoSpyBean private ReservationCandidateRepository candidates;
 
     @DynamicPropertySource
@@ -107,6 +109,50 @@ class Track2CandidatePipelineConcurrentMySqlTest {
         }
     }
 
+    @Test
+    void expiredActiveRunIsClosedOnceAndLateCompletionCannotOverwriteIt() throws Exception {
+        Fixture fixture = fixture();
+        ListingCandidateMatchRun expired = runs.saveAndFlush(expiredRun(fixture));
+
+        List<String> outcomes = race(fixture, UUID.randomUUID().toString(), UUID.randomUUID().toString());
+
+        assertThat(outcomes).filteredOn(item -> item.startsWith("OK:")).hasSize(1);
+        assertThat(outcomes).filteredOn("ERR:CANDIDATE_LOOKUP_IN_PROGRESS"::equals).hasSize(1);
+        List<ListingCandidateMatchRun> history = runs.findByAnalysisId(fixture.analysisId(),
+                org.springframework.data.domain.Pageable.unpaged()).getContent();
+        assertThat(history).hasSize(2);
+        assertThat(history).filteredOn(run -> run.getId().equals(expired.getId())).singleElement().satisfies(run -> {
+            assertThat(run.inProgress()).isFalse();
+            assertThat(run.getStatus()).isEqualTo(com.ticket.defender_core.application.service.CandidateMatchDecision.Status.LOOKUP_FAILED);
+            assertThat(run.getReason()).isEqualTo(com.ticket.defender_core.application.service.CandidateMatchDecision.Reason.RESERVATION_LOOKUP_FAILED);
+        });
+
+        ListingCandidateMatchRun late = writer.complete(expired.getId(),
+                new com.ticket.defender_core.application.service.CandidateMatchDecision.Result(
+                        com.ticket.defender_core.application.service.CandidateMatchDecision.Status.MATCH_CANDIDATE,
+                        com.ticket.defender_core.application.service.CandidateMatchDecision.Reason.MATCHED_SINGLE_CANDIDATE),
+                1, UUID.randomUUID());
+        assertThat(late.getStatus()).isEqualTo(com.ticket.defender_core.application.service.CandidateMatchDecision.Status.LOOKUP_FAILED);
+        assertThat(late.getCandidateId()).isNull();
+    }
+
+    @Test
+    void lateCompletionAfterLeaseExpiryIsRecordedAsLookupFailureBeforeAnyRetry() throws Exception {
+        Fixture fixture = fixture();
+        ListingCandidateMatchRun expired = runs.saveAndFlush(expiredRun(fixture));
+
+        ListingCandidateMatchRun late = writer.complete(expired.getId(),
+                new com.ticket.defender_core.application.service.CandidateMatchDecision.Result(
+                        com.ticket.defender_core.application.service.CandidateMatchDecision.Status.MATCH_CANDIDATE,
+                        com.ticket.defender_core.application.service.CandidateMatchDecision.Reason.MATCHED_SINGLE_CANDIDATE),
+                1, UUID.randomUUID());
+
+        assertThat(late.inProgress()).isFalse();
+        assertThat(late.getStatus()).isEqualTo(com.ticket.defender_core.application.service.CandidateMatchDecision.Status.LOOKUP_FAILED);
+        assertThat(late.getReason()).isEqualTo(com.ticket.defender_core.application.service.CandidateMatchDecision.Reason.RESERVATION_LOOKUP_FAILED);
+        assertThat(late.getCandidateId()).isNull();
+    }
+
     private List<String> race(Fixture fixture, String firstKey, String secondKey) throws Exception {
         CountDownLatch queryEntered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -149,6 +195,25 @@ class Track2CandidatePipelineConcurrentMySqlTest {
             release.countDown();
             pool.shutdownNow();
         }
+    }
+
+    private ListingCandidateMatchRun expiredRun(Fixture fixture) {
+        FanReport report = reports.findById(fixture.reportId()).orElseThrow();
+        ListingContextAnalysis analysis = analyses.findById(fixture.analysisId()).orElseThrow();
+        EvidenceAsset asset = assets.findById(fixture.evidenceId()).orElseThrow();
+        FanReportPerformanceLink link = links.findByActiveFanReportId(fixture.reportId()).orElseThrow();
+        VerifiedPerformance performance = performances.findById(link.getPerformanceId()).orElseThrow();
+        ReservationDataSource source = sources.findByTenantIdAndEventIdAndPerformanceId(report.getTenantId(),
+                report.getEventId(), performance.getId()).orElseThrow();
+        UUID member = memberships.findBySubjectAndTenantId(fixture.subject(), report.getTenantId()).orElseThrow().getId();
+        ListingCandidateMatchRun.Binding binding = new ListingCandidateMatchRun.Binding(link.getId(),
+                link.getLinkRevision(), performance.getId(), performance.getRevision(), source.getId(),
+                source.getSourceRevision(), source.getCurrentBatchId(), source.getCurrentSourceVersion(), asset.getSha256(),
+                analysis.getResponseSha256(), analysis.getRowVersion());
+        LocalDateTime startedAt = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(10);
+        return new ListingCandidateMatchRun(report.getTenantId(), report.getEventId(), fixture.reportId(),
+                fixture.evidenceId(), fixture.analysisId(), member, "a".repeat(64), "b".repeat(64), binding,
+                startedAt, startedAt.plusMinutes(1));
     }
 
     private Fixture fixture() throws Exception {

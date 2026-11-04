@@ -129,8 +129,8 @@ class ReservationImportServiceTest {
 
     @Test
     void nullSeatFieldDoesNotReplayAsTheLiteralNullString() {
-        CandidatePipelineDto.ImportReservations first = snapshot("same-reservation", null, "10", "1");
-        CandidatePipelineDto.ImportReservations different = snapshot("same-reservation", "null", "10", "1");
+        CandidatePipelineDto.ImportReservations first = snapshot("same-reservation", "VIP", "10", null);
+        CandidatePipelineDto.ImportReservations different = snapshot("same-reservation", "VIP", "10", "null");
 
         assertSameKeyReplaysOnlySameBody(first, different);
     }

@@ -135,6 +135,29 @@ class ReservationImportServiceTest {
         assertSameKeyReplaysOnlySameBody(first, different);
     }
 
+    @Test
+    void normalizedSourceVersionHasTheSameIdempotencyAndDuplicateDigest() {
+        when(sources.lockByScope(tenantId, eventId, performanceId)).thenReturn(Optional.empty());
+        CandidatePipelineDto.ImportReservations padded = snapshot(" source-v1 ", "same-reservation", "VIP", "10", "1");
+        CandidatePipelineDto.ImportReservations normalized = snapshot("source-v1", "same-reservation", "VIP", "10", "1");
+        String firstKey = UUID.randomUUID().toString();
+
+        CandidatePipelineDto.ImportResult initial = service.importSnapshot(eventId, firstKey, padded);
+        ArgumentCaptor<ReservationImportBatch> stored = ArgumentCaptor.forClass(ReservationImportBatch.class);
+        verify(batches).saveAndFlush(stored.capture());
+        when(batches.findByCreatedByMembershipIdAndEventIdAndIdempotencyKeyDigest(memberId, eventId,
+                CandidatePipelineSupport.idempotencyDigest(firstKey))).thenReturn(Optional.of(stored.getValue()));
+
+        CandidatePipelineDto.ImportResult sameKeyReplay = service.importSnapshot(eventId, firstKey, normalized);
+        assertThat(sameKeyReplay.batchId()).isEqualTo(initial.batchId());
+
+        when(batches.findByTenantIdAndEventIdAndPerformanceIdAndSourceVersion(tenantId, eventId, performanceId,
+                "source-v1")).thenReturn(Optional.of(stored.getValue()));
+        CandidatePipelineDto.ImportResult duplicateSource = service.importSnapshot(eventId, UUID.randomUUID().toString(),
+                normalized);
+        assertThat(duplicateSource.batchId()).isEqualTo(initial.batchId());
+    }
+
     private void assertSameKeyReplaysOnlySameBody(CandidatePipelineDto.ImportReservations first,
             CandidatePipelineDto.ImportReservations different) {
         when(sources.lockByScope(tenantId, eventId, performanceId)).thenReturn(Optional.empty());
@@ -157,7 +180,12 @@ class ReservationImportServiceTest {
 
     private CandidatePipelineDto.ImportReservations snapshot(String reservationReference, String zone, String row,
             String seat) {
-        return new CandidatePipelineDto.ImportReservations(performanceId, "source-v1", true,
+        return snapshot("source-v1", reservationReference, zone, row, seat);
+    }
+
+    private CandidatePipelineDto.ImportReservations snapshot(String sourceVersion, String reservationReference,
+            String zone, String row, String seat) {
+        return new CandidatePipelineDto.ImportReservations(performanceId, sourceVersion, true,
                 List.of(new CandidatePipelineDto.ReservationRow(reservationReference, zone, row, seat)));
     }
 }

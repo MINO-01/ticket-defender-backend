@@ -51,7 +51,7 @@ public class ReservationImportService {
         LocalDateTime now = now();
         UUID isolationId = gate.requireSyntheticScope(scope.tenantId(), now);
         TenantPurposeReferenceHasher hasher = gate.referenceHasher();
-        String requestDigest = requestDigest(scope.tenantId(), input, hasher);
+        String requestDigest = requestDigest(scope.tenantId(), sourceVersion, input, hasher);
 
         var replay = batches.findByCreatedByMembershipIdAndEventIdAndIdempotencyKeyDigest(
                 scope.membershipId(), eventId, keyDigest);
@@ -140,12 +140,12 @@ public class ReservationImportService {
      * 원문 예매번호는 메모리에서 tenant-specific HMAC token으로만 바꾼다. 이후 type token과 함께
      * length-prefixed SHA-256에 넣으므로 구분자, null, blank, 실제 문자열이 같은 요청으로 합쳐지지 않는다.
      */
-    private String requestDigest(UUID tenantId, CandidatePipelineDto.ImportReservations input,
+    private String requestDigest(UUID tenantId, String sourceVersion, CandidatePipelineDto.ImportReservations input,
             TenantPurposeReferenceHasher hasher) {
         List<String> fields = new ArrayList<>();
         fields.add("RESERVATION_IMPORT_REQUEST");
         appendString(fields, "performanceId", input.performanceId().toString());
-        appendString(fields, "sourceVersion", input.sourceVersion());
+        appendString(fields, "sourceVersion", sourceVersion);
         appendBoolean(fields, "completeSnapshot", input.completeSnapshot());
         List<CandidatePipelineDto.ReservationRow> rows = input.rows();
         fields.add("rows");

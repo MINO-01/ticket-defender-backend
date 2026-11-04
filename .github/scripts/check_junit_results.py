@@ -149,6 +149,18 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.AdminEventReadMySqlTest": (
         4, "Runs after Track 2 listing analysis migration on the isolated MySQL CI schema"
     ),
+    "com.ticket.defender_core.integration.Track2CandidatePipelineMigrationMySqlTest": (
+        1, "Runs after Track 2 listing analysis migration in the isolated MySQL CI jobs"
+    ),
+    "com.ticket.defender_core.integration.Track2CandidatePipelineSchemaValidateMySqlTest": (
+        1, "Runs after the candidate pipeline migration in the isolated MySQL CI job"
+    ),
+    "com.ticket.defender_core.integration.Track2CandidatePipelineHttpMySqlTest": (
+        1, "Runs over real HTTP with synthetic isolation and isolated MySQL in CI"
+    ),
+    "com.ticket.defender_core.integration.Track2CandidatePipelineConcurrentMySqlTest": (
+        2, "Runs candidate active-slot and idempotency races in the isolated MySQL CI job"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -253,6 +265,18 @@ MYSQL_SUITES = {
     ),
     "track2-listing-minio-mysql": (
         "com.ticket.defender_core.integration.Track2ListingAnalysisMinioMySqlTest", 1
+    ),
+    "track2-candidate-migration": (
+        "com.ticket.defender_core.integration.Track2CandidatePipelineMigrationMySqlTest", 1
+    ),
+    "track2-candidate-schema": (
+        "com.ticket.defender_core.integration.Track2CandidatePipelineSchemaValidateMySqlTest", 1
+    ),
+    "track2-candidate-http": (
+        "com.ticket.defender_core.integration.Track2CandidatePipelineHttpMySqlTest", 1
+    ),
+    "track2-candidate-concurrency": (
+        "com.ticket.defender_core.integration.Track2CandidatePipelineConcurrentMySqlTest", 2
     ),
     "admin-fan-report-read": (
         "com.ticket.defender_core.integration.AdminFanReportReadMySqlTest", 2

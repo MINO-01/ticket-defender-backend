@@ -35,7 +35,7 @@ REVIEWER 또는 TENANT_ADMIN만 회차와 제보 연결을 만들거나 바꿀 �
 
 등록은 공개 API가 아닌 격리 fixture/운영 준비 단계에서만 한다. 이 게이트는 실제 고객사 데이터임을 증명하지 않으며 운영 활성화 승인을 대신하지 않는다.
 
-입력의 `reservationReference`와 accountId는 저장·로그·응답에 남기지 않는다. 서버는 master key에서 `tenant + TRACK2_RESERVATION_REFERENCE + keyVersion`별 하위 키를 만들고 HMAC-SHA-256만 저장한다. 요청 본문 digest도 길이 접두어와 type token으로 직렬화해 구분자·null·blank·실제 문자열을 구별하며, 원문 예매번호는 이 계산 중 메모리에서만 HMAC token으로 바꾼다. HMAC key version도 batch/행에 고정한다. source version은 완전 스냅샷 단위이며, 이전 ACCEPTED batch와 행은 삭제하지 않고 `reservation_data_sources`의 현재 포인터만 바꾼다.
+입력의 `reservationReference`와 accountId는 저장·로그·응답에 남기지 않는다. 서버는 master key에서 `tenant + TRACK2_RESERVATION_REFERENCE + keyVersion`별 하위 키를 만들고 HMAC-SHA-256만 저장한다. 요청 본문 digest도 길이 접두어와 type token으로 직렬화해 구분자·null·blank·실제 문자열을 구별하며, 원문 예매번호는 이 계산 중 메모리에서만 HMAC token으로 바꾼다. `sourceVersion`은 앞뒤 Unicode 공백을 제거한 저장값으로 먼저 정규화하고 같은 정규화 값을 digest에도 사용한다. HMAC key version도 batch/행에 고정한다. source version은 완전 스냅샷 단위이며, 이전 ACCEPTED batch와 행은 삭제하지 않고 `reservation_data_sources`의 현재 포인터만 바꾼다.
 
 후속 고객사 원본 조회에는 예매번호 대신 `candidateId`를 opaque 참조로 사용한다. 이 ID는 이 서비스의
 `reservation_candidates.id`이며, 해석에 필요한 내부 바인딩은 `tenantId`, `reservationBatchId`,
@@ -67,12 +67,12 @@ candidate run은 다음 불변 바인딩을 보존한다.
 상태는 `IN_PROGRESS`, `MATCH_CANDIDATE`, `NO_MATCH`, `AMBIGUOUS`, `UNVERIFIABLE`, `LOOKUP_FAILED`, `ANALYSIS_FAILED`다. 이미지 필드의 FOUND/UNKNOWN/AMBIGUOUS 상태와 독립적이다.
 
 - 분석이나 증거 digest/revision이 맞지 않으면 `UNVERIFIABLE/ANALYSIS_OR_EVIDENCE_CHANGED`
-- 좌석 관찰이 UNKNOWN이면 `UNVERIFIABLE/SEAT_OBSERVATION_UNAVAILABLE`, AMBIGUOUS이면 `UNVERIFIABLE/SEAT_OBSERVATION_AMBIGUOUS`
+- 좌석 관찰이 UNKNOWN이거나 FOUND 값이 저장 가능한 exact 좌석(공백 제거 후 1~128자)이 아니면 `UNVERIFIABLE/SEAT_OBSERVATION_UNAVAILABLE`, AMBIGUOUS이면 `UNVERIFIABLE/SEAT_OBSERVATION_AMBIGUOUS`
 - 정확히 한 행은 `MATCH_CANDIDATE`, 0행은 `NO_MATCH`, 둘 이상은 `AMBIGUOUS`
 - 후보 실행 시작, 조회 또는 종료 중 repository 오류가 나도 DB가 복구되어 종료 행을 쓸 수 있으면 `LOOKUP_FAILED`를 보존한다.
 - 시작 행조차 만들 수 없거나 DB 전체 장애라서 동일 DB에 종료 행을 쓸 수 없으면 HTTP 503 `CANDIDATE_LOOKUP_FAILED_UNRECORDED`만 보장된다. 이 경우 DB 감사 이력 저장을 주장하지 않는다.
 
-동일 actor/analysis/idempotency key는 같은 run을 재현하며 다른 요청 의미로 같은 키를 재사용하면 409이다. 분석별 active slot은 하나라서 다른 키의 동시 조회는 409 `CANDIDATE_LOOKUP_IN_PROGRESS`다.
+동일 actor/analysis/idempotency key는 같은 run을 재현하며 다른 요청 의미로 같은 키를 재사용하면 409이다. 분석별 active slot은 하나라서 다른 키의 동시 조회는 409 `CANDIDATE_LOOKUP_IN_PROGRESS`다. active run에는 내부 lease가 있으며 만료된 run은 `LOOKUP_FAILED/RESERVATION_LOOKUP_FAILED`의 불변 이력으로 닫힌다. 이후에는 새 idempotency key로 재시도할 수 있고, 늦게 도착한 이전 worker의 complete는 닫힌 행을 덮어쓰지 않는다.
 
 ## API 계약과 후속 저장소 영향
 
@@ -82,6 +82,6 @@ candidate run은 다음 불변 바인딩을 보존한다.
 
 1. 순수 결정 테스트: 완전 source가 없는 0건은 UNVERIFIABLE, 단일/복수/없음, UNKNOWN/AMBIGUOUS, 분석 실패, mappingScore 비사용.
 2. 서비스/HTTP 테스트: tenant/event IDOR 404, 역할 403, 회차 revision/철회, link 멱등성·본문 충돌·경합, synthetic gate 차단, batch 중복/부분 실패/retry, PII 미응답.
-3. MySQL 8: additive migration, FK/UNIQUE/CHECK/index, JPA validate, active source 및 active candidate slot concurrency.
+3. MySQL 8: additive migration, FK/UNIQUE/CHECK/index, JPA validate, active source 및 active candidate slot의 lease 만료·늦은 완료 차단·동시성.
 4. 실제 HTTP E2E: 격리 MySQL + synthetic tenant + fake 저장 분석을 이용해 ACCEPTED snapshot, candidate run, source/회차 변경 applicability를 검증한다.
 5. 기존 Track 1/Track 2 regression을 실행한다. Docker/MySQL/MinIO를 쓰는 무거운 검증 전에는 프로세스와 RAM을 확인한다.

@@ -166,7 +166,9 @@ paths:
         ANALYST 또는 REVIEWER가 실행합니다. 저장된 SUCCEEDED 분석과 그 증거 SHA-256, 현재 ACTIVE 회차 연결,
         ACTIVE 회차 revision, 현재 ACCEPTED complete reservation snapshot만 사용합니다. zone/row/seat가 모두 FOUND일 때만
         binary exact 비교합니다. mappingScore를 요구·생성·대체하지 않습니다.
-        NO_MATCH는 완전 스냅샷에 대한 조회가 성공한 경우에만 반환됩니다. 실행 시작·조회·종료 중 DB 오류는
+        FOUND여도 공백 제거 후 1~128자의 exact 좌석으로 정규화할 수 없으면 active 실행을 만들지 않고
+        UNVERIFIABLE/SEAT_OBSERVATION_UNAVAILABLE로 종료합니다. active 실행에는 내부 lease가 있으며 만료 시
+        LOOKUP_FAILED 불변 이력으로 닫히므로 늦은 worker가 과거 결과를 덮어쓰지 못합니다. NO_MATCH는 완전 스냅샷에 대한 조회가 성공한 경우에만 반환됩니다. 실행 시작·조회·종료 중 DB 오류는
         LOOKUP_FAILED 행을 기록할 수 있는 경우에만 201 응답으로 반환되며, 시작 행조차 기록할 수 없는 전체 DB 장애는
         503 CANDIDATE_LOOKUP_FAILED_UNRECORDED입니다.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
@@ -279,7 +281,7 @@ components:
       additionalProperties: false
       properties:
         performanceId: {type: string, format: uuid}
-        sourceVersion: {type: string, minLength: 1, maxLength: 128}
+        sourceVersion: {type: string, minLength: 1, maxLength: 128, description: 앞뒤 Unicode 공백 제거 후 저장·idempotency digest 비교}
         completeSnapshot: {type: boolean, description: true가 아니면 전체 batch를 REJECTED로 기록}
         rows:
           type: array

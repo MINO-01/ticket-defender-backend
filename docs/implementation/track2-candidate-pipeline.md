@@ -35,7 +35,7 @@ REVIEWER 또는 TENANT_ADMIN만 회차와 제보 연결을 만들거나 바꿀 �
 
 등록은 공개 API가 아닌 격리 fixture/운영 준비 단계에서만 한다. 이 게이트는 실제 고객사 데이터임을 증명하지 않으며 운영 활성화 승인을 대신하지 않는다.
 
-입력의 `reservationReference`와 accountId는 저장·로그·응답에 남기지 않는다. 서버는 master key에서 `tenant + TRACK2_RESERVATION_REFERENCE + keyVersion`별 하위 키를 만들고 HMAC-SHA-256만 저장한다. HMAC key version도 batch/행에 고정한다. source version은 완전 스냅샷 단위이며, 이전 ACCEPTED batch와 행은 삭제하지 않고 `reservation_data_sources`의 현재 포인터만 바꾼다.
+입력의 `reservationReference`와 accountId는 저장·로그·응답에 남기지 않는다. 서버는 master key에서 `tenant + TRACK2_RESERVATION_REFERENCE + keyVersion`별 하위 키를 만들고 HMAC-SHA-256만 저장한다. 요청 본문 digest도 길이 접두어와 type token으로 직렬화해 구분자·null·blank·실제 문자열을 구별하며, 원문 예매번호는 이 계산 중 메모리에서만 HMAC token으로 바꾼다. HMAC key version도 batch/행에 고정한다. source version은 완전 스냅샷 단위이며, 이전 ACCEPTED batch와 행은 삭제하지 않고 `reservation_data_sources`의 현재 포인터만 바꾼다.
 
 후속 고객사 원본 조회에는 예매번호 대신 `candidateId`를 opaque 참조로 사용한다. 이 ID는 이 서비스의
 `reservation_candidates.id`이며, 해석에 필요한 내부 바인딩은 `tenantId`, `reservationBatchId`,

@@ -10,6 +10,9 @@ import com.ticket.defender_core.domain.ReservationImportBatch;
 import com.ticket.defender_core.domain.VerifiedPerformance;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 
@@ -104,5 +107,57 @@ class ReservationImportServiceTest {
                         List.of(new CandidatePipelineDto.ReservationRow("synthetic-res-1", "VIP", "10", "5")))))
                 .isInstanceOfSatisfying(CaseApiException.class,
                         error -> assertThat(error.code()).isEqualTo("RESERVATION_IMPORT_CONCURRENT_UPDATE"));
+    }
+
+    @Test
+    void sameKeyReplaysTheSameBodyButRejectsDifferentPipeDelimitedSeatFields() {
+        CandidatePipelineDto.ImportReservations first = snapshot("same-reservation", "VIP|A", "10", "1");
+        CandidatePipelineDto.ImportReservations different = snapshot("same-reservation", "VIP", "A|10", "1");
+
+        assertSameKeyReplaysOnlySameBody(first, different);
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"", " "})
+    void nullOrBlankReferenceDoesNotReplayAsTheLiteralPlaceholder(String missingReference) {
+        CandidatePipelineDto.ImportReservations first = snapshot(missingReference, "VIP", "10", "1");
+        CandidatePipelineDto.ImportReservations different = snapshot("<blank>", "VIP", "10", "1");
+
+        assertSameKeyReplaysOnlySameBody(first, different);
+    }
+
+    @Test
+    void nullSeatFieldDoesNotReplayAsTheLiteralNullString() {
+        CandidatePipelineDto.ImportReservations first = snapshot("same-reservation", null, "10", "1");
+        CandidatePipelineDto.ImportReservations different = snapshot("same-reservation", "null", "10", "1");
+
+        assertSameKeyReplaysOnlySameBody(first, different);
+    }
+
+    private void assertSameKeyReplaysOnlySameBody(CandidatePipelineDto.ImportReservations first,
+            CandidatePipelineDto.ImportReservations different) {
+        when(sources.lockByScope(tenantId, eventId, performanceId)).thenReturn(Optional.empty());
+        String key = UUID.randomUUID().toString();
+        CandidatePipelineDto.ImportResult initial = service.importSnapshot(eventId, key, first);
+        ArgumentCaptor<ReservationImportBatch> stored = ArgumentCaptor.forClass(ReservationImportBatch.class);
+        verify(batches).saveAndFlush(stored.capture());
+        when(batches.findByCreatedByMembershipIdAndEventIdAndIdempotencyKeyDigest(eq(memberId), eq(eventId), any()))
+                .thenReturn(Optional.of(stored.getValue()));
+
+        CandidatePipelineDto.ImportResult replay = service.importSnapshot(eventId, key, first);
+        assertThat(replay.batchId()).isEqualTo(initial.batchId());
+        assertThatThrownBy(() -> service.importSnapshot(eventId, key, different))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> {
+                            assertThat(error.status().value()).isEqualTo(409);
+                            assertThat(error.code()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
+                        });
+    }
+
+    private CandidatePipelineDto.ImportReservations snapshot(String reservationReference, String zone, String row,
+            String seat) {
+        return new CandidatePipelineDto.ImportReservations(performanceId, "source-v1", true,
+                List.of(new CandidatePipelineDto.ReservationRow(reservationReference, zone, row, seat)));
     }
 }

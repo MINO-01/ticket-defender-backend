@@ -136,22 +136,70 @@ public class ReservationImportService {
         return new Validation(submitted.size(), valid, invalid);
     }
 
-    /** 저장되는 digest에는 원문 예매번호 대신 tenant-specific HMAC을 넣는다. */
+    /**
+     * 원문 예매번호는 메모리에서 tenant-specific HMAC token으로만 바꾼다. 이후 type token과 함께
+     * length-prefixed SHA-256에 넣으므로 구분자, null, blank, 실제 문자열이 같은 요청으로 합쳐지지 않는다.
+     */
     private String requestDigest(UUID tenantId, CandidatePipelineDto.ImportReservations input,
             TenantPurposeReferenceHasher hasher) {
-        StringBuilder canonical = new StringBuilder("IMPORT|").append(input.performanceId()).append('|')
-                .append(input.sourceVersion()).append('|').append(Boolean.TRUE.equals(input.completeSnapshot()));
-        if (input.rows() != null) for (CandidatePipelineDto.ReservationRow row : input.rows()) {
-            if (row == null) {
-                canonical.append("|null");
-            } else {
-                String reference = row.reservationReference() == null || row.reservationReference().isBlank()
-                        ? "<blank>" : row.reservationReference();
-                canonical.append('|').append(hasher.hash(tenantId, reference)).append('|').append(row.zone())
-                        .append('|').append(row.row()).append('|').append(row.seat());
+        List<String> fields = new ArrayList<>();
+        fields.add("RESERVATION_IMPORT_REQUEST");
+        appendString(fields, "performanceId", input.performanceId().toString());
+        appendString(fields, "sourceVersion", input.sourceVersion());
+        appendBoolean(fields, "completeSnapshot", input.completeSnapshot());
+        List<CandidatePipelineDto.ReservationRow> rows = input.rows();
+        fields.add("rows");
+        if (rows == null) {
+            fields.add("NULL");
+        } else {
+            fields.add("PRESENT");
+            fields.add(Integer.toString(rows.size()));
+            for (CandidatePipelineDto.ReservationRow row : rows) {
+                fields.add("row");
+                if (row == null) {
+                    fields.add("NULL");
+                    continue;
+                }
+                fields.add("PRESENT");
+                appendReferenceToken(fields, tenantId, hasher, row.reservationReference());
+                appendString(fields, "zone", row.zone());
+                appendString(fields, "row", row.row());
+                appendString(fields, "seat", row.seat());
             }
         }
-        return hasher.hash(tenantId, CandidatePipelineSupport.sha256(canonical.toString()));
+        return hasher.hash(tenantId, CandidatePipelineSupport.sha256(fields.toArray(String[]::new)));
+    }
+
+    private static void appendReferenceToken(List<String> fields, UUID tenantId, TenantPurposeReferenceHasher hasher,
+            String reference) {
+        fields.add("reservationReference");
+        if (reference == null) {
+            fields.add("NULL");
+            return;
+        }
+        fields.add("STRING_HMAC");
+        fields.add(hasher.hash(tenantId,
+                CandidatePipelineSupport.sha256("RESERVATION_IMPORT_REQUEST_REFERENCE", reference)));
+    }
+
+    private static void appendString(List<String> fields, String name, String value) {
+        fields.add(name);
+        if (value == null) {
+            fields.add("NULL");
+        } else {
+            fields.add("STRING");
+            fields.add(value);
+        }
+    }
+
+    private static void appendBoolean(List<String> fields, String name, Boolean value) {
+        fields.add(name);
+        if (value == null) {
+            fields.add("NULL");
+        } else {
+            fields.add("BOOLEAN");
+            fields.add(Boolean.toString(value));
+        }
     }
 
     private CandidatePipelineDto.ImportResult view(ReservationImportBatch batch) {

@@ -9,6 +9,9 @@ Spring의 `FastApiAdapter`는 `POST /api/v1/clusters/analyze`에만 `X-TD-Track1
 - HTTP 헤더 규칙상 제어문자를 포함할 수 없다.
 - 값은 저장소, 예제 환경 파일, 로그, 오류 응답 또는 배포 문서에 기록하지 않는다.
 - Spring은 값이 없거나 짧으면 FastAPI HTTP 호출 전에 분석을 차단하고 분석 불가로 처리한다.
+- 원격 FastAPI 연결은 HTTPS만 허용하며 기존 TLS 인증서·호스트명 검증을 그대로 사용한다.
+- 평문 HTTP는 검증된 loopback 연결에만 허용한다. `localhost`는 모든 해석 결과가 loopback일 때 수치 loopback 주소로 고정하고, 명시적 loopback IP 외 사설 IP·Docker 서비스명·유사 호스트는 허용하지 않는다.
+- URL의 사용자정보·질의문자열·fragment·지원하지 않는 스킴은 차단한다. 요청별 redirect도 자동으로 따르지 않아 인증 헤더를 새 주소로 재전송하지 않는다.
 
 ## 공동 배포와 검증
 

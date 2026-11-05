@@ -42,10 +42,10 @@ class FastApiAdapterTest {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
         setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
 
-        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+        server.expect(requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                 .andExpect(request -> {
                     assertThat(request.getHeaders().get("X-TD-Track1-Key"))
                             .containsExactly(TEST_TRACK1_SHARED_SECRET);
@@ -59,6 +59,48 @@ class FastApiAdapterTest {
         server.verify();
     }
 
+    @Test
+    @DisplayName("원격 평문 HTTP 주소에는 Track 1 인증 헤더를 전송하지 않는다")
+    void requestMacroAnalysis_blocksRemoteHttpBeforeSendingTrack1Key() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        server.expect(ExpectedCount.never(), requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+                .andRespond(withSuccess(successResponseJson(), MediaType.APPLICATION_JSON));
+
+        assertThrows(FastApiAuthenticationConfigurationException.class,
+                () -> adapter.requestMacroAnalysis(request()));
+
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("유사 호스트, 사설 HTTP, 사용자정보와 잘못된 FastAPI URL은 호출 전에 차단한다")
+    void requestMacroAnalysis_blocksUntrustedOrMalformedFastApiUrlBeforeHttpCall() {
+        for (String url : List.of(
+                "http://10.0.0.1", "http://fastapi", "http://localhost.evil",
+                "http://127.0.0.1.evil", "ftp://fastapi.test",
+                "https://user:synthetic-only@fastapi.test", "not-a-url", "http:///missing-host")) {
+            RestClient.Builder builder = RestClient.builder();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+            FastApiAdapter adapter = new FastApiAdapter(builder.build());
+            ReflectionTestUtils.setField(adapter, "fastApiUrl", url);
+            setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+            server.expect(ExpectedCount.never(), request -> { })
+                    .andRespond(withSuccess(successResponseJson(), MediaType.APPLICATION_JSON));
+
+            FastApiAuthenticationConfigurationException error = assertThrows(
+                    FastApiAuthenticationConfigurationException.class,
+                    () -> adapter.requestMacroAnalysis(request())
+            );
+
+            assertThat(error.getMessage()).doesNotContain(url, TEST_TRACK1_SHARED_SECRET);
+            server.verify();
+        }
+    }
+
     /** 분석 요청과 정상 응답이 계약에 맞게 오갑니다. */
     @Test
     @DisplayName("계약된 경로와 티켓별 요청으로 FastAPI 분석을 호출하고 응답을 해석한다")
@@ -67,7 +109,7 @@ class FastApiAdapterTest {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test/");
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test/");
         setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         MacroAnalysisRequest request = request();
         String responseJson = """
@@ -91,7 +133,7 @@ class FastApiAdapterTest {
                   }]
                 }
                 """.formatted(REQUEST_ID, PAYMENT_HASH, DEVICE_HASH);
-        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+        server.expect(requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(content().string(org.hamcrest.Matchers.allOf(
                         org.hamcrest.Matchers.containsString("\"requestId\":\"" + REQUEST_ID + "\""),
@@ -120,9 +162,9 @@ class FastApiAdapterTest {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
         setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
-        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+        server.expect(requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                 .andRespond(withSuccess("""
                         {
                           "requestId": "wrong-request-id",
@@ -147,7 +189,7 @@ class FastApiAdapterTest {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
         setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         String responseJson = """
                 {
@@ -170,7 +212,7 @@ class FastApiAdapterTest {
                   }]
                 }
                 """.formatted(REQUEST_ID, PAYMENT_HASH);
-        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+        server.expect(requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                 .andRespond(withSuccess(responseJson, MediaType.APPLICATION_JSON));
 
         // when / then
@@ -184,7 +226,7 @@ class FastApiAdapterTest {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
         setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         MacroAnalysisRequest request = new MacroAnalysisRequest(REQUEST_ID, List.of(
                 request().tickets().get(0),
@@ -201,7 +243,7 @@ class FastApiAdapterTest {
                    "paymentHashes":["%s"],"addressHashes":[],"deviceIdHashes":[],"ipHashes":[],
                    "riskScore":0.91}]}
                 """.formatted(REQUEST_ID, "c".repeat(64));
-        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+        server.expect(requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                 .andRespond(withSuccess(responseJson, MediaType.APPLICATION_JSON));
 
         assertThrows(FastApiResponseContractException.class, () -> adapter.requestMacroAnalysis(request));
@@ -216,9 +258,9 @@ class FastApiAdapterTest {
             RestClient.Builder builder = RestClient.builder();
             MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
             FastApiAdapter adapter = new FastApiAdapter(builder.build());
-            ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+            ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
             setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
-            server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+            server.expect(requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                     .andRespond(withStatus(status).body("{\"detail\":\"unavailable\"}"));
 
             assertThrows(org.springframework.web.client.RestClientException.class,
@@ -234,9 +276,9 @@ class FastApiAdapterTest {
             RestClient.Builder builder = RestClient.builder();
             MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
             FastApiAdapter adapter = new FastApiAdapter(builder.build());
-            ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+            ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
             setTrack1SharedSecret(adapter, secret);
-            server.expect(ExpectedCount.never(), requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+            server.expect(ExpectedCount.never(), requestTo("https://fastapi.test/api/v1/clusters/analyze"))
                     .andRespond(withSuccess(successResponseJson(), MediaType.APPLICATION_JSON));
 
             FastApiAuthenticationConfigurationException error = assertThrows(

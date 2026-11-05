@@ -1,6 +1,8 @@
 package com.ticket.defender_core.integration;
 
 import com.ticket.defender_core.adapter.out.persistence.AdminMembershipRepository;
+import com.ticket.defender_core.adapter.out.persistence.CaseRepository;
+import com.ticket.defender_core.adapter.out.persistence.CaseSourceReferenceRepository;
 import com.ticket.defender_core.adapter.out.persistence.EvidenceAssetRepository;
 import com.ticket.defender_core.adapter.out.persistence.FanReportRepository;
 import com.ticket.defender_core.adapter.out.persistence.ListingContextAnalysisRepository;
@@ -12,6 +14,7 @@ import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
 import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
 import com.ticket.defender_core.domain.AccessRecordStatus;
 import com.ticket.defender_core.domain.AdminMembershipEntity;
+import com.ticket.defender_core.domain.CaseSourceReference;
 import com.ticket.defender_core.domain.EvidenceAsset;
 import com.ticket.defender_core.domain.FanReport;
 import com.ticket.defender_core.domain.ListingContextAnalysis;
@@ -83,6 +86,8 @@ class Track2CandidatePipelineIntegrationTest {
     @Autowired private EvidenceAssetRepository assets;
     @Autowired private ListingContextAnalysisRepository analyses;
     @Autowired private ListingContextObservationRepository observations;
+    @Autowired private CaseRepository cases;
+    @Autowired private CaseSourceReferenceRepository sources;
     @Autowired private SyntheticReservationImportTenantRepository syntheticTenants;
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
     @MockitoBean private EvidenceObjectStorage storage;
@@ -195,7 +200,7 @@ class Track2CandidatePipelineIntegrationTest {
         String runId = id(candidate(fixture, UUID.randomUUID().toString())
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("MATCH_CANDIDATE"))
                 .andReturn().getResponse().getContentAsString());
-        given(storage.head("synthetic/" + fixture.evidenceId())).willReturn(
+        given(storage.head(evidenceObjectKey(fixture))).willReturn(
                 new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "candidate-etag"));
 
         String body = "{\"eventId\":\"" + fixture.eventId() + "\",\"type\":\"FAN_REPORT\","
@@ -218,7 +223,7 @@ class Track2CandidatePipelineIntegrationTest {
     }
 
     @Test
-    void candidateSourceUsesSnapshotV2AndAChangedPerformanceBlocksNewDraftWithSourceChanged() throws Exception {
+    void candidateSourceSnapshotV2AllowsEvidenceVerificationAndAChangedPerformanceBlocksNewDraft() throws Exception {
         Fixture fixture = fixture(ListingContextObservation.State.FOUND, ListingContextObservation.State.FOUND,
                 ListingContextObservation.State.FOUND);
         String performanceId = createPerformance(fixture);
@@ -226,7 +231,7 @@ class Track2CandidatePipelineIntegrationTest {
         importRows(fixture, performanceId, "source-v1", true, "VIP", "10", "5");
         String runId = id(candidate(fixture, UUID.randomUUID().toString())
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
-        given(storage.head("synthetic/" + fixture.evidenceId())).willReturn(
+        given(storage.head(evidenceObjectKey(fixture))).willReturn(
                 new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "candidate-etag"));
         String createBody = "{\"eventId\":\"" + fixture.eventId() + "\",\"type\":\"FAN_REPORT\","
                 + "\"fanReportIds\":[\"" + fixture.reportId() + "\"],\"evidenceIds\":[\""
@@ -267,6 +272,22 @@ class Track2CandidatePipelineIntegrationTest {
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.manifestSchemaVersion").value(2)).andReturn();
         String snapshotId = id(snapshot.getResponse().getContentAsString());
         long snapshotCaseVersion = caseVersion(snapshot.getResponse().getContentAsString());
+        UUID evidenceSourceId = sources.findByCaseIdOrderByLinkedAtAscIdAsc(UUID.fromString(caseId)).stream()
+                .filter(source -> source.getSourceType() == CaseSourceReference.Type.EVIDENCE_ASSET)
+                .findFirst().orElseThrow().getId();
+        given(storage.verifyBytes(evidenceObjectKey(fixture), "candidate-etag", 20L * 1024 * 1024))
+                .willReturn(new EvidenceObjectStorage.ByteVerification(4, "image/png", fixture.sha256(),
+                        "candidate-etag", EvidenceObjectStorage.MarkerKind.ETAG));
+        mvc.perform(post("/api/v1/cases/{caseId}/evidence-verifications", caseId)
+                        .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedCaseVersion\":" + snapshotCaseVersion
+                                + ",\"evidenceSnapshotId\":\"" + snapshotId
+                                + "\",\"sourceReferenceId\":\"" + evidenceSourceId
+                                + "\",\"evidenceId\":\"" + fixture.evidenceId()
+                                + "\",\"reason\":\"Verify v2 candidate evidence\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.verificationStatus").value("MATCH"));
+        snapshotCaseVersion = cases.findById(UUID.fromString(caseId)).orElseThrow().getCaseVersion();
 
         mvc.perform(patch("/api/v1/admin/events/{eventId}/verified-performances/{performanceId}", fixture.eventId(), performanceId)
                         .header("Authorization", bearer(fixture.subject())).contentType(MediaType.APPLICATION_JSON)
@@ -372,7 +393,7 @@ class Track2CandidatePipelineIntegrationTest {
         reports.saveAndFlush(report);
         UUID evidenceId = UUID.randomUUID();
         String sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(new byte[] {1, 2, 3, 4}));
-        EvidenceAsset asset = new EvidenceAsset(evidenceId, reportId, "synthetic/" + evidenceId, "image/png", 4,
+        EvidenceAsset asset = new EvidenceAsset(evidenceId, reportId, "fan-reports/" + reportId + "/" + evidenceId, "image/png", 4,
                 sha, now, now.plusDays(90));
         asset.markStored("candidate-etag");
         assets.saveAndFlush(asset);
@@ -479,6 +500,10 @@ class Track2CandidatePipelineIntegrationTest {
 
     private static String bearer(String subject) {
         return "Bearer " + subject;
+    }
+
+    private static String evidenceObjectKey(Fixture fixture) {
+        return "fan-reports/" + fixture.reportId() + "/" + fixture.evidenceId();
     }
 
     private static String id(String body) {

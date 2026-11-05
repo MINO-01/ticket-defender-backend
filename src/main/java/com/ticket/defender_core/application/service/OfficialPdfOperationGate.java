@@ -129,6 +129,8 @@ public class OfficialPdfOperationGate {
             case FAN_REPORT -> fanReportAfter(target, source.getFanReportId(), registeredAt);
             case EVIDENCE_ASSET -> fanReportAfter(target, source.getFanReportId(), registeredAt)
                     && evidenceAfter(source.getFanReportId(), source.getEvidenceId(), registeredAt);
+            case LISTING_CANDIDATE_MATCH -> fanReportAfter(target, source.getFanReportId(), registeredAt)
+                    && evidenceAfter(source.getFanReportId(), source.getEvidenceId(), registeredAt);
         };
     }
 

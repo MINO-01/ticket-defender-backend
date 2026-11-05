@@ -54,11 +54,8 @@ class ListingCandidateMatchServiceTest {
         ListingContextAnalysisRepository analyses = mock(ListingContextAnalysisRepository.class);
         EvidenceAssetRepository assets = mock(EvidenceAssetRepository.class);
         candidates = mock(ReservationCandidateRepository.class);
-        FanReportPerformanceLinkRepository links = mock(FanReportPerformanceLinkRepository.class);
-        VerifiedPerformanceRepository performances = mock(VerifiedPerformanceRepository.class);
-        ReservationDataSourceRepository sources = mock(ReservationDataSourceRepository.class);
-        service = new ListingCandidateMatchService(access, writer, runs, analyses, assets, candidates, links,
-                performances, sources);
+        CandidateRunApplicability applicability = mock(CandidateRunApplicability.class);
+        service = new ListingCandidateMatchService(access, writer, runs, analyses, assets, candidates, applicability);
 
         FanReport report = mock(FanReport.class);
         when(report.getFanReportId()).thenReturn(reportId);

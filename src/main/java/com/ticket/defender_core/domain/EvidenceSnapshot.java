@@ -50,7 +50,7 @@ public class EvidenceSnapshot {
     @Column(name = "captured_at", nullable = false)
     private LocalDateTime capturedAt;
 
-    public EvidenceSnapshot(Case target, long versionAtCapture, String manifestSha256,
+    public EvidenceSnapshot(Case target, long versionAtCapture, int manifestSchemaVersion, String manifestSha256,
             String manifestJson, String sourceIntegrity, UUID actor, LocalDateTime now) {
         this.id = UUID.randomUUID();
         this.tenantId = target.getTenantId();
@@ -58,11 +58,16 @@ public class EvidenceSnapshot {
         this.caseId = target.getId();
         this.evidenceRevision = target.getEvidenceRevision();
         this.caseVersionAtCapture = versionAtCapture;
-        this.manifestSchemaVersion = 1;
+        this.manifestSchemaVersion = manifestSchemaVersion;
         this.manifestSha256 = Objects.requireNonNull(manifestSha256);
         this.manifestJson = Objects.requireNonNull(manifestJson);
         this.sourceIntegrity = Objects.requireNonNull(sourceIntegrity);
         this.createdByMembershipId = Objects.requireNonNull(actor);
         this.capturedAt = Objects.requireNonNull(now);
+    }
+
+    public EvidenceSnapshot(Case target, long versionAtCapture, String manifestSha256,
+            String manifestJson, String sourceIntegrity, UUID actor, LocalDateTime now) {
+        this(target, versionAtCapture, 1, manifestSha256, manifestJson, sourceIntegrity, actor, now);
     }
 }

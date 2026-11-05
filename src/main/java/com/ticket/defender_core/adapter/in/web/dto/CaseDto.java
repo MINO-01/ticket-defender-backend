@@ -18,8 +18,14 @@ public final class CaseDto {
     public record GraphCluster(String analysisRequestId, String clusterId) { }
 
     public record Create(UUID eventId, Case.Type type, List<GraphCluster> graphClusters,
-                         List<UUID> fanReportIds, List<UUID> evidenceIds, String reason,
-                         UUID relatedCaseId, String relationReason) { }
+                         List<UUID> fanReportIds, List<UUID> evidenceIds, List<UUID> candidateRunIds, String reason,
+                         UUID relatedCaseId, String relationReason) {
+        public Create(UUID eventId, Case.Type type, List<GraphCluster> graphClusters,
+                List<UUID> fanReportIds, List<UUID> evidenceIds, String reason,
+                UUID relatedCaseId, String relationReason) {
+            this(eventId, type, graphClusters, fanReportIds, evidenceIds, null, reason, relatedCaseId, relationReason);
+        }
+    }
 
     public record Transition(Case.Status toStatus, Long expectedCaseVersion, String reason,
                              String classification, String unassignedReason,
@@ -48,12 +54,33 @@ public final class CaseDto {
                          String analysisRequestId, String clusterId, Integer storedMemberCount,
                          String analysisAlgorithm, String analysisAlgorithmVersion,
                          OffsetDateTime analysisCompletedAt, Double riskScore,
-                         UUID fanReportId, UUID evidenceId, OffsetDateTime linkedAt) {
+                         UUID fanReportId, UUID evidenceId, UUID candidateRunId, UUID candidateAnalysisId,
+                         Long candidateAnalysisRowVersion, String candidateAnalysisResponseSha256,
+                         String candidateEvidenceSha256, UUID candidatePerformanceLinkId,
+                         Integer candidatePerformanceLinkRevision, UUID candidateVerifiedPerformanceId,
+                         Integer candidateVerifiedPerformanceRevision, UUID candidateReservationSourceId,
+                         Integer candidateReservationSourceRevision, UUID candidateReservationBatchId,
+                         String candidateReservationSourceVersion, String candidateStatus, String candidateReason,
+                         Integer candidateCount, UUID candidateId, String candidateApplicability,
+                         OffsetDateTime linkedAt) {
         public static Source from(CaseSourceReference value) {
+            return from(value, null);
+        }
+
+        public static Source from(CaseSourceReference value, String applicability) {
             return new Source(value.getId(), value.getSourceType(), value.getAnalysisRequestId(),
                     value.getClusterId(), value.getStoredMemberCount(), value.getAnalysisAlgorithm(),
                     value.getAnalysisAlgorithmVersion(), utc(value.getAnalysisCompletedAt()),
-                    value.getRiskScore(), value.getFanReportId(), value.getEvidenceId(), utc(value.getLinkedAt()));
+                    value.getRiskScore(), value.getFanReportId(), value.getEvidenceId(),
+                    value.getListingCandidateMatchRunId(), value.getCandidateAnalysisId(),
+                    value.getCandidateAnalysisRowVersion(), value.getCandidateAnalysisResponseSha256(),
+                    value.getCandidateEvidenceSha256(), value.getCandidatePerformanceLinkId(),
+                    value.getCandidatePerformanceLinkRevision(), value.getCandidateVerifiedPerformanceId(),
+                    value.getCandidateVerifiedPerformanceRevision(), value.getCandidateReservationSourceId(),
+                    value.getCandidateReservationSourceRevision(), value.getCandidateReservationBatchId(),
+                    value.getCandidateReservationSourceVersion(), value.getCandidateStatus(),
+                    value.getCandidateReason(), value.getCandidateCount(), value.getCandidateId(), applicability,
+                    utc(value.getLinkedAt()));
         }
     }
 

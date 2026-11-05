@@ -100,6 +100,10 @@ jobs:
         run: bash ./gradlew test --tests '*Track2CandidatePipelineMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 candidate pipeline migration test ran
         run: python3 .github/scripts/check_junit_results.py track2-candidate-migration
+      - name: Apply W10 Track 2 candidate Case-source migration
+        run: bash ./gradlew test --tests '*CaseW10Track2CandidateSourceMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W10 Track 2 candidate Case-source migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w10-candidate-source-migration
       - name: Apply admin evidence content audit migration
         run: bash ./gradlew test --tests '*AdminEvidenceContentMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm admin evidence content audit migration test ran
@@ -148,6 +152,10 @@ jobs:
         run: bash ./gradlew test --tests '*Track2CandidatePipelineSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 candidate pipeline schema test ran
         run: python3 .github/scripts/check_junit_results.py track2-candidate-schema
+      - name: Validate W10 Track 2 candidate Case-source JPA mappings
+        run: bash ./gradlew test --tests '*CaseW10Track2CandidateSourceSchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W10 Track 2 candidate Case-source schema test ran
+        run: python3 .github/scripts/check_junit_results.py case-w10-candidate-source-schema
       - name: Verify Track 2 candidate pipeline over real HTTP and isolated MySQL
         run: bash ./gradlew test --tests '*Track2CandidatePipelineHttpMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 candidate pipeline HTTP test ran
@@ -316,6 +324,10 @@ jobs:
         run: bash ./gradlew test --tests '*Track2CandidatePipelineMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 candidate pipeline migration test ran
         run: python3 .github/scripts/check_junit_results.py track2-candidate-migration
+      - name: Apply W10 Track 2 candidate Case-source migration
+        run: bash ./gradlew test --tests '*CaseW10Track2CandidateSourceMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm W10 Track 2 candidate Case-source migration test ran
+        run: python3 .github/scripts/check_junit_results.py case-w10-candidate-source-migration
       - name: Apply admin evidence content audit migration
         run: bash ./gradlew test --tests '*AdminEvidenceContentMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm admin evidence content audit migration test ran

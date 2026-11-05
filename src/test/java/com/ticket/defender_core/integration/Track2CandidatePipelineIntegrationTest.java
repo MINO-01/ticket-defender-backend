@@ -22,6 +22,7 @@ import com.ticket.defender_core.domain.SyntheticReservationImportTenant;
 import com.ticket.defender_core.domain.Tenant;
 import com.ticket.defender_core.domain.TenantEvent;
 import com.ticket.defender_core.security.AdminRole;
+import com.ticket.defender_core.application.service.EvidenceObjectStorage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -69,7 +70,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class Track2CandidatePipelineIntegrationTest {
     static final String ISOLATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    private static final Pattern ID = Pattern.compile("\\\"(?:performanceId|batchId|runId)\\\":\\\"([^\\\"]+)\\\"");
+    private static final Pattern ID = Pattern.compile("\\\"(?:performanceId|batchId|runId|evidenceSnapshotId|caseId)\\\":\\\"([^\\\"]+)\\\"");
+    private static final Pattern CASE_VERSION = Pattern.compile("\\\"caseVersion(?:AtCapture)?\\\":(\\d+)");
 
     @Autowired private MockMvc mvc;
     @Autowired private TenantRepository tenants;
@@ -83,6 +85,7 @@ class Track2CandidatePipelineIntegrationTest {
     @Autowired private ListingContextObservationRepository observations;
     @Autowired private SyntheticReservationImportTenantRepository syntheticTenants;
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
+    @MockitoBean private EvidenceObjectStorage storage;
 
     @BeforeEach
     void decoderUsesTheSyntheticBearerValueAsSubject() {
@@ -180,6 +183,106 @@ class Track2CandidatePipelineIntegrationTest {
         candidate(ambiguousSeat, UUID.randomUUID().toString()).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("UNVERIFIABLE"))
                 .andExpect(jsonPath("$.reason").value("SEAT_OBSERVATION_AMBIGUOUS"));
+    }
+
+    @Test
+    void currentTerminalCandidateIsAnExplicitCaseSourceWithoutReplacingFanReportAndEvidenceSources() throws Exception {
+        Fixture fixture = fixture(ListingContextObservation.State.FOUND, ListingContextObservation.State.FOUND,
+                ListingContextObservation.State.FOUND);
+        String performanceId = createPerformance(fixture);
+        link(fixture, performanceId, 0);
+        importRows(fixture, performanceId, "source-v1", true, "VIP", "10", "5");
+        String runId = id(candidate(fixture, UUID.randomUUID().toString())
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("MATCH_CANDIDATE"))
+                .andReturn().getResponse().getContentAsString());
+        given(storage.head("synthetic/" + fixture.evidenceId())).willReturn(
+                new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "candidate-etag"));
+
+        String body = "{\"eventId\":\"" + fixture.eventId() + "\",\"type\":\"FAN_REPORT\","
+                + "\"fanReportIds\":[\"" + fixture.reportId() + "\"],\"evidenceIds\":[\""
+                + fixture.evidenceId() + "\"],\"candidateRunIds\":[\"" + runId + "\"],"
+                + "\"reason\":\"Investigate synthetic candidate context\"}";
+        MvcResult created = mvc.perform(post("/api/v1/cases").header("Authorization", bearer(fixture.subject()))
+                        .header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated()).andReturn();
+        String caseId = id(created.getResponse().getContentAsString());
+        mvc.perform(get("/api/v1/cases/{caseId}/sources", caseId)
+                        .header("Authorization", bearer(fixture.subject())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.sourceType=='LISTING_CANDIDATE_MATCH')].candidateRunId").value(runId))
+                .andExpect(jsonPath("$[?(@.sourceType=='LISTING_CANDIDATE_MATCH')].candidateStatus")
+                        .value("MATCH_CANDIDATE"))
+                .andExpect(jsonPath("$[?(@.sourceType=='LISTING_CANDIDATE_MATCH')].candidateApplicability")
+                        .value("CURRENT"));
+    }
+
+    @Test
+    void candidateSourceUsesSnapshotV2AndAChangedPerformanceBlocksNewDraftWithSourceChanged() throws Exception {
+        Fixture fixture = fixture(ListingContextObservation.State.FOUND, ListingContextObservation.State.FOUND,
+                ListingContextObservation.State.FOUND);
+        String performanceId = createPerformance(fixture);
+        link(fixture, performanceId, 0);
+        importRows(fixture, performanceId, "source-v1", true, "VIP", "10", "5");
+        String runId = id(candidate(fixture, UUID.randomUUID().toString())
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        given(storage.head("synthetic/" + fixture.evidenceId())).willReturn(
+                new EvidenceObjectStorage.ObjectMetadata(4, "image/png", "candidate-etag"));
+        String createBody = "{\"eventId\":\"" + fixture.eventId() + "\",\"type\":\"FAN_REPORT\","
+                + "\"fanReportIds\":[\"" + fixture.reportId() + "\"],\"evidenceIds\":[\""
+                + fixture.evidenceId() + "\"],\"candidateRunIds\":[\"" + runId + "\"],"
+                + "\"reason\":\"Capture synthetic candidate context\"}";
+        MvcResult created = mvc.perform(post("/api/v1/cases").header("Authorization", bearer(fixture.subject()))
+                        .header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody))
+                .andExpect(status().isCreated()).andReturn();
+        String caseId = id(created.getResponse().getContentAsString());
+        long createdVersion = caseVersion(created.getResponse().getContentAsString());
+        UUID memberId = memberships.findBySubjectAndTenantId(fixture.subject(), fixture.tenantId()).orElseThrow().getId();
+        MvcResult assigned = mvc.perform(put("/api/v1/cases/{caseId}/assignee", caseId)
+                        .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"assigneeMembershipId\":\"" + memberId + "\",\"expectedCaseVersion\":"
+                                + createdVersion + ",\"reason\":\"Assign reviewer\"}"))
+                .andExpect(status().isOk()).andReturn();
+        MvcResult triaged = mvc.perform(post("/api/v1/cases/{caseId}/transitions", caseId)
+                        .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"toStatus\":\"TRIAGED\",\"expectedCaseVersion\":"
+                                + caseVersion(assigned.getResponse().getContentAsString())
+                                + ",\"reason\":\"Triage candidate case\",\"classification\":\"Synthetic\"}"))
+                .andExpect(status().isOk()).andReturn();
+        MvcResult reviewing = mvc.perform(post("/api/v1/cases/{caseId}/transitions", caseId)
+                        .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"toStatus\":\"IN_REVIEW\",\"expectedCaseVersion\":"
+                                + caseVersion(triaged.getResponse().getContentAsString())
+                                + ",\"reason\":\"Begin candidate review\"}"))
+                .andExpect(status().isOk()).andReturn();
+        MvcResult snapshot = mvc.perform(post("/api/v1/cases/{caseId}/evidence-snapshots", caseId)
+                        .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedCaseVersion\":" + caseVersion(reviewing.getResponse().getContentAsString())
+                                + ",\"reason\":\"Capture candidate v2 evidence\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.manifestSchemaVersion").value(2)).andReturn();
+        String snapshotId = id(snapshot.getResponse().getContentAsString());
+        long snapshotCaseVersion = caseVersion(snapshot.getResponse().getContentAsString());
+
+        mvc.perform(patch("/api/v1/admin/events/{eventId}/verified-performances/{performanceId}", fixture.eventId(), performanceId)
+                        .header("Authorization", bearer(fixture.subject())).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"verificationBasis\":\"synthetic revised\",\"sourceVersion\":\"performance-v2\","
+                                + "\"expectedRevision\":1}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/cases/{caseId}/report-versions", caseId)
+                        .header("Authorization", bearer(fixture.subject())).header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedCaseVersion\":" + snapshotCaseVersion + ",\"evidenceSnapshotId\":\""
+                                + snapshotId + "\",\"title\":\"Candidate evidence\","
+                                + "\"assessment\":\"Synthetic candidate assessment\","
+                                + "\"limitations\":\"Candidate status is not a fraud finding\","
+                                + "\"conclusion\":\"Further policy review required\","
+                                + "\"reason\":\"Draft after changed candidate source\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SOURCE_CHANGED"));
     }
 
     @Test
@@ -382,6 +485,12 @@ class Track2CandidatePipelineIntegrationTest {
         Matcher matcher = ID.matcher(body);
         assertThat(matcher.find()).isTrue();
         return matcher.group(1);
+    }
+
+    private static long caseVersion(String body) {
+        Matcher matcher = CASE_VERSION.matcher(body);
+        assertThat(matcher.find()).isTrue();
+        return Long.parseLong(matcher.group(1));
     }
 
     private record Fixture(UUID tenantId, UUID eventId, UUID reportId, UUID evidenceId, UUID analysisId,

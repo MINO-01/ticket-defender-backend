@@ -103,8 +103,10 @@ public class CasePreparationService {
                     || !caseId.equals(snapshot.getCaseId())) throw notFound();
             if (snapshot.getEvidenceRevision() != target.getEvidenceRevision())
                 throw conflict("EVIDENCE_VERSION_MISMATCH");
-            CaseSnapshotManifest.Captured manifest = manifests.capture(target,
-                    sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), LocalDateTime.now(ZoneOffset.UTC));
+            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+            var references = sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId);
+            manifests.recheckStoredDatabase(target, references, snapshot, now);
+            CaseSnapshotManifest.Captured manifest = manifests.capture(target, references, now);
             if (!manifest.sha256().equals(snapshot.getManifestSha256())) throw conflict("SOURCE_CHANGED");
             return writer.draft(caseId, input, actor.memberId(), prepared.keyDigest(),
                     prepared.requestDigest(), manifest);

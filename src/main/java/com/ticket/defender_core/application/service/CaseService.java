@@ -5,6 +5,7 @@ import com.ticket.defender_core.adapter.out.persistence.CaseActivityRepository;
 import com.ticket.defender_core.adapter.out.persistence.CaseIdempotencyRepository;
 import com.ticket.defender_core.adapter.out.persistence.CaseRepository;
 import com.ticket.defender_core.adapter.out.persistence.CaseSourceReferenceRepository;
+import com.ticket.defender_core.adapter.out.persistence.ListingCandidateMatchRunRepository;
 import com.ticket.defender_core.domain.Case;
 import com.ticket.defender_core.domain.CaseIdempotencyRecord;
 import com.ticket.defender_core.security.AdminAccessService;
@@ -47,6 +48,8 @@ public class CaseService {
     private final CaseWriteService writer;
     private final CaseRepository cases;
     private final CaseSourceReferenceRepository sources;
+    private final ListingCandidateMatchRunRepository candidateRuns;
+    private final CandidateRunApplicability candidateApplicability;
     private final CaseActivityRepository activities;
     private final CaseIdempotencyRepository idempotency;
     private final ObjectMapper json;
@@ -55,7 +58,8 @@ public class CaseService {
         if (input == null || input.eventId() == null || input.type() == null) throw invalid();
         if ((input.graphClusters() != null && input.graphClusters().stream().anyMatch(Objects::isNull))
                 || (input.fanReportIds() != null && input.fanReportIds().stream().anyMatch(Objects::isNull))
-                || (input.evidenceIds() != null && input.evidenceIds().stream().anyMatch(Objects::isNull)))
+                || (input.evidenceIds() != null && input.evidenceIds().stream().anyMatch(Objects::isNull))
+                || (input.candidateRunIds() != null && input.candidateRunIds().stream().anyMatch(Objects::isNull)))
             throw invalid();
         AdminActor actor = access.requireEventAccess(input.eventId(), CREATE_ROLES);
         UUID memberId = memberships.actor(actor).getId();
@@ -141,7 +145,10 @@ public class CaseService {
     public List<CaseDto.Source> sources(UUID caseId) {
         authorizedForView(caseId);
         return sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId).stream()
-                .map(CaseDto.Source::from).toList();
+                .map(source -> CaseDto.Source.from(source, source.getSourceType()
+                        == com.ticket.defender_core.domain.CaseSourceReference.Type.LISTING_CANDIDATE_MATCH
+                        ? candidateRuns.findById(source.getListingCandidateMatchRunId())
+                        .map(candidateApplicability::assess).map(Enum::name).orElse("NOT_APPLICABLE") : null)).toList();
     }
 
     @Transactional(readOnly = true)
@@ -190,7 +197,9 @@ public class CaseService {
                 : input.fanReportIds().stream().sorted().toList();
         List<UUID> assets = input.evidenceIds() == null ? null
                 : input.evidenceIds().stream().sorted().toList();
-        return new CaseDto.Create(input.eventId(), input.type(), graph, reports, assets,
+        List<UUID> candidates = input.candidateRunIds() == null ? null
+                : input.candidateRunIds().stream().sorted().toList();
+        return new CaseDto.Create(input.eventId(), input.type(), graph, reports, assets, candidates,
                 input.reason(), input.relatedCaseId(), input.relationReason());
     }
 

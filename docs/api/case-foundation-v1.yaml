@@ -139,10 +139,17 @@ components:
         graphClusters: { type: array, items: { $ref: '#/components/schemas/GraphCluster' } }
         fanReportIds: { type: array, items: { type: string, format: uuid } }
         evidenceIds: { type: array, items: { type: string, format: uuid } }
+        candidateRunIds:
+          type: array
+          items: { type: string, format: uuid }
+          description: >-
+            Optional, server-rechecked Track 2 candidate executions. Each run must be terminal and CURRENT,
+            and its fanReportId/evidenceId must also appear in this request; it never replaces the existing
+            GRAPH_CLUSTER, FAN_REPORT, or COMBINED source requirements.
         reason: { type: string, minLength: 3, maxLength: 2000 }
         relatedCaseId: { type: string, format: uuid }
         relationReason: { type: string, minLength: 3, maxLength: 2000 }
-      description: A follow-up requires both relatedCaseId and relationReason. Sources must be verified in the same event.
+      description: A follow-up requires both relatedCaseId and relationReason. Sources must be verified in the same event. Existing Cases cannot be amended through this create endpoint.
     Transition:
       type: object
       required: [toStatus, expectedCaseVersion, reason]
@@ -194,7 +201,7 @@ components:
       description: STORED_CLUSTER_EVIDENCE represents persisted members only; no object key or tenant ID is exposed.
       properties:
         sourceReferenceId: { type: string, format: uuid }
-        sourceType: { type: string, enum: [STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET] }
+        sourceType: { type: string, enum: [STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET, LISTING_CANDIDATE_MATCH] }
         analysisRequestId: { type: [string, 'null'] }
         clusterId: { type: [string, 'null'] }
         storedMemberCount: { type: [integer, 'null'] }
@@ -204,6 +211,24 @@ components:
         riskScore: { type: [number, 'null'] }
         fanReportId: { type: [string, 'null'], format: uuid }
         evidenceId: { type: [string, 'null'], format: uuid }
+        candidateRunId: { type: [string, 'null'], format: uuid }
+        candidateAnalysisId: { type: [string, 'null'], format: uuid }
+        candidateAnalysisRowVersion: { type: [integer, 'null'] }
+        candidateAnalysisResponseSha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        candidateEvidenceSha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        candidatePerformanceLinkId: { type: [string, 'null'], format: uuid }
+        candidatePerformanceLinkRevision: { type: [integer, 'null'] }
+        candidateVerifiedPerformanceId: { type: [string, 'null'], format: uuid }
+        candidateVerifiedPerformanceRevision: { type: [integer, 'null'] }
+        candidateReservationSourceId: { type: [string, 'null'], format: uuid }
+        candidateReservationSourceRevision: { type: [integer, 'null'] }
+        candidateReservationBatchId: { type: [string, 'null'], format: uuid }
+        candidateReservationSourceVersion: { type: [string, 'null'] }
+        candidateStatus: { type: [string, 'null'], description: Immutable run status; not a fraud finding or W08/W09 approval basis. }
+        candidateReason: { type: [string, 'null'] }
+        candidateCount: { type: [integer, 'null'], minimum: 0 }
+        candidateId: { type: [string, 'null'], format: uuid, description: Opaque candidate ID only; never a reservation number or HMAC token. }
+        candidateApplicability: { type: [string, 'null'], enum: [CURRENT, PERFORMANCE_LINK_REPLACED_OR_WITHDRAWN, PERFORMANCE_WITHDRAWN, PERFORMANCE_REVISION_CHANGED, RESERVATION_SOURCE_SUPERSEDED, ANALYSIS_OR_EVIDENCE_CHANGED, NOT_APPLICABLE, null] }
         linkedAt: { type: string, format: date-time }
     ActivityPage:
       type: object

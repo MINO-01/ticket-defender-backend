@@ -60,7 +60,7 @@ public class CasePreparationWriteService {
         target.recordPreparation(now);
         cases.saveAndFlush(target);
         EvidenceSnapshot snapshot = snapshots.saveAndFlush(new EvidenceSnapshot(target, target.getCaseVersion(),
-                manifest.sha256(), manifest.json(), manifest.sourceIntegrity(), memberId, now));
+                manifest.schemaVersion(), manifest.sha256(), manifest.json(), manifest.sourceIntegrity(), memberId, now));
         activities.saveAndFlush(new CaseActivity(target, memberId, AdminRole.REVIEWER.name(),
                 "EVIDENCE_SNAPSHOT_CAPTURED", "snapshot=" + snapshot.getId() + "; " + input.reason().trim(),
                 target.getStatus(), target.getStatus(), before, target.getCaseVersion(), null, now));

@@ -161,6 +161,12 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.Track2CandidatePipelineConcurrentMySqlTest": (
         4, "Runs candidate active-slot, lease expiry and idempotency races in the isolated MySQL CI job"
     ),
+    "com.ticket.defender_core.integration.CaseW10Track2CandidateSourceMigrationMySqlTest": (
+        1, "Runs after the Track 2 candidate pipeline migration in the isolated MySQL CI jobs"
+    ),
+    "com.ticket.defender_core.integration.CaseW10Track2CandidateSourceSchemaValidateMySqlTest": (
+        1, "Runs after the W10 Track 2 candidate Case-source migration in the isolated MySQL CI job"
+    ),
 }
 
 MYSQL_SUITES = {
@@ -268,6 +274,12 @@ MYSQL_SUITES = {
     ),
     "track2-candidate-migration": (
         "com.ticket.defender_core.integration.Track2CandidatePipelineMigrationMySqlTest", 1
+    ),
+    "case-w10-candidate-source-migration": (
+        "com.ticket.defender_core.integration.CaseW10Track2CandidateSourceMigrationMySqlTest", 1
+    ),
+    "case-w10-candidate-source-schema": (
+        "com.ticket.defender_core.integration.CaseW10Track2CandidateSourceSchemaValidateMySqlTest", 1
     ),
     "track2-candidate-schema": (
         "com.ticket.defender_core.integration.Track2CandidatePipelineSchemaValidateMySqlTest", 1

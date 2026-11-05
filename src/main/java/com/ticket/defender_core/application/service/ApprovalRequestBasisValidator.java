@@ -36,6 +36,9 @@ public class ApprovalRequestBasisValidator {
         List<CaseSourceReference> references = sources.findByCaseIdOrderByLinkedAtAscIdAsc(target.getId());
         manifests.recheckStoredDatabase(target, references, snapshot, now);
         for (CaseSourceReference source : references) {
+            // Candidate runs are immutable investigative references, not approved fraud findings.
+            // A separate policy is required before approval eligibility may rely on this source type.
+            if (source.getSourceType() == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH) throw blocked();
             if (source.getSourceType() != CaseSourceReference.Type.EVIDENCE_ASSET) continue;
             validateFile(target, snapshot, report, source, now);
         }

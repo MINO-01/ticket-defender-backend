@@ -96,6 +96,10 @@ jobs:
         run: bash ./gradlew test --tests '*Track2ListingAnalysisMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 listing analysis migration test ran
         run: python3 .github/scripts/check_junit_results.py track2-listing-migration
+      - name: Apply Track 2 candidate pipeline migration
+        run: bash ./gradlew test --tests '*Track2CandidatePipelineMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 candidate pipeline migration test ran
+        run: python3 .github/scripts/check_junit_results.py track2-candidate-migration
       - name: Apply admin evidence content audit migration
         run: bash ./gradlew test --tests '*AdminEvidenceContentMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm admin evidence content audit migration test ran
@@ -140,6 +144,18 @@ jobs:
         run: bash ./gradlew test --tests '*Track2ListingAnalysisSchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 listing analysis schema test ran
         run: python3 .github/scripts/check_junit_results.py track2-listing-schema
+      - name: Validate Track 2 candidate pipeline JPA mappings
+        run: bash ./gradlew test --tests '*Track2CandidatePipelineSchemaValidateMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 candidate pipeline schema test ran
+        run: python3 .github/scripts/check_junit_results.py track2-candidate-schema
+      - name: Verify Track 2 candidate pipeline over real HTTP and isolated MySQL
+        run: bash ./gradlew test --tests '*Track2CandidatePipelineHttpMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 candidate pipeline HTTP test ran
+        run: python3 .github/scripts/check_junit_results.py track2-candidate-http
+      - name: Verify Track 2 candidate pipeline active slot and idempotency races
+        run: bash ./gradlew test --tests '*Track2CandidatePipelineConcurrentMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 candidate pipeline concurrency tests ran
+        run: python3 .github/scripts/check_junit_results.py track2-candidate-concurrency
       - name: Verify W06 idempotency and activity rollback on MySQL
         run: bash ./gradlew test --tests '*CaseW06ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W06 MySQL concurrency tests ran
@@ -296,6 +312,10 @@ jobs:
         run: bash ./gradlew test --tests '*Track2ListingAnalysisMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 2 listing analysis migration test ran
         run: python3 .github/scripts/check_junit_results.py track2-listing-migration
+      - name: Apply Track 2 candidate pipeline migration
+        run: bash ./gradlew test --tests '*Track2CandidatePipelineMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 2 candidate pipeline migration test ran
+        run: python3 .github/scripts/check_junit_results.py track2-candidate-migration
       - name: Apply admin evidence content audit migration
         run: bash ./gradlew test --tests '*AdminEvidenceContentMigrationMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm admin evidence content audit migration test ran

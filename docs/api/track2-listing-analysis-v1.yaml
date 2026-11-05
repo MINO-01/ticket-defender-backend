@@ -148,8 +148,8 @@ components:
     CandidateMatch:
       type: [object, 'null']
       description: >-
-        기존 예매 후보 대조 연결 여부입니다. 기존 규칙은 검증된 회차 식별자와 좌석 3요소, 0.85 이상의 일치 신뢰도가 필요하지만
-        Listing Context는 일치 신뢰도를 제공하지 않으므로 현재 항상 NOT_LINKED입니다. MATCH_CANDIDATE를 만들지 않습니다.
+        Issue #50의 legacy 요약 필드입니다. 이 분석 이력은 불변으로 보존되므로 항상 NOT_LINKED이며,
+        Issue #68 후보 대조 실행은 track2-candidate-pipeline-v1.yaml의 별도 candidate-matches 이력 API에서 조회합니다.
       properties:
         status: { type: string, enum: [NOT_LINKED] }
         reason:

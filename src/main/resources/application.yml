@@ -71,6 +71,9 @@ ticket-defender:
     connect-timeout: ${TRACK2_LISTING_ANALYSIS_CONNECT_TIMEOUT:PT3S}
     read-timeout: ${TRACK2_LISTING_ANALYSIS_READ_TIMEOUT:PT60S}
     attempt-lease: ${TRACK2_LISTING_ANALYSIS_ATTEMPT_LEASE:PT5M}
+  track2-candidate-match:
+    # An expired active lookup becomes a terminal LOOKUP_FAILED history row; it never permits late completion.
+    attempt-lease: ${TRACK2_CANDIDATE_MATCH_ATTEMPT_LEASE:PT5M}
   official-pdf:
     # This flag alone never authorizes operation; only synthetic isolated mode is currently accepted.
     enabled: ${OFFICIAL_PDF_ENABLED:false}

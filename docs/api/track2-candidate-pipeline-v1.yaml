@@ -1,0 +1,371 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender Track 2 candidate pipeline API
+  version: 1.0.0
+  description: >-
+    검증된 회차, 합성 격리 예매 스냅샷, 저장된 Listing Context 관찰값을 연결하는 관리자 API입니다.
+    모든 후보 결과는 사람 조사 후보이며, 부정거래 확정, Case 생성, 티켓 취소, 제재, PDF 발급을 수행하지 않습니다.
+servers:
+  - url: /
+security:
+  - adminBearer: []
+x-error-catalog:
+  INVALID_REQUEST: {status: 400}
+  INVALID_IDEMPOTENCY_KEY: {status: 400}
+  UNAUTHENTICATED: {status: 401}
+  FORBIDDEN: {status: 403}
+  RESOURCE_NOT_FOUND: {status: 404, note: 다른 tenant/event 또는 소속 밖 객체도 존재를 숨긴다}
+  VALIDATION_FAILED: {status: 422}
+  PERFORMANCE_REF_CONFLICT: {status: 409}
+  PERFORMANCE_REVISION_CONFLICT: {status: 409}
+  PERFORMANCE_WITHDRAWN: {status: 409}
+  PERFORMANCE_LINK_REVISION_CONFLICT: {status: 409}
+  PERFORMANCE_LINK_ALREADY_CURRENT: {status: 409}
+  PERFORMANCE_LINK_CONCURRENT_UPDATE: {status: 409, note: 같은 link active slot의 경쟁; 동일 key는 승자 commit 뒤 재확인한다}
+  IDEMPOTENCY_KEY_REUSED: {status: 409}
+  RESERVATION_SOURCE_VERSION_CONFLICT: {status: 409}
+  RESERVATION_IMPORT_DISABLED: {status: 409}
+  RESERVATION_IMPORT_OPERATION_NOT_APPROVED: {status: 409}
+  RESERVATION_IMPORT_ISOLATION_UNVERIFIED: {status: 409}
+  RESERVATION_IMPORT_SYNTHETIC_SCOPE_UNVERIFIED: {status: 409}
+  RESERVATION_IMPORT_CONCURRENT_UPDATE: {status: 409, note: 전체 batch rollback 후 retry 가능}
+  CANDIDATE_LOOKUP_IN_PROGRESS: {status: 409}
+  CANDIDATE_LOOKUP_FAILED_UNRECORDED: {status: 503, note: 전체 DB 장애로 같은 DB 감사 행을 보장할 수 없음}
+  DEPENDENCY_UNAVAILABLE: {status: 503}
+paths:
+  /api/v1/admin/events/{eventId}/verified-performances:
+    parameters: [{$ref: '#/components/parameters/EventId'}]
+    get:
+      operationId: listVerifiedPerformances
+      description: REVIEWER 또는 TENANT_ADMIN만 해당 event 범위의 검증/철회 회차를 조회합니다.
+      responses:
+        '200': {description: 회차 목록, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Performance'}}}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createVerifiedPerformance
+      description: >-
+        REVIEWER 또는 TENANT_ADMIN이 고객사/공연 범위의 안정적 performanceRef를 명시적으로 검증합니다.
+        팬 입력 시간이나 VLM performanceAt은 이 요청의 근거가 될 수 있지만 자동 연결 근거는 아닙니다.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreatePerformance'}}}
+      responses:
+        '201': {description: 검증 회차와 append-only 감사 행 생성, content: {application/json: {schema: {$ref: '#/components/schemas/Performance'}}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/v1/admin/events/{eventId}/verified-performances/{performanceId}:
+    parameters: [{$ref: '#/components/parameters/EventId'}, {$ref: '#/components/parameters/PerformanceId'}]
+    patch:
+      operationId: reviseVerifiedPerformance
+      description: >-
+        검증 근거와 출처 버전만 revision을 올려 변경합니다. performanceRef 자체는 불변이며 새 ref는 새 검증 회차를 만듭니다.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RevisePerformance'}}}
+      responses:
+        '200': {description: 수정 결과, content: {application/json: {schema: {$ref: '#/components/schemas/Performance'}}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/v1/admin/events/{eventId}/verified-performances/{performanceId}/withdrawals:
+    parameters: [{$ref: '#/components/parameters/EventId'}, {$ref: '#/components/parameters/PerformanceId'}]
+    post:
+      operationId: withdrawVerifiedPerformance
+      description: >-
+        철회는 기존 후보 실행을 수정하지 않습니다. 이후 후보 실행은 차단되고 과거 실행의 applicability만 재평가됩니다.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/WithdrawPerformance'}}}
+      responses:
+        '200': {description: 철회 결과, content: {application/json: {schema: {$ref: '#/components/schemas/Performance'}}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/v1/admin/fan-reports/{fanReportId}/performance-link:
+    parameters: [{$ref: '#/components/parameters/FanReportId'}]
+    get:
+      operationId: listFanReportPerformanceLinks
+      description: REVIEWER 또는 TENANT_ADMIN이 제보의 회차 연결 이력을 조회합니다.
+      responses:
+        '200': {description: 연결 이력, content: {application/json: {schema: {$ref: '#/components/schemas/PerformanceLinkHistory'}}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: linkFanReportPerformance
+      description: >-
+        REVIEWER 또는 TENANT_ADMIN이 현재 event 범위의 ACTIVE verified performance를 제보에 명시적으로 연결합니다.
+        같은 actor/report/key의 동일 요청은 기존 결과를 재현하고, 다른 본문은 409 IDEMPOTENCY_KEY_REUSED입니다.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/LinkPerformance'}}}
+      responses:
+        '201': {description: 새 활성 연결, content: {application/json: {schema: {$ref: '#/components/schemas/PerformanceLink'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/v1/admin/fan-reports/{fanReportId}/performance-link/withdrawals:
+    parameters: [{$ref: '#/components/parameters/FanReportId'}]
+    post:
+      operationId: withdrawFanReportPerformanceLink
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/WithdrawLink'}}}
+      responses:
+        '200': {description: 철회된 연결 이력, content: {application/json: {schema: {$ref: '#/components/schemas/PerformanceLink'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/v1/admin/events/{eventId}/reservation-imports:
+    parameters: [{$ref: '#/components/parameters/EventId'}]
+    post:
+      operationId: importSyntheticReservationSnapshot
+      description: >-
+        TENANT_ADMIN 전용입니다. 이 API는 기본 비활성이며 SYNTHETIC_ISOLATED 모드, UUID 격리 ID,
+        H2 memory 또는 loopback MySQL, 서버 등록 synthetic tenant, tenant/purpose/key-version HMAC 키가 모두
+        검증될 때만 작동합니다. 실제 고객사 데이터 적재나 보존기간을 승인하지 않습니다.
+        배치는 atomic입니다. 행 오류 하나라도 있거나 completeSnapshot이 true가 아니면 REJECTED로 기록하고 후보 행은 저장하지 않습니다.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ImportReservations'}}}
+      responses:
+        '201': {description: ACCEPTED 또는 REJECTED batch, content: {application/json: {schema: {$ref: '#/components/schemas/ImportResult'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/admin/fan-reports/{fanReportId}/evidence/{evidenceId}/listing-analyses/{analysisId}/candidate-matches:
+    parameters:
+      - {$ref: '#/components/parameters/FanReportId'}
+      - {$ref: '#/components/parameters/EvidenceId'}
+      - {$ref: '#/components/parameters/AnalysisId'}
+    post:
+      operationId: runListingCandidateMatch
+      description: >-
+        ANALYST 또는 REVIEWER가 실행합니다. 저장된 SUCCEEDED 분석과 그 증거 SHA-256, 현재 ACTIVE 회차 연결,
+        ACTIVE 회차 revision, 현재 ACCEPTED complete reservation snapshot만 사용합니다. zone/row/seat가 모두 FOUND일 때만
+        binary exact 비교합니다. mappingScore를 요구·생성·대체하지 않습니다.
+        FOUND여도 공백 제거 후 1~128자의 exact 좌석으로 정규화할 수 없으면 active 실행을 만들지 않고
+        UNVERIFIABLE/SEAT_OBSERVATION_UNAVAILABLE로 종료합니다. active 실행에는 내부 lease가 있으며 만료 시
+        LOOKUP_FAILED 불변 이력으로 닫히므로 늦은 worker가 과거 결과를 덮어쓰지 못합니다. NO_MATCH는 완전 스냅샷에 대한 조회가 성공한 경우에만 반환됩니다. 실행 시작·조회·종료 중 DB 오류는
+        LOOKUP_FAILED 행을 기록할 수 있는 경우에만 201 응답으로 반환되며, 시작 행조차 기록할 수 없는 전체 DB 장애는
+        503 CANDIDATE_LOOKUP_FAILED_UNRECORDED입니다.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '201': {description: 불변 후보 실행 이력, content: {application/json: {schema: {$ref: '#/components/schemas/CandidateRun'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      operationId: listListingCandidateMatches
+      description: >-
+        후보 실행 이력과 현재 applicability를 반환합니다. 회차 철회/변경/연결 교체/소스 교체는 과거 결과를 수정하지 않고
+        applicability만 바꿉니다. reservationReference, accountId, HMAC 원문은 반환하지 않습니다.
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PageSize'}
+      responses:
+        '200': {description: 최신 실행 우선, content: {application/json: {schema: {$ref: '#/components/schemas/CandidateRunPage'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+components:
+  securitySchemes:
+    adminBearer: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    EventId: {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
+    FanReportId: {name: fanReportId, in: path, required: true, schema: {type: string, format: uuid}}
+    EvidenceId: {name: evidenceId, in: path, required: true, schema: {type: string, format: uuid}}
+    AnalysisId: {name: analysisId, in: path, required: true, schema: {type: string, format: uuid}}
+    PerformanceId: {name: performanceId, in: path, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, format: uuid}}
+    Page: {name: page, in: query, schema: {type: integer, minimum: 0, default: 0}}
+    PageSize: {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+  schemas:
+    CreatePerformance:
+      type: object
+      required: [performanceRef, verificationBasis, sourceVersion]
+      additionalProperties: false
+      properties:
+        performanceRef: {type: string, minLength: 1, maxLength: 128, description: 고객사 공연 안의 안정적 회차 식별자}
+        verificationBasis: {type: string, minLength: 1, maxLength: 512, description: PII를 넣지 않는 관리자 검증 근거}
+        sourceVersion: {type: string, minLength: 1, maxLength: 128}
+    RevisePerformance:
+      type: object
+      required: [verificationBasis, sourceVersion, expectedRevision]
+      additionalProperties: false
+      properties:
+        verificationBasis: {type: string, minLength: 1, maxLength: 512, description: PII를 넣지 않는 관리자 검증 근거}
+        sourceVersion: {type: string, minLength: 1, maxLength: 128}
+        expectedRevision: {type: integer, minimum: 1}
+    WithdrawPerformance:
+      type: object
+      required: [reason, expectedRevision]
+      additionalProperties: false
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 512}
+        expectedRevision: {type: integer, minimum: 1}
+    Performance:
+      type: object
+      required: [performanceId, eventId, performanceRef, status, revision, sourceVersion, verifiedAt]
+      properties:
+        performanceId: {type: string, format: uuid}
+        eventId: {type: string, format: uuid}
+        performanceRef: {type: string}
+        status: {type: string, enum: [ACTIVE, WITHDRAWN]}
+        revision: {type: integer, minimum: 1}
+        sourceVersion: {type: string}
+        verifiedAt: {type: string, format: date-time}
+        withdrawnAt: {type: [string, 'null'], format: date-time}
+    LinkPerformance:
+      type: object
+      required: [performanceId, expectedLinkRevision, reason]
+      additionalProperties: false
+      properties:
+        performanceId: {type: string, format: uuid}
+        expectedLinkRevision: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 1, maxLength: 512}
+    WithdrawLink:
+      type: object
+      required: [expectedLinkRevision, reason]
+      additionalProperties: false
+      properties:
+        expectedLinkRevision: {type: integer, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 512}
+    PerformanceLink:
+      type: object
+      required: [linkId, fanReportId, performanceId, performanceRef, performanceRevision, linkRevision, status, createdAt]
+      properties:
+        linkId: {type: string, format: uuid}
+        fanReportId: {type: string, format: uuid}
+        performanceId: {type: string, format: uuid}
+        performanceRef: {type: string}
+        performanceRevision: {type: integer}
+        linkRevision: {type: integer}
+        status: {type: string, enum: [ACTIVE, REPLACED, WITHDRAWN]}
+        createdAt: {type: string, format: date-time}
+        endedAt: {type: [string, 'null'], format: date-time}
+    PerformanceLinkHistory:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/PerformanceLink'}}}
+    ImportReservations:
+      type: object
+      required: [performanceId, sourceVersion, completeSnapshot, rows]
+      additionalProperties: false
+      properties:
+        performanceId: {type: string, format: uuid}
+        sourceVersion: {type: string, minLength: 1, maxLength: 128, description: 앞뒤 Unicode 공백 제거 후 저장·idempotency digest 비교}
+        completeSnapshot: {type: boolean, description: true가 아니면 전체 batch를 REJECTED로 기록}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: object
+            required: [reservationReference, zone, row, seat]
+            additionalProperties: false
+            properties:
+              reservationReference: {type: string, minLength: 1, maxLength: 128, writeOnly: true}
+              zone: {type: string, minLength: 1, maxLength: 128}
+              row: {type: string, minLength: 1, maxLength: 128}
+              seat: {type: string, minLength: 1, maxLength: 128}
+    ImportError:
+      type: object
+      required: [rowIndex, code]
+      properties: {rowIndex: {type: integer, minimum: 0}, code: {type: string}}
+    ImportResult:
+      type: object
+      required: [batchId, eventId, performanceId, sourceVersion, status, completeSnapshot, inputRowCount, acceptedRowCount, rejectedRowCount, errors, completedAt]
+      properties:
+        batchId: {type: string, format: uuid}
+        eventId: {type: string, format: uuid}
+        performanceId: {type: string, format: uuid}
+        sourceVersion: {type: string}
+        status: {type: string, enum: [ACCEPTED, REJECTED]}
+        completeSnapshot: {type: boolean}
+        inputRowCount: {type: integer}
+        acceptedRowCount: {type: integer}
+        rejectedRowCount: {type: integer}
+        errors: {type: array, items: {$ref: '#/components/schemas/ImportError'}}
+        completedAt: {type: string, format: date-time}
+    CandidateRun:
+      type: object
+      required: [runId, analysisId, fanReportId, evidenceId, status, reason, applicability, createdAt]
+      properties:
+        runId: {type: string, format: uuid}
+        analysisId: {type: string, format: uuid}
+        fanReportId: {type: string, format: uuid}
+        evidenceId: {type: string, format: uuid}
+        status: {type: string, enum: [IN_PROGRESS, MATCH_CANDIDATE, NO_MATCH, AMBIGUOUS, UNVERIFIABLE, LOOKUP_FAILED, ANALYSIS_FAILED]}
+        reason: {type: string, enum: [LOOKUP_STARTED, MATCHED_SINGLE_CANDIDATE, NO_CANDIDATE_FOUND, MULTIPLE_CANDIDATES, ANALYSIS_NOT_SUCCEEDED, PERFORMANCE_LINK_UNVERIFIED, PERFORMANCE_WITHDRAWN, PERFORMANCE_REVISION_CHANGED, RESERVATION_SOURCE_INCOMPLETE, RESERVATION_SOURCE_UNAVAILABLE, SEAT_OBSERVATION_UNAVAILABLE, SEAT_OBSERVATION_AMBIGUOUS, ANALYSIS_OR_EVIDENCE_CHANGED, RESERVATION_LOOKUP_FAILED]}
+        candidateCount: {type: [integer, 'null'], minimum: 0}
+        candidateId:
+          type: [string, 'null']
+          format: uuid
+          description: >-
+            단일 후보의 opaque 내부 참조(reservation_candidates.id)이며 예매번호/계정 식별자가 아니다.
+            승인된 후속 고객사 원본 조회는 tenantId, reservationBatchId, reservationSourceVersion,
+            HMAC key version 및 synthetic isolation binding을 서버 내부에서 재검증해야 하며 이 API는
+            원본/HMAC을 반환하지 않는다.
+        performanceLinkId: {type: [string, 'null'], format: uuid}
+        performanceLinkRevision: {type: [integer, 'null']}
+        verifiedPerformanceId: {type: [string, 'null'], format: uuid}
+        verifiedPerformanceRevision: {type: [integer, 'null']}
+        reservationBatchId: {type: [string, 'null'], format: uuid}
+        reservationSourceVersion: {type: [string, 'null']}
+        evidenceSha256: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+        analysisResponseSha256: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+        analysisRowVersion: {type: [integer, 'null']}
+        applicability: {type: string, enum: [CURRENT, PERFORMANCE_LINK_REPLACED_OR_WITHDRAWN, PERFORMANCE_WITHDRAWN, PERFORMANCE_REVISION_CHANGED, RESERVATION_SOURCE_SUPERSEDED, ANALYSIS_OR_EVIDENCE_CHANGED, NOT_APPLICABLE]}
+        createdAt: {type: string, format: date-time}
+        completedAt: {type: [string, 'null'], format: date-time}
+    CandidateRunPage:
+      type: object
+      required: [items, page, pageSize, hasNext]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/CandidateRun'}}
+        page: {type: integer}
+        pageSize: {type: integer}
+        hasNext: {type: boolean}
+    Problem:
+      type: object
+      required: [status, code]
+      properties:
+        status: {type: integer}
+        code: {type: string}
+        requestId: {type: string, format: uuid}
+  responses:
+    Invalid: {description: INVALID_REQUEST 또는 INVALID_IDEMPOTENCY_KEY, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Unauthenticated: {description: UNAUTHENTICATED, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Forbidden: {description: 같은 범위이지만 역할 부족, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    NotFound: {description: RESOURCE_NOT_FOUND. 다른 tenant/event 및 소속 밖 객체는 존재를 숨김, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Conflict: {description: revision, active execution, idempotency, concurrent import, synthetic isolation 또는 operation gate 충돌, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Unprocessable: {description: VALIDATION_FAILED 또는 atomic import row validation failure, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+    Unavailable: {description: DEPENDENCY_UNAVAILABLE 또는 CANDIDATE_LOOKUP_FAILED_UNRECORDED. 전체 DB 장애에서는 실패 이력을 DB에 남길 수 없음, content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}}

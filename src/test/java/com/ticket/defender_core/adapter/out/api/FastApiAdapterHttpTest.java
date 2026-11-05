@@ -16,6 +16,7 @@ import java.net.ServerSocket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -26,13 +27,16 @@ class FastApiAdapterHttpTest {
 
     private static final String REQUEST_ID = "2136558c-2326-4430-a46d-0793494e9b49";
     private static final String LOOPBACK_HOST = "127.0.0.1";
+    private static final String TEST_TRACK1_SHARED_SECRET = "test-only-track1-shared-secret-value";
 
     @Test
     void successfulHttpResponseIsCompletedAnalysis() throws IOException {
-        HttpServer server = server(200, response("COMPLETED", "LOUVAIN"));
+        AtomicReference<List<String>> receivedTrack1Keys = new AtomicReference<>();
+        HttpServer server = server(200, response("COMPLETED", "LOUVAIN"), receivedTrack1Keys);
         try {
             assertThat(server.getAddress().getAddress().getHostAddress()).isEqualTo(LOOPBACK_HOST);
             MacroAnalysisResponse analysis = adapter(server.getAddress().getPort()).requestMacroAnalysis(request());
+            assertThat(receivedTrack1Keys.get()).containsExactly(TEST_TRACK1_SHARED_SECRET);
             assertThat(analysis.requestId()).isEqualTo(REQUEST_ID);
             assertThat(analysis.status()).isEqualTo(MacroAnalysisResponse.Status.COMPLETED);
             assertThat(analysis.clusters()).isEmpty();
@@ -96,6 +100,24 @@ class FastApiAdapterHttpTest {
     }
 
     @Test
+    void dataAuthFailuresAreNotCompletedAnalyses() throws IOException {
+        for (int status : List.of(401, 503, 410)) {
+            HttpServer server = server(status, "{\"detail\":[{\"code\":\"TEST_AUTH_FAILURE\"}]}");
+            try {
+                RestClientException failure = assertThrows(RestClientException.class,
+                        () -> adapter(server.getAddress().getPort()).requestMacroAnalysis(request()));
+
+                MacroAnalysisResponse fallback = adapter(server.getAddress().getPort()).analyzeFallback(request(), failure);
+
+                assertThat(fallback.status()).isEqualTo(MacroAnalysisResponse.Status.UNAVAILABLE);
+                assertThat(fallback.clusters()).isEmpty();
+            } finally {
+                server.stop(0);
+            }
+        }
+    }
+
+    @Test
     void malformedJsonIsRejected() throws IOException {
         HttpServer server = server(200, "{");
         try {
@@ -122,6 +144,7 @@ class FastApiAdapterHttpTest {
     private FastApiAdapter adapter(int port) {
         FastApiAdapter adapter = new FastApiAdapter(RestClient.builder());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://" + LOOPBACK_HOST + ":" + port);
+        ReflectionTestUtils.setField(adapter, "track1InternalSharedSecret", TEST_TRACK1_SHARED_SECRET);
         return adapter;
     }
 
@@ -140,9 +163,16 @@ class FastApiAdapterHttpTest {
     }
 
     private HttpServer server(int status, String body) throws IOException {
+        return server(status, body, null);
+    }
+
+    private HttpServer server(int status, String body, AtomicReference<List<String>> receivedTrack1Keys) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), 0), 0);
         server.createContext("/api/v1/clusters/analyze", exchange -> {
+            if (receivedTrack1Keys != null) {
+                receivedTrack1Keys.set(exchange.getRequestHeaders().get("X-TD-Track1-Key"));
+            }
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(status, bytes.length);

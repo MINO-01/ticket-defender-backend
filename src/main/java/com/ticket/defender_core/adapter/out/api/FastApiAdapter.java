@@ -14,6 +14,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.UnknownContentTypeException;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,12 +28,17 @@ import java.util.regex.Pattern;
 public class FastApiAdapter {
 
     private static final String ANALYSIS_PATH = "/api/v1/clusters/analyze";
+    private static final String TRACK1_AUTH_HEADER = "X-TD-Track1-Key";
+    private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
     private static final Pattern HASH_TOKEN_PATTERN = Pattern.compile("^[0-9a-f]{64}$");
 
     private final RestClient restClient;
 
     @Value("${FASTAPI_URL:http://localhost:8000}")
     private String fastApiUrl;
+
+    @Value("${ticket-defender.track1-internal-auth.shared-secret:}")
+    private String track1InternalSharedSecret;
 
     /** 연결과 응답 대기 시간을 제한해 FastAPI 호출을 준비합니다. */
     @Autowired
@@ -51,11 +57,13 @@ public class FastApiAdapter {
     /** FastAPI에 그래프 분석을 요청하고 응답을 확인합니다. */
     @CircuitBreaker(name = "fastApi", fallbackMethod = "analyzeFallback")
     public MacroAnalysisResponse requestMacroAnalysis(MacroAnalysisRequest request) {
+        String track1SharedSecret = requireTrack1SharedSecret();
         String baseUrl = fastApiUrl.replaceAll("/+$", "");
         MacroAnalysisResponse response;
         try {
             response = restClient.post()
                     .uri(baseUrl + ANALYSIS_PATH)
+                    .header(TRACK1_AUTH_HEADER, track1SharedSecret)
                     .body(request)
                     .retrieve()
                     .body(MacroAnalysisResponse.class);
@@ -71,6 +79,19 @@ public class FastApiAdapter {
         return response;
     }
 
+    private String requireTrack1SharedSecret() {
+        if (track1InternalSharedSecret == null || track1InternalSharedSecret.isBlank()
+                || track1InternalSharedSecret.getBytes(StandardCharsets.UTF_8).length < MIN_TRACK1_SHARED_SECRET_BYTES
+                || containsHttpHeaderControlCharacter(track1InternalSharedSecret)) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+        return track1InternalSharedSecret;
+    }
+
+    private boolean containsHttpHeaderControlCharacter(String value) {
+        return value.codePoints().anyMatch(Character::isISOControl);
+    }
+
     /** 호출에 실패하면 적발 결과 대신 분석 불가 상태를 반환합니다. */
     public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, Throwable cause) {
         String causeName = cause == null ? "알 수 없는 오류" : cause.getClass().getSimpleName();
@@ -82,6 +103,14 @@ public class FastApiAdapter {
     public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, FastApiResponseContractException cause) {
         log.error("FastAPI가 계약에 맞지 않는 분석 결과를 반환했습니다. 요청 ID: {}", request.requestId());
         throw cause;
+    }
+
+    /** Track 1 인증 설정 오류는 분석 불가로 기록하되 설정값 자체는 남기지 않습니다. */
+    public MacroAnalysisResponse analyzeFallback(
+            MacroAnalysisRequest request, FastApiAuthenticationConfigurationException cause
+    ) {
+        log.error("Track 1 내부 인증 설정이 유효하지 않아 분석을 시작하지 않았습니다.");
+        return MacroAnalysisResponse.unavailable(request.requestId());
     }
 
     /** 요청 ID와 분석 정보, 군집 목록이 응답에 있는지 확인합니다. */

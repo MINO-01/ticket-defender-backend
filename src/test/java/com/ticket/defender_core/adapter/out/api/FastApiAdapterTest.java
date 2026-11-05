@@ -1,13 +1,19 @@
 package com.ticket.defender_core.adapter.out.api;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
@@ -26,6 +32,32 @@ class FastApiAdapterTest {
     private static final String REQUEST_ID = "2136558c-2326-4430-a46d-0793494e9b49";
     private static final String PAYMENT_HASH = "a".repeat(64);
     private static final String DEVICE_HASH = "b".repeat(64);
+    private static final String TEST_TRACK1_SHARED_SECRET = "test-only-track1-shared-secret-value";
+    private static final String TOO_SHORT_UTF8_SECRET = "가".repeat(10);
+    private static final String CONTROL_CHARACTER_SECRET = TEST_TRACK1_SHARED_SECRET + "\r\n";
+
+    @Test
+    @DisplayName("Track 1 분석 요청은 전용 내부 인증 헤더를 전송한다")
+    void requestMacroAnalysis_sendsTrack1AuthHeaderExactlyOnce() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+
+        server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+                .andExpect(request -> {
+                    assertThat(request.getHeaders().get("X-TD-Track1-Key"))
+                            .containsExactly(TEST_TRACK1_SHARED_SECRET);
+                    assertThat(request.getHeaders().get("X-TD-Internal-Key")).isNull();
+                    assertThat(request.getHeaders().get(HttpHeaders.AUTHORIZATION)).isNull();
+                })
+                .andRespond(withSuccess(successResponseJson(), MediaType.APPLICATION_JSON));
+
+        adapter.requestMacroAnalysis(request());
+
+        server.verify();
+    }
 
     /** 분석 요청과 정상 응답이 계약에 맞게 오갑니다. */
     @Test
@@ -36,6 +68,7 @@ class FastApiAdapterTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test/");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         MacroAnalysisRequest request = request();
         String responseJson = """
                 {
@@ -88,6 +121,7 @@ class FastApiAdapterTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
                 .andRespond(withSuccess("""
                         {
@@ -114,6 +148,7 @@ class FastApiAdapterTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         String responseJson = """
                 {
                   "requestId": "%s",
@@ -150,6 +185,7 @@ class FastApiAdapterTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
         MacroAnalysisRequest request = new MacroAnalysisRequest(REQUEST_ID, List.of(
                 request().tickets().get(0),
                 request().tickets().get(1),
@@ -173,19 +209,69 @@ class FastApiAdapterTest {
     }
 
     @Test
-    @DisplayName("HTTP 422와 500은 완료된 빈 군집으로 해석하지 않는다")
+    @DisplayName("HTTP 401, 410, 422, 500, 503은 완료된 빈 군집으로 해석하지 않는다")
     void requestMacroAnalysis_rejectsHttpErrors() {
-        for (HttpStatus status : List.of(HttpStatus.UNPROCESSABLE_ENTITY, HttpStatus.INTERNAL_SERVER_ERROR)) {
+        for (HttpStatus status : List.of(HttpStatus.UNAUTHORIZED, HttpStatus.GONE,
+                HttpStatus.UNPROCESSABLE_ENTITY, HttpStatus.INTERNAL_SERVER_ERROR, HttpStatus.SERVICE_UNAVAILABLE)) {
             RestClient.Builder builder = RestClient.builder();
             MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
             FastApiAdapter adapter = new FastApiAdapter(builder.build());
             ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+            setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
             server.expect(requestTo("http://fastapi.test/api/v1/clusters/analyze"))
                     .andRespond(withStatus(status).body("{\"detail\":\"unavailable\"}"));
 
             assertThrows(org.springframework.web.client.RestClientException.class,
                     () -> adapter.requestMacroAnalysis(request()));
             server.verify();
+        }
+    }
+
+    @Test
+    @DisplayName("Track 1 인증 설정이 없거나 유효하지 않으면 HTTP 호출 전에 차단한다")
+    void requestMacroAnalysis_blocksInvalidTrack1SecretBeforeHttpCall() {
+        for (String secret : List.of("", TOO_SHORT_UTF8_SECRET, CONTROL_CHARACTER_SECRET)) {
+            RestClient.Builder builder = RestClient.builder();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+            FastApiAdapter adapter = new FastApiAdapter(builder.build());
+            ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://fastapi.test");
+            setTrack1SharedSecret(adapter, secret);
+            server.expect(ExpectedCount.never(), requestTo("http://fastapi.test/api/v1/clusters/analyze"))
+                    .andRespond(withSuccess(successResponseJson(), MediaType.APPLICATION_JSON));
+
+            FastApiAuthenticationConfigurationException error = assertThrows(
+                    FastApiAuthenticationConfigurationException.class,
+                    () -> adapter.requestMacroAnalysis(request())
+            );
+
+            assertThat(error.getMessage()).doesNotContain(
+                    TEST_TRACK1_SHARED_SECRET, TOO_SHORT_UTF8_SECRET, CONTROL_CHARACTER_SECRET);
+            MacroAnalysisResponse fallback = adapter.analyzeFallback(request(), error);
+            assertThat(fallback.status()).isEqualTo(MacroAnalysisResponse.Status.UNAVAILABLE);
+            server.verify();
+        }
+    }
+
+    @Test
+    @DisplayName("분석 fallback 로그와 오류 메시지는 인증값을 포함하지 않는다")
+    void analyzeFallback_doesNotExposeAuthenticationValue() {
+        FastApiAdapter adapter = new FastApiAdapter(RestClient.builder().build());
+        Logger logger = (Logger) LoggerFactory.getLogger(FastApiAdapter.class);
+        ListAppender<ILoggingEvent> events = new ListAppender<>();
+        events.start();
+        logger.addAppender(events);
+
+        try {
+            MacroAnalysisResponse fallback = adapter.analyzeFallback(
+                    request(), new IllegalStateException(TEST_TRACK1_SHARED_SECRET));
+
+            assertThat(fallback.status()).isEqualTo(MacroAnalysisResponse.Status.UNAVAILABLE);
+            assertThat(events.list)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .noneMatch(message -> message.contains(TEST_TRACK1_SHARED_SECRET));
+        } finally {
+            logger.detachAppender(events);
+            events.stop();
         }
     }
 
@@ -216,5 +302,22 @@ class FastApiAdapterTest {
                 new MacroAnalysisRequest.Ticket(
                         "uid-2", "res-2", "event-1", PAYMENT_HASH, null, DEVICE_HASH, null)
         ));
+    }
+
+    private String successResponseJson() {
+        return """
+                {
+                  "requestId": "%s",
+                  "status": "COMPLETED",
+                  "algorithm": "LOUVAIN",
+                  "algorithmVersion": "1.0.0",
+                  "analyzedAt": "2026-10-08T10:15:30Z",
+                  "clusters": []
+                }
+                """.formatted(REQUEST_ID);
+    }
+
+    private void setTrack1SharedSecret(FastApiAdapter adapter, String secret) {
+        ReflectionTestUtils.setField(adapter, "track1InternalSharedSecret", secret);
     }
 }

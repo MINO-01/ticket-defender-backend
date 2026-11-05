@@ -38,6 +38,8 @@ out/
 
 ### 환경변수 및 시크릿 파일 차단 ###
 .env
+.env.*
+!.env.example
 application-secret.yml
 application-local.yml
 

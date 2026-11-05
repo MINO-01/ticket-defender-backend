@@ -59,8 +59,7 @@ class Track2CandidatePipelineConcurrentMySqlTest {
     @Autowired private ReservationImportBatchRepository batches;
     @Autowired private ReservationDataSourceRepository sources;
     @Autowired private ListingCandidateMatchRunRepository runs;
-    @Autowired private ListingCandidateMatchWriteService writer;
-    @MockitoSpyBean private ReservationCandidateRepository candidates;
+    @MockitoSpyBean private ListingCandidateMatchWriteService writer;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -71,8 +70,8 @@ class Track2CandidatePipelineConcurrentMySqlTest {
     }
 
     @AfterEach
-    void resetCandidateRepositorySpy() {
-        reset(candidates);
+    void resetCandidateMatchWriteServiceSpy() {
+        reset(writer);
         SecurityContextHolder.clearContext();
     }
 
@@ -154,19 +153,19 @@ class Track2CandidatePipelineConcurrentMySqlTest {
     }
 
     private List<String> race(Fixture fixture, String firstKey, String secondKey) throws Exception {
-        CountDownLatch queryEntered = new CountDownLatch(1);
+        CountDownLatch completionEntered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
+        // The service reaches complete only after the real Spring Data candidate lookup returned.
         doAnswer(invocation -> {
-            queryEntered.countDown();
+            completionEntered.countDown();
             try {
                 release.await(10, TimeUnit.SECONDS);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
             return invocation.callRealMethod();
-        }).when(candidates).findTop2ByBatchIdAndZoneAndRowNumAndSeatNum(
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        }).when(writer).complete(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
 
         CyclicBarrier barrier = new CyclicBarrier(2);
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -184,7 +183,7 @@ class Track2CandidatePipelineConcurrentMySqlTest {
                     SecurityContextHolder.clearContext();
                 }
             }));
-            assertThat(queryEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(completionEntered.await(10, TimeUnit.SECONDS)).isTrue();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (futures.stream().noneMatch(Future::isDone) && System.nanoTime() < deadline) Thread.onSpinWait();
             release.countDown();

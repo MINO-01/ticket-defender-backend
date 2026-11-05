@@ -15,6 +15,7 @@ import com.ticket.defender_core.domain.ListingContextAnalysis;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
 import java.time.LocalDateTime;
@@ -152,6 +153,52 @@ class ListingCandidateMatchServiceTest {
     void reportsUnrecordedFailureWhenTheDatabaseCannotCreateTheInitialAuditRun() {
         when(writer.start(eq(reportId), eq(evidenceId), eq(analysisId), eq(memberId), any(), any())).thenThrow(
                 new CannotCreateTransactionException("synthetic total database outage before run creation"));
+
+        assertThatThrownBy(() -> service.match(reportId, evidenceId, analysisId, UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class, error -> {
+                    assertThat(error.status().value()).isEqualTo(503);
+                    assertThat(error.code()).isEqualTo("CANDIDATE_LOOKUP_FAILED_UNRECORDED");
+                });
+        verifyNoInteractions(candidates);
+    }
+
+    @Test
+    void pessimisticStartCollisionReplaysTheCommittedResultForTheSameKey() {
+        ListingCandidateMatchRun completed = ListingCandidateMatchRun.terminal(tenantId, eventId, reportId, evidenceId,
+                analysisId, memberId, "c".repeat(64), "d".repeat(64), null,
+                new CandidateMatchDecision.Result(CandidateMatchDecision.Status.UNVERIFIABLE,
+                        CandidateMatchDecision.Reason.RESERVATION_SOURCE_UNAVAILABLE),
+                LocalDateTime.parse("2026-11-04T12:00:01"));
+        when(writer.start(eq(reportId), eq(evidenceId), eq(analysisId), eq(memberId), any(), any())).thenThrow(
+                new PessimisticLockingFailureException("synthetic active-slot lock timeout"));
+        when(writer.replay(eq(memberId), eq(analysisId), any())).thenReturn(Optional.of(completed));
+
+        CandidatePipelineDto.CandidateRun result = service.match(reportId, evidenceId, analysisId,
+                UUID.randomUUID().toString());
+
+        assertThat(result.runId()).isEqualTo(completed.getId());
+        assertThat(result.status()).isEqualTo(CandidateMatchDecision.Status.UNVERIFIABLE);
+        verifyNoInteractions(candidates);
+    }
+
+    @Test
+    void pessimisticStartCollisionWithAnotherKeyIsAConflict() {
+        when(writer.start(eq(reportId), eq(evidenceId), eq(analysisId), eq(memberId), any(), any())).thenThrow(
+                new PessimisticLockingFailureException("synthetic active-slot lock timeout"));
+        when(writer.replay(eq(memberId), eq(analysisId), any())).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.match(reportId, evidenceId, analysisId, UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(CaseApiException.class, error -> {
+                    assertThat(error.status().value()).isEqualTo(409);
+                    assertThat(error.code()).isEqualTo("CANDIDATE_LOOKUP_IN_PROGRESS");
+                });
+        verifyNoInteractions(candidates);
+    }
+
+    @Test
+    void initialDataAccessFailureRemainsServiceUnavailable() {
+        when(writer.start(eq(reportId), eq(evidenceId), eq(analysisId), eq(memberId), any(), any())).thenThrow(
+                new DataAccessResourceFailureException("synthetic database connection outage"));
 
         assertThatThrownBy(() -> service.match(reportId, evidenceId, analysisId, UUID.randomUUID().toString()))
                 .isInstanceOfSatisfying(CaseApiException.class, error -> {

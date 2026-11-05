@@ -20,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
@@ -56,7 +57,8 @@ public class ListingCandidateMatchService {
         ListingCandidateMatchWriteService.Started started;
         try {
             started = writer.start(fanReportId, evidenceId, analysisId, scope.membershipId(), keyDigest, requestDigest);
-        } catch (DataIntegrityViolationException | OptimisticLockingFailureException collision) {
+        } catch (DataIntegrityViolationException | OptimisticLockingFailureException
+                | PessimisticLockingFailureException collision) {
             try {
                 started = new ListingCandidateMatchWriteService.Started(writer.replay(scope.membershipId(), analysisId, keyDigest)
                         .orElseThrow(() -> conflict("CANDIDATE_LOOKUP_IN_PROGRESS")), false, null);

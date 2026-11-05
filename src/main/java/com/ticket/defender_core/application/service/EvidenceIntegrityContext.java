@@ -51,7 +51,7 @@ public class EvidenceIntegrityContext {
                 || !target.getEventId().equals(snapshot.getEventId())) throw notFound();
         if (snapshot.getEvidenceRevision() != target.getEvidenceRevision())
             throw conflict("EVIDENCE_VERSION_MISMATCH");
-        if (snapshot.getManifestSchemaVersion() != 1 || !CaseSnapshotManifest.sha256(
+        if (!supportedManifestSchemaVersion(snapshot.getManifestSchemaVersion()) || !CaseSnapshotManifest.sha256(
                 snapshot.getManifestJson()).equals(snapshot.getManifestSha256())) throw conflict("SOURCE_CHANGED");
         CaseSourceReference source = sources.findById(sourceId).orElseThrow(EvidenceIntegrityContext::notFound);
         if (source.getSourceType() != CaseSourceReference.Type.EVIDENCE_ASSET
@@ -70,7 +70,7 @@ public class EvidenceIntegrityContext {
             throw conflict("SOURCE_CHANGED");
         if (!Objects.equals(source.getObjectMarker(), asset.getObjectVersion()))
             throw conflict("SOURCE_CHANGED");
-        if (snapshot.getManifestSchemaVersion() != 1) throw conflict("SOURCE_CHANGED");
+        if (!supportedManifestSchemaVersion(snapshot.getManifestSchemaVersion())) throw conflict("SOURCE_CHANGED");
         manifests.recheckStoredDatabase(target, sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId),
                 snapshot, snapshot.getCapturedAt());
         Fingerprint fingerprint = new Fingerprint(target.getCaseVersion(), target.getEvidenceRevision(),
@@ -108,5 +108,8 @@ public class EvidenceIntegrityContext {
     }
     private static CaseApiException conflict(String code) {
         return new CaseApiException(HttpStatus.CONFLICT, code);
+    }
+    private static boolean supportedManifestSchemaVersion(int version) {
+        return version == 1 || version == 2;
     }
 }

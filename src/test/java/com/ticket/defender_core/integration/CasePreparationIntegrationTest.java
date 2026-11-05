@@ -415,7 +415,7 @@ class CasePreparationIntegrationTest {
     void evidenceHeadRunsOutsideWriteTransactionAndWithoutCheckedOutConnection() throws Exception {
         FanReport report = report();
         UUID evidenceId = UUID.randomUUID();
-        String key = "fan-reports/synthetic/" + evidenceId;
+        String key = "fan-reports/" + report.getFanReportId() + "/" + evidenceId;
         EvidenceAsset asset = new EvidenceAsset(evidenceId, report.getFanReportId(), key,
                 "image/png", 4, "a".repeat(64), LocalDateTime.now(), report.getRetentionUntil());
         asset.markStored("opaque-v1");

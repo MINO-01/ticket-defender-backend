@@ -4,11 +4,15 @@ import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
 import com.ticket.defender_core.adapter.out.persistence.EvidenceAssetRepository;
 import com.ticket.defender_core.adapter.out.persistence.FanReportRepository;
 import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceReadRepository;
+import com.ticket.defender_core.adapter.out.persistence.ListingCandidateMatchRunRepository;
+import com.ticket.defender_core.adapter.out.persistence.ListingContextAnalysisRepository;
 import com.ticket.defender_core.domain.Case;
 import com.ticket.defender_core.domain.CaseSourceReference;
 import com.ticket.defender_core.domain.EvidenceAsset;
 import com.ticket.defender_core.domain.FanReport;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
+import com.ticket.defender_core.domain.ListingCandidateMatchRun;
+import com.ticket.defender_core.domain.ListingContextAnalysis;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -33,6 +37,9 @@ public class CaseSourceVerifier {
     private final MacroAuditEvidenceReadRepository clusters;
     private final FanReportRepository reports;
     private final EvidenceAssetRepository assets;
+    private final ListingCandidateMatchRunRepository candidateRuns;
+    private final ListingContextAnalysisRepository analyses;
+    private final CandidateRunApplicability candidateApplicability;
     private final EvidenceObjectStorage storage;
 
     public List<CaseSourceReference> verify(Case target, CaseDto.Create input, LocalDateTime now) {
@@ -49,12 +56,14 @@ public class CaseSourceVerifier {
         List<CaseDto.GraphCluster> graphInputs = input.graphClusters() == null ? List.of() : input.graphClusters();
         List<UUID> reportIds = input.fanReportIds() == null ? List.of() : input.fanReportIds();
         List<UUID> assetIds = input.evidenceIds() == null ? List.of() : input.evidenceIds();
-        if (graphInputs.size() + reportIds.size() + assetIds.size() > 30
+        List<UUID> candidateIds = input.candidateRunIds() == null ? List.of() : input.candidateRunIds();
+        if (graphInputs.size() + reportIds.size() + assetIds.size() + candidateIds.size() > 30
                 || graphInputs.stream().anyMatch(Objects::isNull)
                 || reportIds.stream().anyMatch(Objects::isNull)
-                || assetIds.stream().anyMatch(Objects::isNull)) throw invalid();
+                || assetIds.stream().anyMatch(Objects::isNull)
+                || candidateIds.stream().anyMatch(Objects::isNull)) throw invalid();
         if (switch (target.getType()) {
-            case GRAPH_CLUSTER -> graphInputs.isEmpty() || !reportIds.isEmpty() || !assetIds.isEmpty();
+            case GRAPH_CLUSTER -> graphInputs.isEmpty() || !reportIds.isEmpty() || !assetIds.isEmpty() || !candidateIds.isEmpty();
             case FAN_REPORT -> !graphInputs.isEmpty() || reportIds.isEmpty();
             case COMBINED -> graphInputs.isEmpty() || reportIds.isEmpty();
         }) throw invalid();
@@ -120,6 +129,25 @@ public class CaseSourceVerifier {
             unique(keys, digest);
             result.add(CaseSourceReference.asset(target, digest, asset.getFanReportId(),
                     evidenceId, marker, now));
+        }
+        for (UUID candidateId : candidateIds) {
+            ListingCandidateMatchRun run = candidateRuns.findById(candidateId).orElseThrow(CaseSourceVerifier::notFound);
+            ListingContextAnalysis analysis = analyses.findById(run.getAnalysisId()).orElseThrow(CaseSourceVerifier::notFound);
+            EvidenceAsset evidence = assets.findById(run.getEvidenceId()).orElseThrow(CaseSourceVerifier::notFound);
+            if (!target.getTenantId().equals(run.getTenantId()) || !target.getEventId().equals(run.getEventId())
+                    || !target.getTenantId().equals(analysis.getTenantId()) || !target.getEventId().equals(analysis.getEventId())
+                    || !run.getFanReportId().equals(analysis.getFanReportId())
+                    || !run.getEvidenceId().equals(analysis.getEvidenceId())
+                    || !run.getFanReportId().equals(evidence.getFanReportId())
+                    || !verifiedReports.contains(run.getFanReportId()) || !assetIds.contains(run.getEvidenceId()))
+                throw notFound();
+            if (run.inProgress())
+                throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_NOT_AVAILABLE");
+            if (candidateApplicability.assess(run) != com.ticket.defender_core.adapter.in.web.dto.CandidatePipelineDto.Applicability.CURRENT)
+                throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_NOT_AVAILABLE");
+            String digest = digest(target, "LISTING_CANDIDATE", candidateId.toString());
+            unique(keys, digest);
+            result.add(CaseSourceReference.candidate(target, digest, run, now));
         }
         return result;
     }

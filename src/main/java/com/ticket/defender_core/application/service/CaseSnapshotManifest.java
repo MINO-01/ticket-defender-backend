@@ -45,7 +45,7 @@ public class CaseSnapshotManifest {
 
     public void recheckDatabase(Case target, List<CaseSourceReference> references,
             Captured prepared, LocalDateTime now) {
-        Captured current = capture(target, references, now, prepared.assets());
+        Captured current = captureForRecheck(target, references, now, prepared.assets());
         if (!prepared.sha256().equals(current.sha256())
                 || !prepared.assets().equals(current.assets())) throw changed();
     }
@@ -63,8 +63,22 @@ public class CaseSnapshotManifest {
             states.put(asset.getEvidenceId(),
                     new AssetState(asset.getObjectKey(), asset.getObjectVersion(), reference.getObjectMarker()));
         }
-        Captured current = capture(target, references, now, states);
-        if (!snapshot.getManifestSha256().equals(current.sha256())) throw changed();
+        Captured current = captureForRecheck(target, references, now, states);
+        if (snapshot.getManifestSchemaVersion() != current.schemaVersion()
+                || !snapshot.getManifestSha256().equals(current.sha256())) throw changed();
+    }
+
+    private Captured captureForRecheck(Case target, List<CaseSourceReference> references,
+            LocalDateTime now, Map<UUID, AssetState> checkedAssets) {
+        try {
+            return capture(target, references, now, checkedAssets);
+        } catch (CaseApiException unavailable) {
+            boolean candidateSource = references.stream().anyMatch(reference -> reference.getSourceType()
+                    == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH);
+            if (candidateSource && ("SOURCE_NOT_AVAILABLE".equals(unavailable.code())
+                    || "RESOURCE_NOT_FOUND".equals(unavailable.code()))) throw changed();
+            throw unavailable;
+        }
     }
 
     private Captured capture(Case target, List<CaseSourceReference> references, LocalDateTime now,
@@ -81,6 +95,8 @@ public class CaseSnapshotManifest {
                         .map(CaseSourceReference::getFanReportId).toList(),
                 ordered.stream().filter(ref -> ref.getSourceType() == CaseSourceReference.Type.EVIDENCE_ASSET)
                         .map(CaseSourceReference::getEvidenceId).toList(),
+                ordered.stream().filter(ref -> ref.getSourceType() == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH)
+                        .map(CaseSourceReference::getListingCandidateMatchRunId).toList(),
                 "Snapshot capture", null, null);
         Map<UUID, String> markers = new HashMap<>();
         if (checkedAssets != null) checkedAssets.forEach((id, asset) -> markers.put(id, asset.checkedMarker()));
@@ -156,11 +172,33 @@ public class CaseSnapshotManifest {
                     item.put("opaqueObjectMarker", fresh.getObjectMarker());
                     item.put("retentionUntil", utc(asset.getRetentionUntil()));
                 }
+                case LISTING_CANDIDATE_MATCH -> {
+                    if (!candidateSame(prior, fresh)) throw changed();
+                    item.put("candidateRunId", prior.getListingCandidateMatchRunId().toString());
+                    item.put("analysisId", prior.getCandidateAnalysisId().toString());
+                    item.put("analysisRowVersion", prior.getCandidateAnalysisRowVersion());
+                    item.put("analysisResponseSha256", prior.getCandidateAnalysisResponseSha256());
+                    item.put("evidenceSha256", prior.getCandidateEvidenceSha256());
+                    item.put("performanceLinkId", prior.getCandidatePerformanceLinkId().toString());
+                    item.put("performanceLinkRevision", prior.getCandidatePerformanceLinkRevision());
+                    item.put("verifiedPerformanceId", prior.getCandidateVerifiedPerformanceId().toString());
+                    item.put("verifiedPerformanceRevision", prior.getCandidateVerifiedPerformanceRevision());
+                    item.put("reservationSourceId", prior.getCandidateReservationSourceId().toString());
+                    item.put("reservationSourceRevision", prior.getCandidateReservationSourceRevision());
+                    item.put("reservationBatchId", prior.getCandidateReservationBatchId().toString());
+                    item.put("reservationSourceVersion", prior.getCandidateReservationSourceVersion());
+                    item.put("status", prior.getCandidateStatus());
+                    item.put("reason", prior.getCandidateReason());
+                    item.put("candidateCount", prior.getCandidateCount());
+                    item.put("candidateId", prior.getCandidateId() == null ? null : prior.getCandidateId().toString());
+                }
             }
             items.add(item);
         }
         Map<String, Object> manifest = new LinkedHashMap<>();
-        manifest.put("manifestSchemaVersion", 1);
+        int schemaVersion = ordered.stream().anyMatch(ref -> ref.getSourceType()
+                == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH) ? 2 : 1;
+        manifest.put("manifestSchemaVersion", schemaVersion);
         manifest.put("tenantId", target.getTenantId().toString());
         manifest.put("eventId", target.getEventId().toString());
         manifest.put("caseId", target.getId().toString());
@@ -168,7 +206,7 @@ public class CaseSnapshotManifest {
         manifest.put("sources", items);
         String serialized = json.writeValueAsString(manifest);
         if (serialized.getBytes(StandardCharsets.UTF_8).length > 60000) throw changed();
-        return new Captured(serialized, sha256(serialized), hasFile ? "METADATA_ONLY" : "NO_FILE",
+        return new Captured(schemaVersion, serialized, sha256(serialized), hasFile ? "METADATA_ONLY" : "NO_FILE",
                 Map.copyOf(assetStates));
     }
 
@@ -194,8 +232,32 @@ public class CaseSnapshotManifest {
         return new CaseApiException(HttpStatus.CONFLICT, "SOURCE_CHANGED");
     }
 
-    public record Captured(String json, String sha256, String sourceIntegrity,
-                           Map<UUID, AssetState> assets) { }
+    private static boolean candidateSame(CaseSourceReference a, CaseSourceReference b) {
+        return Objects.equals(a.getListingCandidateMatchRunId(), b.getListingCandidateMatchRunId())
+                && Objects.equals(a.getCandidateAnalysisId(), b.getCandidateAnalysisId())
+                && Objects.equals(a.getCandidateAnalysisRowVersion(), b.getCandidateAnalysisRowVersion())
+                && Objects.equals(a.getCandidateAnalysisResponseSha256(), b.getCandidateAnalysisResponseSha256())
+                && Objects.equals(a.getCandidateEvidenceSha256(), b.getCandidateEvidenceSha256())
+                && Objects.equals(a.getCandidatePerformanceLinkId(), b.getCandidatePerformanceLinkId())
+                && Objects.equals(a.getCandidatePerformanceLinkRevision(), b.getCandidatePerformanceLinkRevision())
+                && Objects.equals(a.getCandidateVerifiedPerformanceId(), b.getCandidateVerifiedPerformanceId())
+                && Objects.equals(a.getCandidateVerifiedPerformanceRevision(), b.getCandidateVerifiedPerformanceRevision())
+                && Objects.equals(a.getCandidateReservationSourceId(), b.getCandidateReservationSourceId())
+                && Objects.equals(a.getCandidateReservationSourceRevision(), b.getCandidateReservationSourceRevision())
+                && Objects.equals(a.getCandidateReservationBatchId(), b.getCandidateReservationBatchId())
+                && Objects.equals(a.getCandidateReservationSourceVersion(), b.getCandidateReservationSourceVersion())
+                && Objects.equals(a.getCandidateStatus(), b.getCandidateStatus())
+                && Objects.equals(a.getCandidateReason(), b.getCandidateReason())
+                && Objects.equals(a.getCandidateCount(), b.getCandidateCount())
+                && Objects.equals(a.getCandidateId(), b.getCandidateId());
+    }
+
+    public record Captured(int schemaVersion, String json, String sha256, String sourceIntegrity,
+                           Map<UUID, AssetState> assets) {
+        public Captured(String json, String sha256, String sourceIntegrity, Map<UUID, AssetState> assets) {
+            this(1, json, sha256, sourceIntegrity, assets);
+        }
+    }
 
     public record AssetState(String objectKey, String objectVersion, String checkedMarker) { }
 }

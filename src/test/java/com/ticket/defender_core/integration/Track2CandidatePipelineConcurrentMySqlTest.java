@@ -58,6 +58,7 @@ class Track2CandidatePipelineConcurrentMySqlTest {
     @Autowired private FanReportPerformanceLinkRepository links;
     @Autowired private ReservationImportBatchRepository batches;
     @Autowired private ReservationDataSourceRepository sources;
+    @Autowired private ReservationCandidateRepository candidates;
     @Autowired private ListingCandidateMatchRunRepository runs;
     @MockitoSpyBean private ListingCandidateMatchWriteService writer;
 

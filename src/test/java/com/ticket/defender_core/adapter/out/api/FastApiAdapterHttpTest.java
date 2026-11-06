@@ -16,6 +16,8 @@ import java.net.ServerSocket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -26,16 +28,35 @@ class FastApiAdapterHttpTest {
 
     private static final String REQUEST_ID = "2136558c-2326-4430-a46d-0793494e9b49";
     private static final String LOOPBACK_HOST = "127.0.0.1";
+    private static final String ANALYSIS_PATH = "/api/v1/clusters/analyze";
+    private static final String TEST_TRACK1_SHARED_SECRET = "test-only-track1-shared-secret-value";
 
     @Test
     void successfulHttpResponseIsCompletedAnalysis() throws IOException {
-        HttpServer server = server(200, response("COMPLETED", "LOUVAIN"));
+        AtomicReference<List<String>> receivedTrack1Keys = new AtomicReference<>();
+        HttpServer server = server(200, response("COMPLETED", "LOUVAIN"), receivedTrack1Keys);
         try {
             assertThat(server.getAddress().getAddress().getHostAddress()).isEqualTo(LOOPBACK_HOST);
             MacroAnalysisResponse analysis = adapter(server.getAddress().getPort()).requestMacroAnalysis(request());
+            assertThat(receivedTrack1Keys.get()).containsExactly(TEST_TRACK1_SHARED_SECRET);
             assertThat(analysis.requestId()).isEqualTo(REQUEST_ID);
             assertThat(analysis.status()).isEqualTo(MacroAnalysisResponse.Status.COMPLETED);
             assertThat(analysis.clusters()).isEmpty();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void localhostHttpResponseIsCompletedAnalysis() throws IOException {
+        AtomicReference<List<String>> receivedTrack1Keys = new AtomicReference<>();
+        HttpServer server = server(200, response("COMPLETED", "LOUVAIN"), receivedTrack1Keys);
+        try {
+            MacroAnalysisResponse analysis = adapter(server.getAddress().getPort(), "localhost")
+                    .requestMacroAnalysis(request());
+
+            assertThat(receivedTrack1Keys.get()).containsExactly(TEST_TRACK1_SHARED_SECRET);
+            assertThat(analysis.status()).isEqualTo(MacroAnalysisResponse.Status.COMPLETED);
         } finally {
             server.stop(0);
         }
@@ -96,6 +117,64 @@ class FastApiAdapterHttpTest {
     }
 
     @Test
+    void dataAuthFailuresAreNotCompletedAnalyses() throws IOException {
+        for (int status : List.of(401, 503, 410)) {
+            HttpServer server = server(status, "{\"detail\":[{\"code\":\"TEST_AUTH_FAILURE\"}]}");
+            try {
+                RestClientException failure = assertThrows(RestClientException.class,
+                        () -> adapter(server.getAddress().getPort()).requestMacroAnalysis(request()));
+
+                MacroAnalysisResponse fallback = adapter(server.getAddress().getPort()).analyzeFallback(request(), failure);
+
+                assertThat(fallback.status()).isEqualTo(MacroAnalysisResponse.Status.UNAVAILABLE);
+                assertThat(fallback.clusters()).isEmpty();
+            } finally {
+                server.stop(0);
+            }
+        }
+    }
+
+    @Test
+    void redirectsDoNotForwardTrack1KeyToAnotherEndpoint() throws IOException {
+        for (int status : List.of(301, 302, 307, 308)) {
+            AtomicInteger redirectedRequests = new AtomicInteger();
+            AtomicReference<List<String>> redirectedKeys = new AtomicReference<>();
+            HttpServer target = HttpServer.create(new InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), 0), 0);
+            target.createContext(ANALYSIS_PATH, exchange -> {
+                redirectedRequests.incrementAndGet();
+                redirectedKeys.set(exchange.getRequestHeaders().get("X-TD-Track1-Key"));
+                byte[] body = response("COMPLETED", "LOUVAIN").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, body.length);
+                try (var stream = exchange.getResponseBody()) {
+                    stream.write(body);
+                }
+            });
+            target.start();
+
+            HttpServer source = HttpServer.create(new InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), 0), 0);
+            source.createContext(ANALYSIS_PATH, exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                exchange.getResponseHeaders().set("Location",
+                        "http://localhost:" + target.getAddress().getPort() + ANALYSIS_PATH);
+                exchange.sendResponseHeaders(status, -1);
+                exchange.close();
+            });
+            source.start();
+
+            try {
+                assertThrows(FastApiAuthenticationConfigurationException.class,
+                        () -> adapter(source.getAddress().getPort()).requestMacroAnalysis(request()));
+                assertThat(redirectedRequests.get()).isZero();
+                assertThat(redirectedKeys.get()).isNull();
+            } finally {
+                source.stop(0);
+                target.stop(0);
+            }
+        }
+    }
+
+    @Test
     void malformedJsonIsRejected() throws IOException {
         HttpServer server = server(200, "{");
         try {
@@ -120,8 +199,13 @@ class FastApiAdapterHttpTest {
     }
 
     private FastApiAdapter adapter(int port) {
+        return adapter(port, LOOPBACK_HOST);
+    }
+
+    private FastApiAdapter adapter(int port, String host) {
         FastApiAdapter adapter = new FastApiAdapter(RestClient.builder());
-        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://" + LOOPBACK_HOST + ":" + port);
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://" + host + ":" + port);
+        ReflectionTestUtils.setField(adapter, "track1InternalSharedSecret", TEST_TRACK1_SHARED_SECRET);
         return adapter;
     }
 
@@ -140,9 +224,16 @@ class FastApiAdapterHttpTest {
     }
 
     private HttpServer server(int status, String body) throws IOException {
+        return server(status, body, null);
+    }
+
+    private HttpServer server(int status, String body, AtomicReference<List<String>> receivedTrack1Keys) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), 0), 0);
         server.createContext("/api/v1/clusters/analyze", exchange -> {
+            if (receivedTrack1Keys != null) {
+                receivedTrack1Keys.set(exchange.getRequestHeaders().get("X-TD-Track1-Key"));
+            }
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(status, bytes.length);

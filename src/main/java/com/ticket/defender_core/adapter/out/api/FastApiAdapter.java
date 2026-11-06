@@ -7,6 +7,7 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.stereotype.Component;
@@ -14,6 +15,14 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.UnknownContentTypeException;
 
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,6 +36,9 @@ import java.util.regex.Pattern;
 public class FastApiAdapter {
 
     private static final String ANALYSIS_PATH = "/api/v1/clusters/analyze";
+    private static final String TRACK1_AUTH_HEADER = "X-TD-Track1-Key";
+    private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
+    private static final Set<String> PERMITTED_HTTP_LOOPBACK_LITERALS = Set.of("127.0.0.1", "::1");
     private static final Pattern HASH_TOKEN_PATTERN = Pattern.compile("^[0-9a-f]{64}$");
 
     private final RestClient restClient;
@@ -34,10 +46,13 @@ public class FastApiAdapter {
     @Value("${FASTAPI_URL:http://localhost:8000}")
     private String fastApiUrl;
 
+    @Value("${ticket-defender.track1-internal-auth.shared-secret:}")
+    private String track1InternalSharedSecret;
+
     /** 연결과 응답 대기 시간을 제한해 FastAPI 호출을 준비합니다. */
     @Autowired
     public FastApiAdapter(RestClient.Builder restClientBuilder) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        SimpleClientHttpRequestFactory factory = new Track1RequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
         factory.setReadTimeout(Duration.ofSeconds(5));
         this.restClient = restClientBuilder.requestFactory(factory).build();
@@ -51,13 +66,19 @@ public class FastApiAdapter {
     /** FastAPI에 그래프 분석을 요청하고 응답을 확인합니다. */
     @CircuitBreaker(name = "fastApi", fallbackMethod = "analyzeFallback")
     public MacroAnalysisResponse requestMacroAnalysis(MacroAnalysisRequest request) {
-        String baseUrl = fastApiUrl.replaceAll("/+$", "");
+        String baseUrl = requirePermittedFastApiBaseUrl();
+        String track1SharedSecret = requireTrack1SharedSecret();
         MacroAnalysisResponse response;
         try {
             response = restClient.post()
                     .uri(baseUrl + ANALYSIS_PATH)
+                    .header(TRACK1_AUTH_HEADER, track1SharedSecret)
                     .body(request)
                     .retrieve()
+                    .onStatus(HttpStatusCode::is3xxRedirection,
+                            (clientRequest, clientResponse) -> {
+                                throw new FastApiAuthenticationConfigurationException();
+                            })
                     .body(MacroAnalysisResponse.class);
         } catch (RestClientException cause) {
             if (cause instanceof UnknownContentTypeException
@@ -71,6 +92,97 @@ public class FastApiAdapter {
         return response;
     }
 
+    /** 인증 헤더를 보낼 FastAPI 기준 URL이 HTTPS 또는 검증된 loopback HTTP인지 확인합니다. */
+    private String requirePermittedFastApiBaseUrl() {
+        final URI endpoint;
+        try {
+            endpoint = new URI(fastApiUrl);
+        } catch (URISyntaxException | NullPointerException invalidUrl) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+
+        if (endpoint.isOpaque() || endpoint.getScheme() == null || endpoint.getHost() == null
+                || endpoint.getUserInfo() != null || endpoint.getRawQuery() != null
+                || endpoint.getRawFragment() != null || endpoint.getPort() > 65535 || endpoint.getPort() == 0) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+        if ("https".equalsIgnoreCase(endpoint.getScheme())) {
+            return stripTrailingSlash(endpoint.toString());
+        }
+        if (!"http".equalsIgnoreCase(endpoint.getScheme())) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+
+        InetAddress loopbackAddress = resolvePermittedHttpLoopback(endpoint.getHost());
+        if (loopbackAddress == null) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+        return loopbackHttpUrl(endpoint, loopbackAddress);
+    }
+
+    /** localhost는 모든 해석 결과가 loopback일 때만 수치 주소로 고정해 재해석을 방지합니다. */
+    private InetAddress resolvePermittedHttpLoopback(String host) {
+        try {
+            if ("localhost".equalsIgnoreCase(host)) {
+                InetAddress[] resolved = InetAddress.getAllByName(host);
+                if (resolved.length == 0 || java.util.Arrays.stream(resolved).anyMatch(address -> !address.isLoopbackAddress())) {
+                    return null;
+                }
+                return java.util.Arrays.stream(resolved)
+                        .filter(Inet4Address.class::isInstance)
+                        .findFirst()
+                        .orElse(resolved[0]);
+            }
+
+            String literalHost = host.startsWith("[") && host.endsWith("]")
+                    ? host.substring(1, host.length() - 1) : host;
+            if (!PERMITTED_HTTP_LOOPBACK_LITERALS.contains(literalHost)) {
+                return null;
+            }
+            InetAddress address = InetAddress.getByName(literalHost);
+            return address.isLoopbackAddress() ? address : null;
+        } catch (UnknownHostException invalidHost) {
+            return null;
+        }
+    }
+
+    /** 검증한 loopback 수치 주소를 사용해 HTTP 연결의 대상이 바뀌지 않도록 기준 URL을 구성합니다. */
+    private String loopbackHttpUrl(URI endpoint, InetAddress loopbackAddress) {
+        try {
+            URI pinnedEndpoint = new URI(endpoint.getScheme(), null, loopbackAddress.getHostAddress(), endpoint.getPort(),
+                    endpoint.getPath(), null, null);
+            return stripTrailingSlash(pinnedEndpoint.toString());
+        } catch (URISyntaxException invalidEndpoint) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+    }
+
+    private String stripTrailingSlash(String baseUrl) {
+        return baseUrl.replaceAll("/+$", "");
+    }
+
+    private String requireTrack1SharedSecret() {
+        if (track1InternalSharedSecret == null || track1InternalSharedSecret.isBlank()
+                || track1InternalSharedSecret.getBytes(StandardCharsets.UTF_8).length < MIN_TRACK1_SHARED_SECRET_BYTES
+                || containsHttpHeaderControlCharacter(track1InternalSharedSecret)) {
+            throw new FastApiAuthenticationConfigurationException();
+        }
+        return track1InternalSharedSecret;
+    }
+
+    private boolean containsHttpHeaderControlCharacter(String value) {
+        return value.codePoints().anyMatch(Character::isISOControl);
+    }
+
+    /** 인증 헤더가 새 대상에 자동 재전송되지 않도록 이 요청의 HTTP redirect를 사용하지 않습니다. */
+    private static final class Track1RequestFactory extends SimpleClientHttpRequestFactory {
+        @Override
+        protected void prepareConnection(HttpURLConnection connection, String httpMethod) throws IOException {
+            super.prepareConnection(connection, httpMethod);
+            connection.setInstanceFollowRedirects(false);
+        }
+    }
+
     /** 호출에 실패하면 적발 결과 대신 분석 불가 상태를 반환합니다. */
     public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, Throwable cause) {
         String causeName = cause == null ? "알 수 없는 오류" : cause.getClass().getSimpleName();
@@ -82,6 +194,14 @@ public class FastApiAdapter {
     public MacroAnalysisResponse analyzeFallback(MacroAnalysisRequest request, FastApiResponseContractException cause) {
         log.error("FastAPI가 계약에 맞지 않는 분석 결과를 반환했습니다. 요청 ID: {}", request.requestId());
         throw cause;
+    }
+
+    /** Track 1 인증 설정 오류는 분석 불가로 기록하되 설정값 자체는 남기지 않습니다. */
+    public MacroAnalysisResponse analyzeFallback(
+            MacroAnalysisRequest request, FastApiAuthenticationConfigurationException cause
+    ) {
+        log.error("Track 1 내부 인증 설정이 유효하지 않아 분석을 시작하지 않았습니다.");
+        return MacroAnalysisResponse.unavailable(request.requestId());
     }
 
     /** 요청 ID와 분석 정보, 군집 목록이 응답에 있는지 확인합니다. */

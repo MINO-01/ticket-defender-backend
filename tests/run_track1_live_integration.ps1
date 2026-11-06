@@ -6,6 +6,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Get-RequiredTrack1IntegrationSecret {
+    $secret = [Environment]::GetEnvironmentVariable('TRACK1_INTERNAL_SHARED_SECRET', 'Process')
+    if ([string]::IsNullOrWhiteSpace($secret) -or
+            [System.Text.Encoding]::UTF8.GetByteCount($secret) -lt 32 -or
+            [regex]::IsMatch($secret, '[\x00-\x1F\x7F]')) {
+        throw 'Track 1 integration authentication configuration is invalid'
+    }
+    return $secret
+}
+
+$track1SharedSecret = Get-RequiredTrack1IntegrationSecret
 $backend = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $workspace = (Resolve-Path -LiteralPath (Join-Path $backend '..')).Path
 if (-not $PSBoundParameters.ContainsKey('DataDirectory')) {
@@ -41,13 +53,14 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 $previous = @{}
 foreach ($name in @('TD_GDS_TEST_JAR', 'TD_GDS_TEST_PASSWORD', 'NEO4J_URI',
         'NEO4J_USER', 'NEO4J_PASSWORD', 'FASTAPI_URL', 'TD_TRACK1_FASTAPI_URL',
-        'GRADLE_USER_HOME')) {
+        'TRACK1_INTERNAL_SHARED_SECRET', 'GRADLE_USER_HOME')) {
     $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
 $fastApi = $null
 $composeStarted = $false
 try {
+    $env:TRACK1_INTERNAL_SHARED_SECRET = $track1SharedSecret
     $env:TD_GDS_TEST_JAR = $jar
     $env:TD_GDS_TEST_PASSWORD = [guid]::NewGuid().ToString('N')
     if ($GradleUserHome) {

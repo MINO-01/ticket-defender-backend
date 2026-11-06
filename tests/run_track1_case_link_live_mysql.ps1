@@ -8,6 +8,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Get-RequiredTrack1IntegrationSecret {
+    $secret = [Environment]::GetEnvironmentVariable('TRACK1_INTERNAL_SHARED_SECRET', 'Process')
+    if ([string]::IsNullOrWhiteSpace($secret) -or
+            [System.Text.Encoding]::UTF8.GetByteCount($secret) -lt 32 -or
+            [regex]::IsMatch($secret, '[\x00-\x1F\x7F]')) {
+        throw 'Track 1 integration authentication configuration is invalid'
+    }
+    return $secret
+}
+
+$track1SharedSecret = Get-RequiredTrack1IntegrationSecret
 $backend = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $workspace = (Resolve-Path -LiteralPath (Join-Path $backend '..')).Path
 if (-not $PSBoundParameters.ContainsKey('DataDirectory')) {
@@ -59,7 +71,7 @@ $mysqlContainer = 'td-issue62-mysql-' + $suffix
 $logs = Join-Path $backend 'build\track1-case-link-live'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 $names = @('TD_GDS_TEST_JAR', 'TD_GDS_TEST_PASSWORD', 'NEO4J_URI', 'NEO4J_USER', 'NEO4J_PASSWORD',
-    'FASTAPI_URL', 'TD_TRACK1_FASTAPI_URL', 'GRADLE_USER_HOME', 'TD_ISSUE32_MYSQL_URL',
+    'FASTAPI_URL', 'TD_TRACK1_FASTAPI_URL', 'TRACK1_INTERNAL_SHARED_SECRET', 'GRADLE_USER_HOME', 'TD_ISSUE32_MYSQL_URL',
     'TD_ISSUE32_MYSQL_USER', 'TD_ISSUE32_MYSQL_PASSWORD', 'TD_MYSQL_MIGRATION_URL',
     'TD_MYSQL_MIGRATION_USER', 'TD_MYSQL_MIGRATION_PASSWORD')
 $previous = @{}
@@ -71,6 +83,7 @@ $fastApi = $null
 $composeStarted = $false
 $mysqlStarted = $false
 try {
+    $env:TRACK1_INTERNAL_SHARED_SECRET = $track1SharedSecret
     if ($GradleUserHome) {
         $env:GRADLE_USER_HOME = (Resolve-Path -LiteralPath $GradleUserHome).Path
     }

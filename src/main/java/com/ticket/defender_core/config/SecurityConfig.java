@@ -77,6 +77,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/track1/clusters",
                                 "/api/v1/admin/track1/clusters/detail").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/analysis-runs",
+                                "/api/v1/admin/operations/settings").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/events").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/fan-reports",
                                 "/api/v1/admin/fan-reports/*").authenticated()
@@ -98,6 +100,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/cases",
                                 "/api/v1/cases/*", "/api/v1/cases/*/sources",
                                 "/api/v1/cases/*/activities",
+                                "/api/v1/cases/*/workflow",
+                                "/api/v1/cases/*/approval-audit-events",
                                 "/api/v1/cases/*/evidence-snapshots",
                                 "/api/v1/cases/*/evidence-snapshots/*",
                                 "/api/v1/cases/*/report-versions",

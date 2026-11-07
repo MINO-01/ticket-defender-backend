@@ -139,7 +139,16 @@ class CaseFoundationIntegrationTest {
         mvc.perform(get("/api/v1/cases").param("eventId", EVENT.toString())
                 .header("Authorization", "Bearer tenant-admin"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(1));
+        mvc.perform(get("/api/v1/cases/" + id + "/workflow").header("Authorization", "Bearer analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.investigation.caseId").value(id.toString()))
+                .andExpect(jsonPath("$.nextStep.code").value("TRIAGE_REQUIRED"))
+                .andExpect(jsonPath("$.report").doesNotExist());
+        mvc.perform(get("/api/v1/cases/" + id + "/approval-audit-events")
+                .header("Authorization", "Bearer analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(0));
         mvc.perform(get("/api/v1/cases/" + id).header("Authorization", "Bearer second"))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/cases/" + id + "/workflow").header("Authorization", "Bearer second"))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/cases").param("eventId", EVENT.toString())
                 .header("Authorization", "Bearer second"))

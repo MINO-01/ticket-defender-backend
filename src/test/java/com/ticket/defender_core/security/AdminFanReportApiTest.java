@@ -10,6 +10,7 @@ import com.ticket.defender_core.adapter.out.persistence.EvidenceAssetRepository;
 import com.ticket.defender_core.adapter.out.persistence.FanReportRepository;
 import com.ticket.defender_core.adapter.out.persistence.MembershipEventGrantRepository;
 import com.ticket.defender_core.adapter.out.persistence.MembershipRoleRepository;
+import com.ticket.defender_core.adapter.out.persistence.ListingContextAnalysisRepository;
 import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
 import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
 import com.ticket.defender_core.domain.AccessRecordStatus;
@@ -18,6 +19,7 @@ import com.ticket.defender_core.domain.EvidenceAsset;
 import com.ticket.defender_core.domain.FanReport;
 import com.ticket.defender_core.domain.MembershipEventGrant;
 import com.ticket.defender_core.domain.MembershipRole;
+import com.ticket.defender_core.domain.ListingContextAnalysis;
 import com.ticket.defender_core.domain.Tenant;
 import com.ticket.defender_core.domain.TenantEvent;
 import org.junit.jupiter.api.BeforeAll;
@@ -84,6 +86,7 @@ class AdminFanReportApiTest {
     @Autowired private MembershipEventGrantRepository eventGrants;
     @Autowired private FanReportRepository reports;
     @Autowired private EvidenceAssetRepository assets;
+    @Autowired private ListingContextAnalysisRepository analyses;
 
     @MockitoBean(name = "adminJwtDecoder")
     private JwtDecoder adminDecoder;
@@ -134,10 +137,12 @@ class AdminFanReportApiTest {
                 .andExpect(jsonPath("$.hasNext").value(false))
                 .andExpect(jsonPath("$.items.length()").value(2))
                 .andExpect(jsonPath("$.items[0].fanReportId").value(second.toString()))
+                .andExpect(jsonPath("$.items[0].receiptNumber").value("FR-SYNTH-aaaaaaaa002"))
                 .andExpect(jsonPath("$.items[0].intakeStatus").value("PENDING_STORAGE"))
                 .andExpect(jsonPath("$.items[0].evidenceCount").value(0))
                 .andExpect(jsonPath("$.items[0].storedEvidenceCount").value(0))
                 .andExpect(jsonPath("$.items[1].fanReportId").value(first.toString()))
+                .andExpect(jsonPath("$.items[1].receiptNumber").value("FR-SYNTH-aaaaaaaa001"))
                 .andExpect(jsonPath("$.items[1].reportType").value("PREMIUM_RESALE"))
                 .andExpect(jsonPath("$.items[1].intakeStatus").value("RECEIVED"))
                 .andExpect(jsonPath("$.items[1].receivedAt").value("2026-10-30T09:00:00Z"))
@@ -175,6 +180,7 @@ class AdminFanReportApiTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.fanReportId").value(reportId.toString()))
+                .andExpect(jsonPath("$.receiptNumber").isString())
                 .andExpect(jsonPath("$.event.id").value(EVENT_A.toString()))
                 .andExpect(jsonPath("$.event.name").value("공연 A"))
                 .andExpect(jsonPath("$.reportType").value("PREMIUM_RESALE"))
@@ -209,7 +215,7 @@ class AdminFanReportApiTest {
     }
 
     @Test
-    void responsesNeverExposeStorageKeysRecoverySecretsOrDigests() throws Exception {
+    void responsesExposeOnlyTheReceiptNumberAndNeverRecoverySecretsOrDigests() throws Exception {
         UUID reportId = report(TENANT_A, EVENT_A, "cccccccc-0000-4000-8000-000000000001", RECEIVED, true);
         stored(reportId, "30000000-0000-4000-8000-000000000001");
         for (MockHttpServletRequestBuilder request : List.of(list(EVENT_A), detail(reportId))) {
@@ -217,16 +223,50 @@ class AdminFanReportApiTest {
                     .andExpect(status().isOk())
                     .andExpect(content().string(not(containsString("fan-reports/"))))
                     .andExpect(content().string(not(containsString("object-version-secret"))))
-                    .andExpect(content().string(not(containsString("FR-SYNTH-"))))
+                    .andExpect(jsonPath("$..receiptNumber").isNotEmpty())
                     .andExpect(content().string(not(containsString("idem-digest-"))))
                     .andExpect(content().string(not(containsString("d".repeat(64)))))
                     .andExpect(content().string(not(containsString("e".repeat(64)))))
                     .andExpect(content().string(not(containsString("objectKey"))))
                     .andExpect(content().string(not(containsString("objectVersion"))))
-                    .andExpect(content().string(not(containsString("receiptNumber"))))
+                    .andExpect(content().string(not(containsString("lookupSecretDigest"))))
                     .andExpect(content().string(not(containsString("tenantId"))))
                     .andExpect(content().string(not(containsString("Digest"))));
         }
+    }
+
+    @Test
+    void analystReadsPersistedTrack2RunsAndUnrelatedRoleIsDenied() throws Exception {
+        UUID reportId = report(TENANT_A, EVENT_A, "cccccccc-0000-4000-8000-000000000009", RECEIVED, true);
+        UUID evidenceId = stored(reportId, "30000000-0000-4000-8000-000000000009");
+        analyses.saveAndFlush(new ListingContextAnalysis(UUID.randomUUID(), TENANT_A, EVENT_A, reportId, evidenceId,
+                memberships.findBySubjectAndTenantId("analyst-a", TENANT_A).orElseThrow().getId(), "d".repeat(64),
+                UUID.randomUUID(), "a".repeat(64), "marker", "b".repeat(64), 1024, "image/png", RECEIVED,
+                RECEIVED.plusMinutes(5)));
+
+        mvc.perform(get("/api/v1/admin/analysis-runs").param("eventId", EVENT_A.toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.coverage").value("PERSISTED_TRACK2_LISTING_CONTEXT_ANALYSES_ONLY"))
+                .andExpect(jsonPath("$.items[0].fanReportId").value(reportId.toString()))
+                .andExpect(jsonPath("$.items[0].executionStatus").value("IN_PROGRESS"));
+        mvc.perform(get("/api/v1/admin/analysis-runs").param("eventId", EVENT_A.toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("approver-a")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void tenantAdminReadsSafeOperationStateAndAnalystIsDenied() throws Exception {
+        mvc.perform(get("/api/v1/admin/operations/settings").param("eventId", EVENT_A.toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin-only-a")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.track1RelationshipEvidenceCoverage").value("STORED_DEVICE_AND_IP_SIGNALS_ONLY"))
+                .andExpect(jsonPath("$.auditorAccessState").value("NOT_IMPLEMENTED_POLICY_PENDING"))
+                .andExpect(content().string(not(containsString("secret"))))
+                .andExpect(content().string(not(containsString("endpoint"))));
+        mvc.perform(get("/api/v1/admin/operations/settings").param("eventId", EVENT_A.toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                .andExpect(status().isForbidden());
     }
 
     @Test

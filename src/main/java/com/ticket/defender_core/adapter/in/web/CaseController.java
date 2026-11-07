@@ -1,7 +1,10 @@
 package com.ticket.defender_core.adapter.in.web;
 
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
+import com.ticket.defender_core.adapter.in.web.dto.CaseWorkflowDto;
+import com.ticket.defender_core.adapter.in.web.dto.ApprovalAuditDto;
 import com.ticket.defender_core.application.service.CaseService;
+import com.ticket.defender_core.application.service.CaseWorkflowQueryService;
 import com.ticket.defender_core.domain.Case;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -24,6 +27,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class CaseController {
     private final CaseService cases;
+    private final CaseWorkflowQueryService workflow;
 
     @PostMapping
     public ResponseEntity<CaseDto.View> create(@RequestHeader("Idempotency-Key") String key,
@@ -44,6 +48,11 @@ public class CaseController {
         return cases.detail(caseId);
     }
 
+    @GetMapping("/{caseId}/workflow")
+    public CaseWorkflowDto.View workflow(@PathVariable UUID caseId) {
+        return workflow.workflow(caseId);
+    }
+
     @GetMapping("/{caseId}/sources")
     public List<CaseDto.Source> sources(@PathVariable UUID caseId) {
         return cases.sources(caseId);
@@ -54,6 +63,12 @@ public class CaseController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
         return cases.activities(caseId, page, pageSize);
+    }
+
+    @GetMapping("/{caseId}/approval-audit-events")
+    public ApprovalAuditDto.Page approvalAudit(@PathVariable UUID caseId,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int pageSize) {
+        return workflow.approvalAudit(caseId, page, pageSize);
     }
 
     @PostMapping("/{caseId}/transitions")

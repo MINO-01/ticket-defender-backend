@@ -116,6 +116,39 @@ class A3SyntheticReservationImportProvisionerTest {
     }
 
     @Test
+    void dryRunAcceptsTheImportMaximumSyntheticReferenceButRejectsOneCharacterMore() throws Exception {
+        String atMaximum = "SYNTHETIC-" + "A".repeat(118);
+        String aboveMaximum = "SYNTHETIC-" + "A".repeat(119);
+
+        assertThat(atMaximum).hasSize(128);
+        assertThat(provisioner.dryRun(request(writeFixture(atMaximum, "VIP", "10", "5"))).fixtureRowCount())
+                .isEqualTo(1);
+        assertThat(aboveMaximum).hasSize(129);
+        assertThatThrownBy(() -> provisioner.dryRun(request(writeFixture(aboveMaximum, "VIP", "10", "5"))))
+                .isInstanceOfSatisfying(A3SyntheticReservationImportProvisioner.A3SyntheticImportProvisioningException.class,
+                        error -> assertThat(error.code()).isEqualTo("A3_SYNTHETIC_IMPORT_FIXTURE_INVALID"));
+    }
+
+    @Test
+    void deterministicIdempotencyKeyIsStableDistinctAndAcceptedByTheRealValidator() {
+        String first = A3SyntheticReservationImportProvisioner.deterministicIdempotencyKey(TENANT, EVENT, PERFORMANCE,
+                "source-v1");
+        String same = A3SyntheticReservationImportProvisioner.deterministicIdempotencyKey(TENANT, EVENT, PERFORMANCE,
+                " source-v1 ");
+        String differentScope = A3SyntheticReservationImportProvisioner.deterministicIdempotencyKey(TENANT,
+                UUID.fromString("55555555-5555-4555-8555-555555555555"), PERFORMANCE, "source-v1");
+        String differentVersion = A3SyntheticReservationImportProvisioner.deterministicIdempotencyKey(TENANT, EVENT,
+                PERFORMANCE, "source-v2");
+
+        assertThat(UUID.fromString(first).version()).isEqualTo(4);
+        assertThat(UUID.fromString(first).variant()).isEqualTo(2);
+        assertThat(CandidatePipelineSupport.idempotencyDigest(first)).hasSize(64);
+        assertThat(same).isEqualTo(first);
+        assertThat(differentScope).isNotEqualTo(first);
+        assertThat(differentVersion).isNotEqualTo(first);
+    }
+
+    @Test
     void executeRegistersOnceAndDelegatesToTheExistingImportService() throws Exception {
         when(registrations.findByTenantIdForShare(TENANT)).thenReturn(Optional.empty());
         CandidatePipelineDto.ImportResult accepted = new CandidatePipelineDto.ImportResult(UUID.randomUUID(), EVENT,

@@ -140,7 +140,8 @@ class ReservationImportServiceTest {
         when(sources.lockByScope(tenantId, eventId, performanceId)).thenReturn(Optional.empty());
         CandidatePipelineDto.ImportReservations padded = snapshot(" source-v1 ", "same-reservation", "VIP", "10", "1");
         CandidatePipelineDto.ImportReservations normalized = snapshot("source-v1", "same-reservation", "VIP", "10", "1");
-        String firstKey = UUID.randomUUID().toString();
+        String firstKey = A3SyntheticReservationImportProvisioner.deterministicIdempotencyKey(tenantId, eventId,
+                performanceId, "source-v1");
 
         CandidatePipelineDto.ImportResult initial = service.importSnapshot(eventId, firstKey, padded);
         ArgumentCaptor<ReservationImportBatch> stored = ArgumentCaptor.forClass(ReservationImportBatch.class);
@@ -161,7 +162,8 @@ class ReservationImportServiceTest {
     private void assertSameKeyReplaysOnlySameBody(CandidatePipelineDto.ImportReservations first,
             CandidatePipelineDto.ImportReservations different) {
         when(sources.lockByScope(tenantId, eventId, performanceId)).thenReturn(Optional.empty());
-        String key = UUID.randomUUID().toString();
+        String key = A3SyntheticReservationImportProvisioner.deterministicIdempotencyKey(tenantId, eventId,
+                performanceId, "source-v1");
         CandidatePipelineDto.ImportResult initial = service.importSnapshot(eventId, key, first);
         ArgumentCaptor<ReservationImportBatch> stored = ArgumentCaptor.forClass(ReservationImportBatch.class);
         verify(batches).saveAndFlush(stored.capture());

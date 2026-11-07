@@ -24,9 +24,10 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.io.Reader;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.SQLException;
@@ -34,6 +35,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
@@ -50,7 +52,7 @@ import java.util.regex.Pattern;
 public class A3SyntheticReservationImportProvisioner {
     static final String FIXTURE_TYPE = "A3_SYNTHETIC_RESERVATION_SNAPSHOT_V1";
     private static final int MAX_FIXTURE_BYTES = 1_000_000;
-    private static final Pattern SYNTHETIC_REFERENCE = Pattern.compile("SYNTHETIC-[A-Z0-9][A-Z0-9_-]{7,120}");
+    private static final Pattern SYNTHETIC_REFERENCE = Pattern.compile("SYNTHETIC-[A-Z0-9][A-Z0-9_-]{7,117}");
 
     private final SyntheticReservationImportGate gate;
     private final DataSource dataSource;
@@ -99,7 +101,9 @@ public class A3SyntheticReservationImportProvisioner {
         }
 
         CandidatePipelineDto.ImportResult result = imports.importSnapshotForTrustedProvisioning(validated.tenantId(),
-                validated.eventId(), validated.membershipId(), deterministicIdempotencyKey(validated), validated.input());
+                validated.eventId(), validated.membershipId(), deterministicIdempotencyKey(validated.tenantId(),
+                        validated.eventId(), validated.input().performanceId(), validated.input().sourceVersion()),
+                validated.input());
         if (result.status() != ReservationImportBatch.Status.ACCEPTED) {
             throw failed("A3_SYNTHETIC_IMPORT_NOT_ACCEPTED");
         }
@@ -262,10 +266,18 @@ public class A3SyntheticReservationImportProvisioner {
         return value;
     }
 
-    private static String deterministicIdempotencyKey(Validated validated) {
-        String value = "A3_SYNTHETIC_RESERVATION_IMPORT|" + validated.tenantId() + '|' + validated.eventId()
-                + '|' + validated.input().performanceId() + '|' + validated.input().sourceVersion().strip();
-        return UUID.nameUUIDFromBytes(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    /**
+     * Derives a stable UUID v4 from the immutable import scope so retries replay the same request,
+     * while still satisfying {@link CandidatePipelineSupport#idempotencyDigest(String)}.
+     */
+    static String deterministicIdempotencyKey(UUID tenantId, UUID eventId, UUID performanceId, String sourceVersion) {
+        String canonicalSourceVersion = CandidatePipelineSupport.bounded(sourceVersion, 128);
+        byte[] bytes = HexFormat.of().parseHex(CandidatePipelineSupport.sha256("A3_SYNTHETIC_RESERVATION_IMPORT",
+                tenantId.toString(), eventId.toString(), performanceId.toString(), canonicalSourceVersion));
+        bytes[6] = (byte) ((bytes[6] & 0x0f) | 0x40);
+        bytes[8] = (byte) ((bytes[8] & 0x3f) | 0x80);
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        return new UUID(buffer.getLong(), buffer.getLong()).toString();
     }
 
     private static LocalDateTime now() {

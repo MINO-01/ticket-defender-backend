@@ -41,4 +41,17 @@ class SyntheticReservationImportGateTest {
         assertThat(gate.referenceHasher().purpose())
                 .isEqualTo(TenantPurposeReferenceHasher.RESERVATION_REFERENCE_PURPOSE);
     }
+
+    @Test
+    void provisioningEnvironmentCheckDoesNotAuthorizeAnUnregisteredTenant() {
+        SyntheticReservationImportTenantRepository registrations = mock(SyntheticReservationImportTenantRepository.class);
+        when(registrations.findByTenantIdForShare(TENANT)).thenReturn(Optional.empty());
+        SyntheticReservationImportGate gate = new SyntheticReservationImportGate(true, "SYNTHETIC_ISOLATED",
+                ISOLATION.toString(), KEY, "v1", "jdbc:h2:mem:synthetic", registrations);
+
+        assertThat(gate.requireProvisioningEnvironment(ISOLATION)).isEqualTo(ISOLATION);
+        assertThatThrownBy(() -> gate.requireSyntheticScope(TENANT, LocalDateTime.now()))
+                .isInstanceOfSatisfying(CaseApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("RESERVATION_IMPORT_SYNTHETIC_SCOPE_UNVERIFIED"));
+    }
 }

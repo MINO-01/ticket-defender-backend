@@ -150,8 +150,16 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(jsonPath("$.members[0].paymentHash").doesNotExist())
                 .andExpect(jsonPath("$.members[0].seat").doesNotExist())
                 .andExpect(jsonPath("$.members[0].signals").doesNotExist())
+                .andExpect(jsonPath("$.relationship.sharedSignals[0].type").value("DEVICE_ID_HASH"))
+                .andExpect(jsonPath("$.relationship.sharedSignals[0].sharedMemberCount").value(2))
+                .andExpect(jsonPath("$.relationship.sharedSignals[0].verifiedConnectionCount").value(1))
+                .andExpect(jsonPath("$.relationship.verifiedConnectionCount").value(1))
+                .andExpect(jsonPath("$.relationship.unavailableSignalTypes[0]").value("PAYMENT_HASH"))
+                .andExpect(jsonPath("$.relationship.investigationPrioritySource").value("STORED_LOUVAIN_RISK_SCORE"))
+                .andExpect(jsonPath("$.relationship.memberCoverage").value("STORED_CLUSTER_MEMBERS_ONLY"))
                 .andExpect(content().string(not(containsString("FRAUD_DETECTED"))))
-                .andExpect(content().string(not(containsString("a".repeat(64)))));
+                .andExpect(content().string(not(containsString("a".repeat(64)))))
+                .andExpect(content().string(not(containsString("b".repeat(64)))));
     }
 
     @Test

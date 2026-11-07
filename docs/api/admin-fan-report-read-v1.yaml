@@ -5,7 +5,8 @@ info:
   description: >-
     관리자가 권한 있는 공연의 팬 제보 목록과 상세를 조회합니다. 조회 전용이며 분석 실행, 예매 후보 확정, Case 생성, 제재, 승인,
     PDF 발급을 수행하지 않습니다. 접수 상태는 저장된 FanReport.intakeStatus 값 그대로이며 분석 결과나 부정 거래 판정이 아닙니다.
-    응답에는 객체 저장 키, 객체 버전, 접수번호, 조회 비밀 digest, 멱등성 digest, 요청 digest, tenantId를 포함하지 않습니다.
+    응답에는 객체 저장 키, 객체 버전, 조회 비밀 digest, 멱등성 digest, 요청 digest, tenantId를 포함하지 않습니다.
+    receiptNumber는 내부 조사 화면에서 접수 건을 찾기 위한 접수번호이며 제보자 신원 정보가 아닙니다.
     이 API는 원본 이미지 URL을 제공하지 않습니다. 검증된 원본 미리보기는 admin-evidence-content-v1.yaml의 Backend 프록시 API로만 제공합니다.
 servers:
   - url: /
@@ -86,9 +87,10 @@ components:
         name: { type: string }
     FanReportSummary:
       type: object
-      required: [fanReportId, reportType, intakeStatus, receivedAt, submittedPerformanceAt, evidenceCount, storedEvidenceCount]
+      required: [fanReportId, receiptNumber, reportType, intakeStatus, receivedAt, submittedPerformanceAt, evidenceCount, storedEvidenceCount]
       properties:
         fanReportId: { type: string, format: uuid }
+        receiptNumber: { type: string, description: 내부 조사 화면용 접수번호이며 제보자 신원을 뜻하지 않습니다. }
         reportType: { $ref: '#/components/schemas/ReportType' }
         intakeStatus: { $ref: '#/components/schemas/IntakeStatus' }
         receivedAt: { type: string, format: date-time, description: UTC }
@@ -126,9 +128,10 @@ components:
         createdAt: { type: string, format: date-time, description: UTC }
     FanReportDetail:
       type: object
-      required: [fanReportId, event, reportType, intakeStatus, receivedAt, retentionUntil, submittedPerformanceAt, description, evidence]
+      required: [fanReportId, receiptNumber, event, reportType, intakeStatus, receivedAt, retentionUntil, submittedPerformanceAt, description, evidence]
       properties:
         fanReportId: { type: string, format: uuid }
+        receiptNumber: { type: string, description: 내부 조사 화면용 접수번호이며 제보자 신원을 뜻하지 않습니다. }
         event: { $ref: '#/components/schemas/Event' }
         reportType: { $ref: '#/components/schemas/ReportType' }
         intakeStatus: { $ref: '#/components/schemas/IntakeStatus' }

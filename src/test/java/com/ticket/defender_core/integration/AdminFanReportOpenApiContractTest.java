@@ -35,7 +35,7 @@ class AdminFanReportOpenApiContractTest {
         assertThat((List<?>) ((Map<?, ?>) schemas.get("IntakeStatus")).get("enum")).map(Object::toString)
                 .containsExactlyElementsOf(Arrays.stream(FanReport.IntakeStatus.values()).map(Enum::name).toList());
         String allSchemas = schemas.toString();
-        assertThat(allSchemas).doesNotContain("objectKey", "objectVersion", "receiptNumber", "Digest", "tenantId",
+        assertThat(allSchemas).doesNotContain("objectKey", "objectVersion", "lookupSecret", "Digest", "tenantId",
                 "previewUrl", "downloadUrl");
         verifyReferences(document, document);
     }

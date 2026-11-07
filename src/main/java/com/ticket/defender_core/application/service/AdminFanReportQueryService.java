@@ -57,7 +57,7 @@ public class AdminFanReportQueryService {
                 .collect(Collectors.toMap(EvidenceAssetRepository.EvidenceCount::getFanReportId, Function.identity()));
         List<AdminFanReportDto.Summary> items = found.stream().map(row -> {
             var count = counts.get(row.getFanReportId());
-            return new AdminFanReportDto.Summary(row.getFanReportId(), row.getReportType(), row.getIntakeStatus(),
+            return new AdminFanReportDto.Summary(row.getFanReportId(), row.getReceiptNumber(), row.getReportType(), row.getIntakeStatus(),
                     utc(row.getReceivedAt()), utc(row.getSubmittedPerformanceAt()),
                     count == null ? 0 : count.getEvidenceCount(), count == null ? 0 : count.getStoredEvidenceCount());
         }).toList();
@@ -73,7 +73,7 @@ public class AdminFanReportQueryService {
         AdminFanReportDto.Event event = event(actor.tenantId(), actor.eventId());
         List<AdminFanReportDto.Evidence> evidence = assets.findByFanReportIdOrderByCreatedAtAscEvidenceIdAsc(
                 report.getFanReportId()).stream().map(asset -> evidence(report, asset)).toList();
-        return new AdminFanReportDto.Detail(report.getFanReportId(), event, report.getReportType(),
+        return new AdminFanReportDto.Detail(report.getFanReportId(), report.getReceiptNumber(), event, report.getReportType(),
                 report.getIntakeStatus(), utc(report.getReceivedAt()), utc(report.getRetentionUntil()),
                 utc(report.getSubmittedPerformanceAt()), report.getSeatArea(), report.getDescription(),
                 report.getListingUrl(), report.getPlatform(), report.getSeller(), report.getAskingPrice(), evidence);

@@ -25,6 +25,26 @@ public final class Track1ClusterDto {
     public record Member(Long auditId, String accountId, String reservationNo) {
     }
 
+    /** Shared signal values are deliberately not exposed. Counts refer only to persisted cluster members. */
+    public enum SharedSignalType { DEVICE_ID_HASH, IP_HASH }
+
+    public record SharedSignal(SharedSignalType type, long sharedMemberCount, long verifiedConnectionCount) {
+    }
+
+    /**
+     * A partial explanation of persisted evidence, not a reconstruction of the original graph or a fraud finding.
+     * verifiedConnectionCount is the sum of unordered member pairs for every repeated stored signal value.
+     */
+    public record RelationshipExplanation(
+            List<SharedSignal> sharedSignals,
+            long verifiedConnectionCount,
+            List<String> unavailableSignalTypes,
+            String investigationPrioritySource,
+            String normalSharingNotice,
+            String memberCoverage
+    ) {
+    }
+
     public record Page(
             Event event,
             List<Summary> items,
@@ -36,6 +56,7 @@ public final class Track1ClusterDto {
     ) {
     }
 
-    public record Detail(Event event, Summary cluster, List<Member> members, String coverage) {
+    public record Detail(Event event, Summary cluster, List<Member> members,
+                         RelationshipExplanation relationship, String coverage) {
     }
 }

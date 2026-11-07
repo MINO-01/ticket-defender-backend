@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -91,6 +92,9 @@ class SecurityApiTest {
 
     @Autowired
     private MockMvc mvc;
+
+    @Autowired
+    private ApplicationContext context;
 
     @Value("${local.server.port}")
     private int port;
@@ -267,6 +271,12 @@ class SecurityApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"receiptNumber\":\"FR-synthetic\",\"lookupCode\":\"synthetic\"}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void servletContextKeepsAllThreeSecurityFilterChains() {
+        assertThat(context.getBeansOfType(SecurityFilterChain.class))
+                .containsKeys("analysisSecurity", "publicFanReportSecurity", "adminSecurity");
     }
 
     private static AdminMembership membership(Set<AdminRole> roles, Set<UUID> eventIds) {

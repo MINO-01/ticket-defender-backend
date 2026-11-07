@@ -76,6 +76,16 @@ ticket-defender:
   track2-candidate-match:
     # An expired active lookup becomes a terminal LOOKUP_FAILED history row; it never permits late completion.
     attempt-lease: ${TRACK2_CANDIDATE_MATCH_ATTEMPT_LEASE:PT5M}
+  a3-synthetic-import-provisioning:
+    # Non-web, operator-run bootstrap only. Both flags must be true before it can write anything.
+    enabled: ${A3_SYNTHETIC_IMPORT_PROVISIONING_ENABLED:false}
+    execute: ${A3_SYNTHETIC_IMPORT_PROVISIONING_EXECUTE:false}
+    tenant-id: ${A3_SYNTHETIC_IMPORT_PROVISIONING_TENANT_ID:}
+    event-id: ${A3_SYNTHETIC_IMPORT_PROVISIONING_EVENT_ID:}
+    membership-id: ${A3_SYNTHETIC_IMPORT_PROVISIONING_MEMBERSHIP_ID:}
+    isolation-id: ${A3_SYNTHETIC_IMPORT_PROVISIONING_ISOLATION_ID:}
+    expected-database-name: ${A3_SYNTHETIC_IMPORT_PROVISIONING_EXPECTED_DATABASE_NAME:}
+    fixture-path: ${A3_SYNTHETIC_IMPORT_PROVISIONING_FIXTURE_PATH:}
   official-pdf:
     # This flag alone never authorizes operation; only synthetic isolated mode is currently accepted.
     enabled: ${OFFICIAL_PDF_ENABLED:false}

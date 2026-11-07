@@ -14,4 +14,8 @@ public interface TenantRepository extends JpaRepository<Tenant, UUID> {
     @Lock(LockModeType.PESSIMISTIC_READ)
     @Query("select t from Tenant t where t.id = :id")
     Optional<Tenant> lockById(UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Tenant t where t.id = :id")
+    Optional<Tenant> lockByIdForUpdate(UUID id);
 }

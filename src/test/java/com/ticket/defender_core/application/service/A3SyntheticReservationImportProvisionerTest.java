@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import javax.sql.DataSource;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -206,17 +207,16 @@ class A3SyntheticReservationImportProvisionerTest {
 
     private Path writeFixture(String reference, String zone, String row, String seat) throws Exception {
         Path fixture = temp.resolve("snapshot.properties");
-        Files.writeString(fixture, """
-                fixture-type=A3_SYNTHETIC_RESERVATION_SNAPSHOT_V1
-                complete-snapshot=true
-                performance-id=%s
-                source-version=a3-fixture-v1
-                row-count=1
-                row.0.reservation-reference=%s
-                row.0.zone=%s
-                row.0.row=%s
-                row.0.seat=%s
-                """.formatted(PERFORMANCE, reference, zone, row, seat));
+        String template;
+        try (var input = getClass().getResourceAsStream("/fixtures/a3-synthetic-reservation-snapshot.properties")) {
+            if (input == null) throw new IllegalStateException("missing synthetic fixture");
+            template = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        Files.writeString(fixture, template
+                .replace("SYNTHETIC-A3-RESERVATION-0001", reference)
+                .replace("row.0.zone=VIP", "row.0.zone=" + zone)
+                .replace("row.0.row=10", "row.0.row=" + row)
+                .replace("row.0.seat=5", "row.0.seat=" + seat));
         return fixture;
     }
 }

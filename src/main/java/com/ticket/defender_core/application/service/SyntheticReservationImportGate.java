@@ -48,14 +48,25 @@ public class SyntheticReservationImportGate {
     }
 
     public UUID requireSyntheticScope(UUID tenantId, LocalDateTime now) {
-        if (!enabled) throw conflict(DISABLED);
-        if (!SYNTHETIC_ISOLATED.equals(operationalMode)) throw conflict(NOT_APPROVED);
-        if (isolationId == null || !isolatedDatasource) throw conflict(ISOLATION_UNVERIFIED);
-        if (hmacMasterKey == null || hmacMasterKey.length() < 32 || hmacKeyVersion == null || hmacKeyVersion.isBlank())
-            throw conflict(ISOLATION_UNVERIFIED);
+        requireProvisioningEnvironment(isolationId);
         SyntheticReservationImportTenant registration = tenants.findByTenantIdForShare(tenantId).orElse(null);
         if (registration == null || !isolationId.equals(registration.getIsolationId())
                 || registration.getRegisteredAt().isAfter(now)) throw conflict(SCOPE_UNVERIFIED);
+        return isolationId;
+    }
+
+    /**
+     * Validates only the fail-closed environment signals shared by the one-time A3 provisioner.
+     * It intentionally does not accept a tenant scope: the provisioner must create or verify the
+     * server-owned registration before {@link #requireSyntheticScope(UUID, LocalDateTime)} can pass.
+     */
+    UUID requireProvisioningEnvironment(UUID expectedIsolationId) {
+        if (!enabled) throw conflict(DISABLED);
+        if (!SYNTHETIC_ISOLATED.equals(operationalMode)) throw conflict(NOT_APPROVED);
+        if (isolationId == null || expectedIsolationId == null || !isolationId.equals(expectedIsolationId)
+                || !isolatedDatasource) throw conflict(ISOLATION_UNVERIFIED);
+        if (hmacMasterKey == null || hmacMasterKey.length() < 32 || hmacKeyVersion == null || hmacKeyVersion.isBlank())
+            throw conflict(ISOLATION_UNVERIFIED);
         return isolationId;
     }
 

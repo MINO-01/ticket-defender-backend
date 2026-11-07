@@ -45,6 +45,22 @@ public class ReservationImportService {
     public CandidatePipelineDto.ImportResult importSnapshot(UUID eventId, String idempotencyKey,
             CandidatePipelineDto.ImportReservations input) {
         CandidatePipelineAccess.Scope scope = access.event(eventId, IMPORT_ROLES);
+        return importSnapshot(scope, idempotencyKey, input);
+    }
+
+    /**
+     * Used only by the non-web A3 synthetic provisioner after it has independently verified
+     * the configured tenant, event, and TENANT_ADMIN membership. The web controller always
+     * enters through {@link #importSnapshot(UUID, String, CandidatePipelineDto.ImportReservations)}.
+     */
+    CandidatePipelineDto.ImportResult importSnapshotForTrustedProvisioning(UUID tenantId, UUID eventId,
+            UUID membershipId, String idempotencyKey, CandidatePipelineDto.ImportReservations input) {
+        return importSnapshot(new CandidatePipelineAccess.Scope(tenantId, eventId, membershipId, null),
+                idempotencyKey, input);
+    }
+
+    private CandidatePipelineDto.ImportResult importSnapshot(CandidatePipelineAccess.Scope scope,
+            String idempotencyKey, CandidatePipelineDto.ImportReservations input) {
         if (input == null || input.performanceId() == null) throw CandidatePipelineSupport.invalid();
         String keyDigest = CandidatePipelineSupport.idempotencyDigest(idempotencyKey);
         String sourceVersion = CandidatePipelineSupport.bounded(input.sourceVersion(), 128);
@@ -54,17 +70,17 @@ public class ReservationImportService {
         String requestDigest = requestDigest(scope.tenantId(), sourceVersion, input, hasher);
 
         var replay = batches.findByCreatedByMembershipIdAndEventIdAndIdempotencyKeyDigest(
-                scope.membershipId(), eventId, keyDigest);
+                scope.membershipId(), scope.eventId(), keyDigest);
         if (replay.isPresent()) {
             if (!replay.get().getRequestDigest().equals(requestDigest)) throw conflict("IDEMPOTENCY_KEY_REUSED");
             return view(replay.get());
         }
 
-        VerifiedPerformance performance = performances.lockByIdAndScope(input.performanceId(), scope.tenantId(), eventId)
+        VerifiedPerformance performance = performances.lockByIdAndScope(input.performanceId(), scope.tenantId(), scope.eventId())
                 .orElseThrow(ReservationImportService::notFound);
         if (performance.getStatus() != VerifiedPerformance.Status.ACTIVE) throw conflict("PERFORMANCE_WITHDRAWN");
         var existingVersion = batches.findByTenantIdAndEventIdAndPerformanceIdAndSourceVersion(
-                scope.tenantId(), eventId, performance.getId(), sourceVersion);
+                scope.tenantId(), scope.eventId(), performance.getId(), sourceVersion);
         if (existingVersion.isPresent()) {
             if (existingVersion.get().getRequestDigest().equals(requestDigest)) return view(existingVersion.get());
             throw conflict("RESERVATION_SOURCE_VERSION_CONFLICT");
@@ -73,7 +89,7 @@ public class ReservationImportService {
         Validation validation = validate(scope.tenantId(), input, hasher);
         ReservationImportBatch.Status status = validation.errors().isEmpty()
                 ? ReservationImportBatch.Status.ACCEPTED : ReservationImportBatch.Status.REJECTED;
-        ReservationImportBatch batch = new ReservationImportBatch(scope.tenantId(), eventId, performance,
+        ReservationImportBatch batch = new ReservationImportBatch(scope.tenantId(), scope.eventId(), performance,
                 scope.membershipId(), keyDigest, requestDigest, sourceVersion, hasher.keyVersion(), isolationId,
                 Boolean.TRUE.equals(input.completeSnapshot()), status, validation.inputCount(),
                 status == ReservationImportBatch.Status.ACCEPTED ? validation.rows().size() : 0,
@@ -90,9 +106,9 @@ public class ReservationImportService {
             candidates.saveAll(validation.rows().stream().map(row -> new ReservationCandidate(batch.getId(), row.index(),
                     row.referenceHmac(), hasher.keyVersion(), row.zone(), row.row(), row.seat())).toList());
             candidates.flush();
-            ReservationDataSource source = sources.lockByScope(scope.tenantId(), eventId, performance.getId()).orElse(null);
+            ReservationDataSource source = sources.lockByScope(scope.tenantId(), scope.eventId(), performance.getId()).orElse(null);
             if (source == null) {
-                source = new ReservationDataSource(scope.tenantId(), eventId, performance.getId(), batch, now);
+                source = new ReservationDataSource(scope.tenantId(), scope.eventId(), performance.getId(), batch, now);
             } else {
                 source.activate(batch, now);
             }

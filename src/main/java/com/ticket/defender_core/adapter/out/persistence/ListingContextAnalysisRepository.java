@@ -13,4 +13,5 @@ public interface ListingContextAnalysisRepository extends JpaRepository<ListingC
             UUID membershipId, UUID evidenceId, String keyDigest);
     Optional<ListingContextAnalysis> findByActiveEvidenceId(UUID evidenceId);
     Page<ListingContextAnalysis> findByFanReportIdAndEvidenceId(UUID fanReportId, UUID evidenceId, Pageable pageable);
+    Page<ListingContextAnalysis> findByTenantIdAndEventId(UUID tenantId, UUID eventId, Pageable pageable);
 }

@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  */
 @Order(Ordered.HIGHEST_PRECEDENCE)
 @RestControllerAdvice(assignableTypes = {AdminTrack1ClusterController.class, AdminFanReportController.class,
+        AdminAnalysisRunController.class, AdminOperationSettingsController.class,
         ListingContextAnalysisController.class, CaseController.class, CasePreparationController.class,
         ReportDraftController.class, EvidenceIntegrityController.class, ApprovalRequestController.class,
         OfficialPdfIssuanceController.class, AdminEventController.class})

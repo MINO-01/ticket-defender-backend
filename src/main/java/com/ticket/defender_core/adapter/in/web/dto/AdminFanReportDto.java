@@ -10,7 +10,7 @@ import java.util.UUID;
 
 /**
  * 관리자 팬 제보 조회 응답입니다. JPA 엔티티 대신 화면에 필요한 값만 담으며
- * 객체 저장 키, 객체 버전, 접수번호, 복구 비밀 digest, 멱등성 digest, tenantId는 포함하지 않습니다.
+ * 객체 저장 키, 객체 버전, 복구 비밀 digest, 멱등성 digest, tenantId는 포함하지 않습니다.
  */
 public final class AdminFanReportDto {
     private AdminFanReportDto() {
@@ -22,6 +22,7 @@ public final class AdminFanReportDto {
     /** 목록 항목입니다. 제보 본문과 판매자 정보는 상세 조회에서만 반환합니다. */
     public record Summary(
             UUID fanReportId,
+            String receiptNumber,
             FanReport.ReportType reportType,
             FanReport.IntakeStatus intakeStatus,
             OffsetDateTime receivedAt,
@@ -59,6 +60,7 @@ public final class AdminFanReportDto {
     /** 상세 응답입니다. listingUrl은 팬이 입력한 문자열이며 서버가 접속하거나 검증하지 않았습니다. */
     public record Detail(
             UUID fanReportId,
+            String receiptNumber,
             Event event,
             FanReport.ReportType reportType,
             FanReport.IntakeStatus intakeStatus,

@@ -18,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -28,6 +29,10 @@ public class AdminTrack1ClusterService {
     private static final Set<AdminRole> VIEW_ROLES = Set.of(
             AdminRole.TENANT_ADMIN, AdminRole.ANALYST, AdminRole.REVIEWER, AdminRole.APPROVER);
     private static final String COVERAGE = "STORED_EVIDENCE_ONLY";
+    private static final String MEMBER_COVERAGE = "STORED_CLUSTER_MEMBERS_ONLY";
+    private static final String PRIORITY_SOURCE = "STORED_LOUVAIN_RISK_SCORE";
+    private static final String NORMAL_SHARING_NOTICE = "공동 이용 기기 또는 네트워크의 정상 공유 가능성을 함께 검토해야 하며, "
+            + "이 관계 정보만으로 동일인·조직 또는 부정행위를 확정할 수 없습니다.";
 
     private final AdminAccessService access;
     private final TenantEventRepository events;
@@ -66,7 +71,7 @@ public class AdminTrack1ClusterService {
         List<Track1ClusterDto.Member> members = rows.stream()
                 .map(row -> new Track1ClusterDto.Member(row.getAuditId(), row.getAccountId(), row.getReservationNo()))
                 .toList();
-        return new Track1ClusterDto.Detail(event, cluster, members, COVERAGE);
+        return new Track1ClusterDto.Detail(event, cluster, members, relationship(rows), COVERAGE);
     }
 
     private Track1ClusterDto.Event event(AdminActor actor) {
@@ -87,6 +92,28 @@ public class AdminTrack1ClusterService {
         return new Track1ClusterDto.Summary(row.analysisRequestId(), row.clusterId(), row.maximumRiskScore(),
                 row.lastAlgorithm(), row.lastAlgorithmVersion(),
                 row.lastAnalyzedAt().atOffset(ZoneOffset.UTC), row.storedMemberCount());
+    }
+
+    /** Only device/IP hashes are persisted in MacroAuditEvidence for relationship explanation. */
+    private static Track1ClusterDto.RelationshipExplanation relationship(List<MacroAuditEvidence> rows) {
+        List<Track1ClusterDto.SharedSignal> signals = java.util.stream.Stream.of(
+                shared(Track1ClusterDto.SharedSignalType.DEVICE_ID_HASH,
+                        rows.stream().map(MacroAuditEvidence::getDeviceIdHash).toList()),
+                shared(Track1ClusterDto.SharedSignalType.IP_HASH,
+                        rows.stream().map(MacroAuditEvidence::getIpHash).toList())
+        ).filter(Objects::nonNull).toList();
+        long connections = signals.stream().mapToLong(Track1ClusterDto.SharedSignal::verifiedConnectionCount).sum();
+        return new Track1ClusterDto.RelationshipExplanation(signals, connections,
+                List.of("PAYMENT_HASH", "ADDRESS_HASH"), PRIORITY_SOURCE, NORMAL_SHARING_NOTICE, MEMBER_COVERAGE);
+    }
+
+    private static Track1ClusterDto.SharedSignal shared(Track1ClusterDto.SharedSignalType type, List<String> values) {
+        Map<String, Long> counts = values.stream().filter(value -> value != null && !value.isBlank())
+                .collect(java.util.stream.Collectors.groupingBy(value -> value, java.util.stream.Collectors.counting()));
+        long members = counts.values().stream().filter(count -> count > 1).mapToLong(Long::longValue).sum();
+        long connections = counts.values().stream().filter(count -> count > 1)
+                .mapToLong(count -> count * (count - 1) / 2).sum();
+        return members == 0 ? null : new Track1ClusterDto.SharedSignal(type, members, connections);
     }
 
     private static void validatePage(int page, int pageSize, String sort) {

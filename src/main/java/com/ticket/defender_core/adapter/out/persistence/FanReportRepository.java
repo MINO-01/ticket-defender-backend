@@ -21,7 +21,8 @@ public interface FanReportRepository extends JpaRepository<FanReport, UUID> {
      * idx_fan_reports_scope_received(tenant_id, event_id, received_at)와 기본 키로 같은 시각도 안정적으로 정렬합니다.
      */
     @Query(value = """
-            select r.fanReportId as fanReportId, r.reportType as reportType, r.intakeStatus as intakeStatus,
+            select r.fanReportId as fanReportId, r.receiptNumber as receiptNumber,
+                   r.reportType as reportType, r.intakeStatus as intakeStatus,
                    r.receivedAt as receivedAt, r.submittedPerformanceAt as submittedPerformanceAt
             from FanReport r
             where r.tenantId = :tenantId and r.eventId = :eventId
@@ -38,6 +39,7 @@ public interface FanReportRepository extends JpaRepository<FanReport, UUID> {
     /** 관리자 목록에 필요한 제보 열만 담는 조회 결과입니다. */
     interface AdminFanReportRow {
         UUID getFanReportId();
+        String getReceiptNumber();
         FanReport.ReportType getReportType();
         FanReport.IntakeStatus getIntakeStatus();
         LocalDateTime getReceivedAt();

@@ -1,0 +1,436 @@
+openapi: 3.1.0
+info:
+  title: Track 1 Purchase-limit Analysis API
+  version: 2.0.0
+  description: |
+    Spring이 인증·권한·tenant/event/performance 범위를 검증한 뒤 FastAPI에 호출하는 Track 1 v2 내부 계약이다.
+    이 문서는 Data Issue #30의 구현 검토를 위한 기준 계약이며, FastAPI 제공자와 Spring 소비자가 모두 구현·fixture로
+    확인하기 전에는 운영 호출을 활성화하지 않는다.
+
+    `POST /api/v1/clusters/analyze` 및 v1의 request/response는 변경하지 않는다. v1 요청에는 회차, 유효 수량,
+    구매 한도 정보가 없으므로 한도 평가를 추정하거나 2라는 기본값을 적용해서는 안 된다. v2는 별도 경로를 사용해
+    v1의 strict extra-field validation과 충돌하지 않는다.
+
+    v2 scope invariants: `(internalEventId, performanceId)` is unique in `performanceScopes`; every ticket maps to
+    exactly one scope with the same external `eventId`; and Spring sends `policy: null` for an unconfirmed policy.
+    FastAPI evaluates a limit only when policy is CONFIRMED, quantity data is COMPLETE, cancellation handling is
+    NETTED, duplicate handling is DEDUPLICATED, and every relevant ticket timestamp is inside that policy interval.
+    Sales-phase-specific policy selection is intentionally out of scope until an authoritative sales-phase source and
+    ticket-level phase reference are agreed; Spring must report that scope as not confirmed rather than guess.
+  x-contract-status: PROPOSED_FOR_CROSS_REPOSITORY_REVIEW
+  x-data-issue: https://github.com/MINO-01/ticket-defender-data/issues/30
+servers:
+  - url: http://localhost:8000/api/v2
+    description: Isolated FastAPI Track 1 internal endpoint
+paths:
+  /clusters/analyze:
+    post:
+      operationId: analyzeTrack1ClustersWithPurchaseLimits
+      summary: Analyze account relationships and separately evaluate per-account purchase limits
+      description: |
+        `X-TD-Track1-Key` service authentication remains mandatory. The request is created only by Spring after it
+        resolves the authenticated tenant, external event reference, internal event UUID, and ACTIVE verified
+        performance. Callers of Spring's ingest API never supply a policy version or maximum to FastAPI directly.
+
+        A response with `clusters: []` and `status: COMPLETED` is a normal completed analysis. A 5xx/503/timeout is
+        an analysis failure and must not be converted to an empty result. A limit finding is an investigation signal,
+        not fraud confirmation and not a Louvain cluster member.
+      security:
+        - Track1ServiceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Track1PurchaseLimitAnalysisRequest'
+            examples:
+              normalWithinLimit:
+                summary: One account buys two valid tickets under a two-ticket policy
+                value:
+                  requestId: 2136558c-2326-4430-a46d-0793494e9b49
+                  performanceScopes:
+                    - internalEventId: 11111111-1111-4111-8111-111111111111
+                      eventId: event-a-external-ref
+                      performanceId: 22222222-2222-4222-8222-222222222222
+                      policyVerificationStatus: CONFIRMED
+                      policy:
+                        maxTicketsPerAccount: 2
+                        policyVersion: event-a-r1
+                        effectiveFrom: '2026-11-01T00:00:00Z'
+                        effectiveUntil: null
+                      quantityDataStatus: COMPLETE
+                      quantitySourceVersion: reservation-snapshot-2026-11-08-a
+                      quantityAsOf: '2026-11-08T10:00:00Z'
+                      cancellationHandling: NETTED
+                      duplicateHandling: DEDUPLICATED
+                  tickets:
+                    - accountId: account-1
+                      reservationNo: reservation-1
+                      eventId: event-a-external-ref
+                      performanceId: 22222222-2222-4222-8222-222222222222
+                      purchasedAt: '2026-11-02T10:00:00Z'
+                      effectiveTicketQuantity: 2
+                      paymentHash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                      addressHash: null
+                      deviceIdHash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                      ipHash: null
+              mixedPerformances:
+                summary: Different performances retain separate policies; no single limit is applied to all tickets
+                value:
+                  requestId: 3136558c-2326-4430-a46d-0793494e9b49
+                  performanceScopes:
+                    - internalEventId: 11111111-1111-4111-8111-111111111111
+                      eventId: event-a-external-ref
+                      performanceId: 22222222-2222-4222-8222-222222222222
+                      policyVerificationStatus: CONFIRMED
+                      policy:
+                        maxTicketsPerAccount: 2
+                        policyVersion: event-a-performance-1-r1
+                        effectiveFrom: '2026-11-01T00:00:00Z'
+                        effectiveUntil: null
+                      quantityDataStatus: COMPLETE
+                      quantitySourceVersion: snapshot-a
+                      quantityAsOf: '2026-11-08T10:00:00Z'
+                      cancellationHandling: NETTED
+                      duplicateHandling: DEDUPLICATED
+                    - internalEventId: 33333333-3333-4333-8333-333333333333
+                      eventId: event-b-external-ref
+                      performanceId: 44444444-4444-4444-8444-444444444444
+                      policyVerificationStatus: CONFIRMED
+                      policy:
+                        maxTicketsPerAccount: 4
+                        policyVersion: event-b-performance-1-r4
+                        effectiveFrom: '2026-11-01T00:00:00Z'
+                        effectiveUntil: null
+                      quantityDataStatus: COMPLETE
+                      quantitySourceVersion: snapshot-b
+                      quantityAsOf: '2026-11-08T10:00:00Z'
+                      cancellationHandling: NETTED
+                      duplicateHandling: DEDUPLICATED
+                  tickets:
+                    - accountId: account-1
+                      reservationNo: reservation-a
+                      eventId: event-a-external-ref
+                      performanceId: 22222222-2222-4222-8222-222222222222
+                      purchasedAt: '2026-11-02T10:00:00Z'
+                      effectiveTicketQuantity: 2
+                      paymentHash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                    - accountId: account-1
+                      reservationNo: reservation-b
+                      eventId: event-b-external-ref
+                      performanceId: 44444444-4444-4444-8444-444444444444
+                      purchasedAt: '2026-11-02T10:00:00Z'
+                      effectiveTicketQuantity: 4
+                      paymentHash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      responses:
+        '200':
+          description: Completed relationship analysis and per-performance limit-evaluation outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Track1PurchaseLimitAnalysisResponse'
+              examples:
+                normalNoClusters:
+                  summary: Completed normally; no cluster and no account exceeds its confirmed limit
+                  value:
+                    requestId: 2136558c-2326-4430-a46d-0793494e9b49
+                    status: COMPLETED
+                    algorithm: LOUVAIN
+                    algorithmVersion: gds-2.6.6;projection-v2;score-v2
+                    analyzedAt: '2026-11-08T10:00:01Z'
+                    clusters: []
+                    purchaseLimitEvaluations:
+                      - internalEventId: 11111111-1111-4111-8111-111111111111
+                        eventId: event-a-external-ref
+                        performanceId: 22222222-2222-4222-8222-222222222222
+                        status: EVALUATED
+                        policyVersion: event-a-r1
+                        accountLimitFindings: []
+                exceededWithoutCluster:
+                  summary: One account has three valid tickets under a two-ticket policy; it is not a Louvain cluster
+                  value:
+                    requestId: 4136558c-2326-4430-a46d-0793494e9b49
+                    status: COMPLETED
+                    algorithm: LOUVAIN
+                    algorithmVersion: gds-2.6.6;projection-v2;score-v2
+                    analyzedAt: '2026-11-08T10:00:01Z'
+                    clusters: []
+                    purchaseLimitEvaluations:
+                      - internalEventId: 11111111-1111-4111-8111-111111111111
+                        eventId: event-a-external-ref
+                        performanceId: 22222222-2222-4222-8222-222222222222
+                        status: EVALUATED
+                        policyVersion: event-a-r1
+                        accountLimitFindings:
+                          - accountId: account-1
+                            effectiveTicketQuantity: 3
+                            maxTicketsPerAccount: 2
+                            policyVersion: event-a-r1
+                            reservationQuantities:
+                              - reservationNo: reservation-1
+                                effectiveTicketQuantity: 3
+                policyNotConfirmed:
+                  summary: Relationship analysis completed but no limit result was inferred
+                  value:
+                    requestId: 5136558c-2326-4430-a46d-0793494e9b49
+                    status: COMPLETED
+                    algorithm: LOUVAIN
+                    algorithmVersion: gds-2.6.6;projection-v2;score-v2
+                    analyzedAt: '2026-11-08T10:00:01Z'
+                    clusters: []
+                    purchaseLimitEvaluations:
+                      - internalEventId: 11111111-1111-4111-8111-111111111111
+                        eventId: event-a-external-ref
+                        performanceId: 22222222-2222-4222-8222-222222222222
+                        status: POLICY_NOT_CONFIRMED
+                        policyVersion: null
+                        accountLimitFindings: []
+        '422':
+          description: Request schema or scope/policy invariants are invalid. This is not a no-violation result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractError'
+              examples:
+                invalidPolicy:
+                  value:
+                    code: INVALID_POLICY
+                    detail: maxTicketsPerAccount must be a positive integer
+                mixedScope:
+                  value:
+                    code: TICKET_SCOPE_MISMATCH
+                    detail: Each ticket must reference exactly one matching performance scope
+        '500':
+          description: Analysis/result contract failure. Spring must treat it as failed, never as an empty successful analysis.
+        '503':
+          description: Graph analysis is unavailable. Spring must preserve it as unavailable/failed, never as an empty successful analysis.
+components:
+  securitySchemes:
+    Track1ServiceKey:
+      type: apiKey
+      in: header
+      name: X-TD-Track1-Key
+  schemas:
+    Track1PurchaseLimitAnalysisRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, performanceScopes, tickets]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        performanceScopes:
+          type: array
+          minItems: 1
+          description: Server-verified tenant/event/performance scopes. Exactly one item is required for every ticket performanceId.
+          items:
+            $ref: '#/components/schemas/PerformanceScope'
+        tickets:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TicketInput'
+    PerformanceScope:
+      type: object
+      additionalProperties: false
+      required:
+        - internalEventId
+        - eventId
+        - performanceId
+        - policyVerificationStatus
+        - quantityDataStatus
+        - cancellationHandling
+        - duplicateHandling
+      properties:
+        internalEventId:
+          type: string
+          format: uuid
+          description: Spring MySQL events.id. It is distinct from eventId and is resolved by Spring, not trusted from an external caller.
+        eventId:
+          $ref: '#/components/schemas/ExternalEventId'
+        performanceId:
+          type: string
+          format: uuid
+          description: ACTIVE verified_performances.id belonging to internalEventId.
+        policyVerificationStatus:
+          type: string
+          enum: [CONFIRMED, POLICY_NOT_CONFIRMED]
+        policy:
+          oneOf:
+            - $ref: '#/components/schemas/ConfirmedPolicy'
+            - type: 'null'
+          description: Required exactly when policyVerificationStatus is CONFIRMED; null when it is POLICY_NOT_CONFIRMED.
+        quantityDataStatus:
+          type: string
+          enum: [COMPLETE, INCOMPLETE, UNKNOWN]
+          description: COMPLETE only means the entire relevant performance snapshot has authoritative, net effective quantities.
+        quantitySourceVersion:
+          type: [string, 'null']
+          maxLength: 128
+        quantityAsOf:
+          type: [string, 'null']
+          format: date-time
+        cancellationHandling:
+          type: string
+          enum: [NETTED, NOT_CONFIRMED]
+          description: NETTED means full and partial cancellations/refunds are already removed from each effective quantity.
+        duplicateHandling:
+          type: string
+          enum: [DEDUPLICATED, NOT_CONFIRMED]
+        dataCompletenessReason:
+          type: [string, 'null']
+          maxLength: 512
+      allOf:
+        - if:
+            properties: {policyVerificationStatus: {const: CONFIRMED}}
+          then:
+            required: [policy]
+            properties:
+              policy: {$ref: '#/components/schemas/ConfirmedPolicy'}
+        - if:
+            properties: {policyVerificationStatus: {const: POLICY_NOT_CONFIRMED}}
+          then:
+            properties:
+              policy: {type: 'null'}
+    ConfirmedPolicy:
+      type: object
+      additionalProperties: false
+      required: [maxTicketsPerAccount, policyVersion, effectiveFrom]
+      properties:
+        maxTicketsPerAccount:
+          type: integer
+          minimum: 1
+          description: Customer-registered per-account maximum. There is no platform-wide default.
+        policyVersion:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Immutable version selected by Spring for this analysis.
+        effectiveFrom:
+          type: string
+          format: date-time
+        effectiveUntil:
+          type: [string, 'null']
+          format: date-time
+    TicketInput:
+      type: object
+      additionalProperties: false
+      required: [accountId, reservationNo, eventId, performanceId, purchasedAt, effectiveTicketQuantity]
+      properties:
+        accountId: {$ref: '#/components/schemas/TicketIdentifier'}
+        reservationNo: {$ref: '#/components/schemas/TicketIdentifier'}
+        eventId: {$ref: '#/components/schemas/ExternalEventId'}
+        performanceId: {type: string, format: uuid}
+        purchasedAt:
+          type: string
+          format: date-time
+          description: Used only to confirm the selected policy's effective interval; no sales-phase policy is implied by v2.
+        effectiveTicketQuantity:
+          type: integer
+          minimum: 1
+          description: Net valid ticket count for this reservation, not an assumed one-row-equals-one-ticket value.
+        paymentHash: {$ref: '#/components/schemas/HashTokenNullable'}
+        addressHash: {$ref: '#/components/schemas/HashTokenNullable'}
+        deviceIdHash: {$ref: '#/components/schemas/HashTokenNullable'}
+        ipHash: {$ref: '#/components/schemas/HashTokenNullable'}
+    Track1PurchaseLimitAnalysisResponse:
+      type: object
+      additionalProperties: false
+      required: [requestId, status, algorithm, algorithmVersion, analyzedAt, clusters, purchaseLimitEvaluations]
+      properties:
+        requestId: {type: string, format: uuid}
+        status: {const: COMPLETED}
+        algorithm: {const: LOUVAIN}
+        algorithmVersion:
+          type: string
+          minLength: 1
+          description: Must identify projection and scoring independently, for example gds-2.6.6;projection-v2;score-v2.
+        analyzedAt: {type: string, format: date-time}
+        clusters:
+          type: array
+          description: Existing relationship clusters; their v1 member/token/riskScore contract is unchanged.
+          items: {$ref: '#/components/schemas/RelationshipCluster'}
+        purchaseLimitEvaluations:
+          type: array
+          description: One outcome per submitted performance scope, separate from clusters.
+          items: {$ref: '#/components/schemas/PurchaseLimitEvaluation'}
+    RelationshipCluster:
+      type: object
+      additionalProperties: false
+      required: [clusterId, members, paymentHashes, addressHashes, deviceIdHashes, ipHashes, riskScore]
+      properties:
+        clusterId: {type: string, minLength: 1}
+        members:
+          type: array
+          minItems: 2
+          items:
+            type: object
+            additionalProperties: false
+            required: [accountId, reservationNo, eventId]
+            properties:
+              accountId: {$ref: '#/components/schemas/TicketIdentifier'}
+              reservationNo: {$ref: '#/components/schemas/TicketIdentifier'}
+              eventId: {$ref: '#/components/schemas/ExternalEventId'}
+        paymentHashes: {type: array, items: {$ref: '#/components/schemas/HashToken'}}
+        addressHashes: {type: array, items: {$ref: '#/components/schemas/HashToken'}}
+        deviceIdHashes: {type: array, items: {$ref: '#/components/schemas/HashToken'}}
+        ipHashes: {type: array, items: {$ref: '#/components/schemas/HashToken'}}
+        riskScore: {type: number, minimum: 0, maximum: 1}
+    PurchaseLimitEvaluation:
+      type: object
+      additionalProperties: false
+      required: [internalEventId, eventId, performanceId, status, policyVersion, accountLimitFindings]
+      properties:
+        internalEventId: {type: string, format: uuid}
+        eventId: {$ref: '#/components/schemas/ExternalEventId'}
+        performanceId: {type: string, format: uuid}
+        status:
+          type: string
+          enum: [EVALUATED, POLICY_NOT_CONFIRMED, QUANTITY_DATA_INCOMPLETE, POLICY_TIME_NOT_APPLICABLE]
+        policyVersion: {type: [string, 'null'], maxLength: 128}
+        accountLimitFindings:
+          type: array
+          description: Only accounts exceeding a confirmed per-account limit. An empty list with EVALUATED means no per-account excess, not that no evaluation was possible.
+          items: {$ref: '#/components/schemas/AccountLimitFinding'}
+    AccountLimitFinding:
+      type: object
+      additionalProperties: false
+      required: [accountId, effectiveTicketQuantity, maxTicketsPerAccount, policyVersion, reservationQuantities]
+      properties:
+        accountId: {$ref: '#/components/schemas/TicketIdentifier'}
+        effectiveTicketQuantity: {type: integer, minimum: 1}
+        maxTicketsPerAccount: {type: integer, minimum: 1}
+        policyVersion: {type: string, minLength: 1, maxLength: 128}
+        reservationQuantities:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [reservationNo, effectiveTicketQuantity]
+            properties:
+              reservationNo: {$ref: '#/components/schemas/TicketIdentifier'}
+              effectiveTicketQuantity: {type: integer, minimum: 1}
+    ContractError:
+      type: object
+      additionalProperties: false
+      required: [code, detail]
+      properties:
+        code: {type: string, enum: [INVALID_POLICY, DUPLICATE_PERFORMANCE_SCOPE, TICKET_SCOPE_MISMATCH, POLICY_TIME_INVALID]}
+        detail: {type: string}
+    ExternalEventId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: Ticket-provider event reference. It is not Spring's internal events.id UUID.
+    TicketIdentifier:
+      type: string
+      minLength: 1
+      maxLength: 128
+    HashToken:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    HashTokenNullable:
+      oneOf:
+        - $ref: '#/components/schemas/HashToken'
+        - type: 'null'

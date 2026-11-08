@@ -58,13 +58,13 @@ GET /api/v1/admin/track1/clusters/detail?eventId=33333333-3333-4333-8333-3333333
     "storedMemberCount": 1
   },
   "members": [
-    {"auditId": 123, "accountId": "account-1", "reservationNo": "reservation-1"}
+    {"auditId": 123}
   ],
   "coverage": "STORED_EVIDENCE_ONLY"
 }
 ```
 
-`analysisRequestId`와 `clusterId`는 문자열이며, 고객사와 내부 공연을 포함한 범위 안에서 함께 군집을 식별한다. 상세 요청에서는 두 값을 쿼리 파라미터로 전달한다.
+`analysisRequestId`와 `clusterId`는 문자열이며, 고객사와 내부 공연을 포함한 범위 안에서 함께 군집을 식별한다. 상세 요청에서는 두 값을 쿼리 파라미터로 전달한다. `members`에는 기존 감사 행 식별자만 포함하며 계정 식별자, 예매참조, HMAC은 반환하지 않는다.
 
 ## 식별자 형식
 

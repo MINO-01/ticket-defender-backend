@@ -69,7 +69,7 @@ public class AdminTrack1ClusterService {
                 first.getRiskScore(), first.getAnalysisAlgorithm(), first.getAnalysisAlgorithmVersion(),
                 first.getAnalysisCompletedAt().atOffset(ZoneOffset.UTC), rows.size());
         List<Track1ClusterDto.Member> members = rows.stream()
-                .map(row -> new Track1ClusterDto.Member(row.getAuditId(), row.getAccountId(), row.getReservationNo()))
+                .map(row -> new Track1ClusterDto.Member(row.getAuditId()))
                 .toList();
         return new Track1ClusterDto.Detail(event, cluster, members, relationship(rows), COVERAGE);
     }

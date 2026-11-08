@@ -22,7 +22,8 @@ public final class Track1ClusterDto {
     ) {
     }
 
-    public record Member(Long auditId, String accountId, String reservationNo) {
+    /** The raw account and reservation references remain in protected evidence and are never returned. */
+    public record Member(Long auditId) {
     }
 
     /** Shared signal values are deliberately not exposed. Counts refer only to persisted cluster members. */

@@ -4,9 +4,11 @@ import com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto;
 import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceReadRepository;
 import com.ticket.defender_core.adapter.out.persistence.StoredClusterAggregate;
 import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
+import com.ticket.defender_core.adapter.out.persistence.VerifiedPerformanceRepository;
 import com.ticket.defender_core.domain.AccessRecordStatus;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.TenantEvent;
+import com.ticket.defender_core.domain.VerifiedPerformance;
 import com.ticket.defender_core.security.AdminAccessService;
 import com.ticket.defender_core.security.AdminActor;
 import com.ticket.defender_core.security.AdminRole;
@@ -37,6 +39,8 @@ public class AdminTrack1ClusterService {
     private final AdminAccessService access;
     private final TenantEventRepository events;
     private final MacroAuditEvidenceReadRepository evidence;
+    private final VerifiedPerformanceRepository performances;
+    private final Track1LedgerSeatLookupService ledgerSeats;
 
     @Transactional(readOnly = true)
     public Track1ClusterDto.Page list(UUID eventId, int page, int pageSize, String sort) {
@@ -52,6 +56,13 @@ public class AdminTrack1ClusterService {
 
     @Transactional(readOnly = true)
     public Track1ClusterDto.Detail detail(UUID eventId, String analysisRequestId, String clusterId) {
+        return detail(eventId, analysisRequestId, clusterId, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public Track1ClusterDto.Detail detail(UUID eventId, String analysisRequestId, String clusterId,
+            UUID performanceId, String sourceVersion) {
+        validateLedgerScope(performanceId, sourceVersion);
         AdminActor actor = access.requireEventAccess(eventId, VIEW_ROLES);
         Track1ClusterDto.Event event = event(actor);
         List<MacroAuditEvidence> rows = evidence.findMembers(actor.tenantId(), eventId, analysisRequestId, clusterId);
@@ -68,10 +79,23 @@ public class AdminTrack1ClusterService {
         Track1ClusterDto.Summary cluster = new Track1ClusterDto.Summary(analysisRequestId, clusterId,
                 first.getRiskScore(), first.getAnalysisAlgorithm(), first.getAnalysisAlgorithmVersion(),
                 first.getAnalysisCompletedAt().atOffset(ZoneOffset.UTC), rows.size());
-        List<Track1ClusterDto.Member> members = rows.stream()
-                .map(row -> new Track1ClusterDto.Member(row.getAuditId()))
-                .toList();
+        List<Track1ClusterDto.Member> members = members(actor, rows, performanceId, sourceVersion);
         return new Track1ClusterDto.Detail(event, cluster, members, relationship(rows), COVERAGE);
+    }
+
+    private List<Track1ClusterDto.Member> members(AdminActor actor, List<MacroAuditEvidence> rows,
+            UUID performanceId, String sourceVersion) {
+        if (performanceId == null && sourceVersion == null)
+            return rows.stream().map(row -> new Track1ClusterDto.Member(row.getAuditId(), null)).toList();
+        VerifiedPerformance performance = performances.findById(performanceId)
+                .filter(found -> actor.tenantId().equals(found.getTenantId()) && actor.eventId().equals(found.getEventId())
+                        && found.getStatus() == VerifiedPerformance.Status.ACTIVE)
+                .orElseThrow(AdminTrack1ClusterService::notFound);
+        Track1LedgerSeatLookupService.Result result = ledgerSeats.lookup(actor.tenantId(), actor.eventId(),
+                performance.getId(), sourceVersion, null, null, rows);
+        return result.seats().stream().map(seat -> new Track1ClusterDto.Member(seat.auditId(),
+                new Track1ClusterDto.LedgerSeat(Track1ClusterDto.LedgerSeatStatus.valueOf(seat.status().name()),
+                        seat.zone(), seat.row(), seat.seat()))).toList();
     }
 
     private Track1ClusterDto.Event event(AdminActor actor) {
@@ -121,5 +145,15 @@ public class AdminTrack1ClusterService {
                 || !Set.of("priority-desc", "priority-asc", "recent").contains(sort)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid pagination or sort");
         }
+    }
+
+    private static void validateLedgerScope(UUID performanceId, String sourceVersion) {
+        if ((performanceId == null) != (sourceVersion == null)
+                || (sourceVersion != null && (sourceVersion.isBlank() || sourceVersion.length() > 128)))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid ledger scope");
+    }
+
+    private static ResponseStatusException notFound() {
+        return new ResponseStatusException(HttpStatus.NOT_FOUND, "Resource not found");
     }
 }

@@ -4,12 +4,10 @@ import com.ticket.defender_core.adapter.in.web.dto.CandidatePipelineDto;
 import com.ticket.defender_core.adapter.in.web.dto.Track1CandidateLinkDto;
 import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceReadRepository;
 import com.ticket.defender_core.adapter.out.persistence.ReservationCandidateRepository;
-import com.ticket.defender_core.adapter.out.persistence.ReservationImportBatchRepository;
 import com.ticket.defender_core.domain.CaseSourceReference;
 import com.ticket.defender_core.domain.ListingCandidateMatchRun;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
 import com.ticket.defender_core.domain.ReservationCandidate;
-import com.ticket.defender_core.domain.ReservationImportBatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -23,8 +21,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class Track1CandidateLinkServiceTest {
-    private static final String KEY = "synthetic-only-master-key-material-that-is-long-enough";
-
     @Test
     void linksOnlyTheCurrentBoundCandidateAndNeverReturnsReferencesOrHmac() {
         Fixture fixture = fixture(true);
@@ -58,7 +54,10 @@ class Track1CandidateLinkServiceTest {
     @Test
     void returnsLedgerUnavailableInsteadOfGuessingWhenHmacKeyMaterialIsUnavailable() {
         Fixture fixture = fixture(true);
-        when(fixture.gate.referenceHasherForRead()).thenReturn(Optional.empty());
+        when(fixture.ledgerSeats.lookup(any(), any(), any(), any(), any(), any(), any())).thenReturn(
+                new Track1LedgerSeatLookupService.Result(false, false, List.of(
+                        new Track1LedgerSeatLookupService.LedgerSeat(17L,
+                                Track1LedgerSeatLookupService.Status.LEDGER_UNAVAILABLE, null, null, null))));
 
         Track1CandidateLinkDto.View result = fixture.service.query(fixture.tenantId, fixture.eventId,
                 List.of(fixture.graph, fixture.source), id -> Optional.of(fixture.run));
@@ -86,16 +85,11 @@ class Track1CandidateLinkServiceTest {
         UUID performanceId = UUID.randomUUID();
         UUID candidateId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
-        TenantPurposeReferenceHasher hasher = new TenantPurposeReferenceHasher(KEY, "v1");
-        String track1Reference = "track1-reservation";
-        String selectedReference = linked ? track1Reference : "other-reservation";
-
         MacroAuditEvidenceReadRepository clusters = mock(MacroAuditEvidenceReadRepository.class);
         ReservationCandidateRepository candidates = mock(ReservationCandidateRepository.class);
-        ReservationImportBatchRepository batches = mock(ReservationImportBatchRepository.class);
-        SyntheticReservationImportGate gate = mock(SyntheticReservationImportGate.class);
+        Track1LedgerSeatLookupService ledgerSeats = mock(Track1LedgerSeatLookupService.class);
         CandidateRunApplicability applicability = mock(CandidateRunApplicability.class);
-        Track1CandidateLinkService service = new Track1CandidateLinkService(clusters, candidates, batches, gate,
+        Track1CandidateLinkService service = new Track1CandidateLinkService(clusters, candidates, ledgerSeats,
                 applicability);
 
         CaseSourceReference graph = mock(CaseSourceReference.class);
@@ -122,37 +116,24 @@ class Track1CandidateLinkServiceTest {
         when(run.getVerifiedPerformanceId()).thenReturn(performanceId);
         when(applicability.assess(run)).thenReturn(CandidatePipelineDto.Applicability.CURRENT);
 
-        ReservationImportBatch batch = mock(ReservationImportBatch.class);
-        when(batch.getId()).thenReturn(batchId);
-        when(batch.getTenantId()).thenReturn(tenantId);
-        when(batch.getEventId()).thenReturn(eventId);
-        when(batch.getPerformanceId()).thenReturn(performanceId);
-        when(batch.getSourceVersion()).thenReturn("ledger-sha256-fixed-v1");
-        when(batch.getReferenceHmacKeyVersion()).thenReturn("v1");
-        when(batch.getStatus()).thenReturn(ReservationImportBatch.Status.ACCEPTED);
-        when(batch.isCompleteSnapshot()).thenReturn(true);
-        when(batches.findById(batchId)).thenReturn(Optional.of(batch));
-        when(gate.referenceHasherForRead()).thenReturn(Optional.of(hasher));
-
         MacroAuditEvidence member = mock(MacroAuditEvidence.class);
         when(member.getAuditId()).thenReturn(17L);
-        when(member.getReservationNo()).thenReturn(track1Reference);
         when(clusters.findMembers(eq(tenantId), eq(eventId), any(), eq("cluster-1"))).thenReturn(List.of(member));
 
         ReservationCandidate selected = mock(ReservationCandidate.class);
         when(selected.getId()).thenReturn(candidateId);
         when(selected.getBatchId()).thenReturn(batchId);
-        when(selected.getReservationRefHmac()).thenReturn(hasher.hash(tenantId, selectedReference));
-        when(selected.getZone()).thenReturn("A");
-        when(selected.getRowNum()).thenReturn("1");
-        when(selected.getSeatNum()).thenReturn("2");
+        when(selected.getReservationRefHmac()).thenReturn("opaque-reference-hmac");
         when(candidates.findById(candidateId)).thenReturn(Optional.of(selected));
-        when(candidates.findByBatchIdAndReservationRefHmacIn(eq(batchId), any())).thenReturn(
-                linked ? List.of(selected) : List.of());
-        return new Fixture(service, gate, tenantId, eventId, graph, source, run);
+        when(ledgerSeats.lookup(eq(tenantId), eq(eventId), eq(performanceId), eq("ledger-sha256-fixed-v1"),
+                eq(batchId), eq("opaque-reference-hmac"), any())).thenReturn(new Track1LedgerSeatLookupService.Result(
+                true, linked, List.of(new Track1LedgerSeatLookupService.LedgerSeat(17L,
+                linked ? Track1LedgerSeatLookupService.Status.FOUND : Track1LedgerSeatLookupService.Status.NOT_IN_LEDGER,
+                linked ? "A" : null, linked ? "1" : null, linked ? "2" : null))));
+        return new Fixture(service, ledgerSeats, tenantId, eventId, graph, source, run);
     }
 
-    private record Fixture(Track1CandidateLinkService service, SyntheticReservationImportGate gate, UUID tenantId,
+    private record Fixture(Track1CandidateLinkService service, Track1LedgerSeatLookupService ledgerSeats, UUID tenantId,
                            UUID eventId, CaseSourceReference graph, CaseSourceReference source,
                            ListingCandidateMatchRun run) { }
 }

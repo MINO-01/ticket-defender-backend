@@ -181,6 +181,7 @@ class AdminFanReportReadMySqlTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.event.id").value(eventA.toString()))
+                .andExpect(jsonPath("$.receiptNumber").value(receiptNumber(reportId)))
                 .andExpect(jsonPath("$.evidence.length()").value(2))
                 .andExpect(jsonPath("$.evidence[0].evidenceId").value(stored.toString()))
                 .andExpect(jsonPath("$.evidence[0].originalStored").value(true))
@@ -189,8 +190,7 @@ class AdminFanReportReadMySqlTest {
                 .andExpect(jsonPath("$.evidence[1].sha256").doesNotExist())
                 .andExpect(content().string(not(containsString(foreignAsset.toString()))))
                 .andExpect(content().string(not(containsString("fan-reports/"))))
-                .andExpect(content().string(not(containsString("mysql-object-version"))))
-                .andExpect(content().string(not(containsString("FR-MY-"))));
+                .andExpect(content().string(not(containsString("mysql-object-version"))));
         mvc.perform(get("/api/v1/admin/fan-reports/{id}", foreignReport)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst))
                 .andExpect(status().isNotFound());
@@ -229,7 +229,7 @@ class AdminFanReportReadMySqlTest {
 
     private UUID report(UUID tenant, UUID event, LocalDateTime receivedAt, boolean received) {
         UUID id = UUID.randomUUID();
-        String receipt = "FR-MY-" + id.toString().substring(0, 8) + id.toString().substring(24);
+        String receipt = receiptNumber(id);
         FanReport report = new FanReport(id, receipt, tenant, event, receivedAt.plusDays(10), "합성 구역",
                 FanReport.ReportType.PREMIUM_RESALE, "MySQL 합성 제보", null, null, null,
                 new BigDecimal("120000.00"), receivedAt, UUID.randomUUID().toString(), "d".repeat(64),
@@ -237,6 +237,10 @@ class AdminFanReportReadMySqlTest {
         if (received) report.markReceived();
         reports.saveAndFlush(report);
         return id;
+    }
+
+    private static String receiptNumber(UUID reportId) {
+        return "FR-MY-" + reportId.toString().substring(0, 8) + reportId.toString().substring(24);
     }
 
     private UUID asset(UUID reportId, LocalDateTime createdAt, EvidenceAsset.StorageStatus status) {

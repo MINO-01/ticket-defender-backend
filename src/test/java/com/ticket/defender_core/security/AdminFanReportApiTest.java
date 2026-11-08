@@ -256,6 +256,17 @@ class AdminFanReportApiTest {
     }
 
     @Test
+    void analysisRunPagingValidationUsesExistingInvalidRequestContract() throws Exception {
+        for (MockHttpServletRequestBuilder request : List.of(
+                get("/api/v1/admin/analysis-runs").param("eventId", EVENT_A.toString()).param("pageSize", "0"),
+                get("/api/v1/admin/analysis-runs").param("eventId", EVENT_A.toString()).param("page", "-1"))) {
+            mvc.perform(request.header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        }
+    }
+
+    @Test
     void tenantAdminReadsSafeOperationStateAndAnalystIsDenied() throws Exception {
         mvc.perform(get("/api/v1/admin/operations/settings").param("eventId", EVENT_A.toString())
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-only-a")))
@@ -380,6 +391,29 @@ class AdminFanReportApiTest {
         // 단일 고객사 관리자는 기존처럼 조회합니다.
         mvc.perform(list(EVENT_A).header(HttpHeaders.AUTHORIZATION, bearer("reviewer-a")))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void multiTenantAdminIsBlockedOnNewAdminQueriesWithoutLeakingScope() throws Exception {
+        UUID extraTenant = UUID.randomUUID();
+        tenants.save(new Tenant(extraTenant, "추가 합성 고객사", AccessRecordStatus.ACTIVE));
+        memberships.save(new AdminMembershipEntity(UUID.randomUUID(), extraTenant, "analyst-a",
+                AccessRecordStatus.ACTIVE));
+        memberships.save(new AdminMembershipEntity(UUID.randomUUID(), extraTenant, "admin-only-a",
+                AccessRecordStatus.ACTIVE));
+
+        mvc.perform(get("/api/v1/admin/analysis-runs").param("eventId", EVENT_A.toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("analyst-a")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                .andExpect(content().string(not(containsString(EVENT_A.toString()))))
+                .andExpect(content().string(not(containsString(TENANT_A.toString()))));
+        mvc.perform(get("/api/v1/admin/operations/settings").param("eventId", EVENT_A.toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin-only-a")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
+                .andExpect(content().string(not(containsString(EVENT_A.toString()))))
+                .andExpect(content().string(not(containsString(TENANT_A.toString()))));
     }
 
     private void member(UUID tenant, UUID event, String subject, AdminRole role) {

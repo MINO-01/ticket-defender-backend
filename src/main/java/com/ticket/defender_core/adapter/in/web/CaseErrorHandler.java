@@ -28,7 +28,8 @@ import java.util.UUID;
 @RestControllerAdvice(assignableTypes = {CaseController.class, CasePreparationController.class,
         ReportDraftController.class, EvidenceIntegrityController.class, ApprovalRequestController.class,
         OfficialPdfIssuanceController.class, ListingContextAnalysisController.class,
-        AdminFanReportController.class, AdminEventController.class, VerifiedPerformanceController.class,
+        AdminFanReportController.class, AdminAnalysisRunController.class, AdminEventController.class,
+        VerifiedPerformanceController.class,
         PerformanceLinkController.class, ReservationImportController.class, ListingCandidateMatchController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)

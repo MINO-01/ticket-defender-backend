@@ -1,0 +1,18 @@
+package com.ticket.defender_core.application.service;
+
+import com.ticket.defender_core.adapter.in.web.dto.PurchaseLimitPolicyDto;
+import com.ticket.defender_core.adapter.out.persistence.*;
+import com.ticket.defender_core.domain.*;
+import org.junit.jupiter.api.*;
+import java.time.LocalDateTime; import java.util.*;
+import static org.assertj.core.api.Assertions.*; import static org.mockito.ArgumentMatchers.*; import static org.mockito.Mockito.*;
+
+class PurchaseLimitPolicyServiceTest {
+ private final UUID tenant=UUID.randomUUID(), event=UUID.randomUUID(), member=UUID.randomUUID(), performanceId=UUID.randomUUID();
+ private CandidatePipelineAccess access; private VerifiedPerformanceRepository performances; private PurchaseLimitPolicyRepository policies; private PurchaseLimitPolicyAuditRepository audits; private PurchaseLimitPolicyService service;
+ @BeforeEach void setup(){ access=mock(CandidatePipelineAccess.class); performances=mock(VerifiedPerformanceRepository.class); policies=mock(PurchaseLimitPolicyRepository.class); audits=mock(PurchaseLimitPolicyAuditRepository.class); service=new PurchaseLimitPolicyService(access,performances,policies,audits); when(access.event(eq(event),any())).thenReturn(new CandidatePipelineAccess.Scope(tenant,event,member,null)); VerifiedPerformance p=new VerifiedPerformance(performanceId,tenant,event,"round-1","verified","source-v1",member,LocalDateTime.now()); when(performances.lockByIdAndScope(performanceId,tenant,event)).thenReturn(Optional.of(p)); when(policies.findByTenantIdAndEventIdAndPerformanceId(tenant,event,performanceId)).thenReturn(Optional.empty()); when(policies.saveAndFlush(any())).thenAnswer(i->i.getArgument(0)); }
+ @Test void createPersistsNoDefaultLimitAndImmutableAudit(){ var result=service.create(event,input(2,"customer-v1")); assertThat(result.maxTicketsPerAccount()).isEqualTo(2); assertThat(result.policyVersion()).isEqualTo("customer-v1"); verify(audits).saveAndFlush(argThat(a->a.getAction()==PurchaseLimitPolicyAudit.Action.CREATED)); }
+ @Test void rejectsZeroLimitBeforeWriting(){ assertThatThrownBy(()->service.create(event,input(0,"customer-v1"))).isInstanceOf(CaseApiException.class); verifyNoInteractions(performances,policies,audits); }
+ @Test void rejectsDuplicatePerformanceScope(){ when(policies.findByTenantIdAndEventIdAndPerformanceId(tenant,event,performanceId)).thenReturn(Optional.of(mock(PurchaseLimitPolicy.class))); assertThatThrownBy(()->service.create(event,input(4,"customer-v2"))).isInstanceOfSatisfying(CaseApiException.class,e->assertThat(e.code()).isEqualTo("PURCHASE_LIMIT_POLICY_CONFLICT")); verify(audits,never()).saveAndFlush(any()); }
+ private PurchaseLimitPolicyDto.Create input(int max,String version){return new PurchaseLimitPolicyDto.Create(performanceId,max,version,LocalDateTime.of(2026,1,1,0,0),null,"customer-policy","approved basis");}
+}

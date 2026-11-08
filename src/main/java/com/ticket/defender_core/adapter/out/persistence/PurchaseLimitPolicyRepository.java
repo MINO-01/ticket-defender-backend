@@ -3,5 +3,6 @@ import com.ticket.defender_core.domain.PurchaseLimitPolicy; import jakarta.persi
 public interface PurchaseLimitPolicyRepository extends JpaRepository<PurchaseLimitPolicy, UUID> {
     List<PurchaseLimitPolicy> findByTenantIdAndEventIdOrderByPerformanceIdAsc(UUID tenantId, UUID eventId);
     @Lock(LockModeType.PESSIMISTIC_WRITE) @Query("select p from PurchaseLimitPolicy p where p.id=:id and p.tenantId=:tenantId and p.eventId=:eventId") Optional<PurchaseLimitPolicy> lockByIdAndScope(@Param("id") UUID id,@Param("tenantId") UUID tenantId,@Param("eventId") UUID eventId);
-    Optional<PurchaseLimitPolicy> findByTenantIdAndEventIdAndPerformanceId(UUID tenantId, UUID eventId, UUID performanceId);
+    Optional<PurchaseLimitPolicy> findByTenantIdAndEventIdAndActivePerformanceId(UUID tenantId, UUID eventId, UUID performanceId);
+    boolean existsByTenantIdAndEventIdAndPerformanceIdAndPolicyVersion(UUID tenantId, UUID eventId, UUID performanceId, String policyVersion);
 }

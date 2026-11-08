@@ -13,7 +13,8 @@ import java.util.UUID;
 /** Current, server-verified per-performance purchase limit. Its revisions are append-only in PurchaseLimitPolicyAudit. */
 @Entity @Getter @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Table(name = "purchase_limit_policies", uniqueConstraints = {
-        @UniqueConstraint(name = "uk_purchase_limit_policy_scope", columnNames = {"tenant_id", "event_id", "performance_id"})
+        @UniqueConstraint(name = "uk_purchase_limit_policy_active_scope", columnNames = {"tenant_id", "event_id", "active_performance_id"}),
+        @UniqueConstraint(name = "uk_purchase_limit_policy_version_scope", columnNames = {"tenant_id", "event_id", "performance_id", "policy_version"})
 }, indexes = @Index(name = "idx_purchase_limit_policy_scope_status", columnList = "tenant_id,event_id,status"))
 public class PurchaseLimitPolicy {
     public enum Status { ACTIVE, WITHDRAWN }
@@ -21,6 +22,7 @@ public class PurchaseLimitPolicy {
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "tenant_id", nullable = false, length = 36) private UUID tenantId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "event_id", nullable = false, length = 36) private UUID eventId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "performance_id", nullable = false, length = 36) private UUID performanceId;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "active_performance_id", length = 36) private UUID activePerformanceId;
     @Column(name = "max_tickets_per_account", nullable = false) private int maxTicketsPerAccount;
     @Column(name = "policy_version", nullable = false, length = 128) private String policyVersion;
     @Column(name = "effective_from", nullable = false) private LocalDateTime effectiveFrom;
@@ -36,7 +38,7 @@ public class PurchaseLimitPolicy {
     public PurchaseLimitPolicy(UUID id, UUID tenantId, UUID eventId, UUID performanceId, int maximum, String version,
             LocalDateTime from, LocalDateTime until, String source, String basis, UUID actor, LocalDateTime now) {
         this.id=Objects.requireNonNull(id); this.tenantId=Objects.requireNonNull(tenantId); this.eventId=Objects.requireNonNull(eventId);
-        this.performanceId=Objects.requireNonNull(performanceId); apply(maximum, version, from, until, source, basis);
+        this.performanceId=Objects.requireNonNull(performanceId); this.activePerformanceId=performanceId; apply(maximum, version, from, until, source, basis);
         this.changedByMembershipId=Objects.requireNonNull(actor); this.changedAt=Objects.requireNonNull(now); this.status=Status.ACTIVE; this.revision=1;
     }
     public void revise(int maximum, String version, LocalDateTime from, LocalDateTime until, String source, String basis, UUID actor, LocalDateTime now) {
@@ -46,7 +48,7 @@ public class PurchaseLimitPolicy {
     }
     public void withdraw(UUID actor, LocalDateTime now) {
         if (status != Status.ACTIVE) throw new IllegalStateException("Policy is not active");
-        status=Status.WITHDRAWN; changedByMembershipId=Objects.requireNonNull(actor); changedAt=Objects.requireNonNull(now); revision++;
+        status=Status.WITHDRAWN; activePerformanceId=null; changedByMembershipId=Objects.requireNonNull(actor); changedAt=Objects.requireNonNull(now); revision++;
     }
     private void apply(int maximum, String version, LocalDateTime from, LocalDateTime until, String source, String basis) {
         if (maximum < 1 || (until != null && !until.isAfter(from))) throw new IllegalArgumentException("Invalid policy range");

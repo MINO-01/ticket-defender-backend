@@ -17,7 +17,8 @@ public class PurchaseLimitPolicyService {
         CandidatePipelineAccess.Scope scope=access.event(eventId, MANAGE_ROLES); require(input);
         VerifiedPerformance performance=performances.lockByIdAndScope(input.performanceId(),scope.tenantId(),eventId).orElseThrow(PurchaseLimitPolicyService::notFound);
         if (performance.getStatus()!=VerifiedPerformance.Status.ACTIVE) throw conflict("PERFORMANCE_WITHDRAWN");
-        if (policies.findByTenantIdAndEventIdAndPerformanceId(scope.tenantId(),eventId,input.performanceId()).isPresent()) throw conflict("PURCHASE_LIMIT_POLICY_CONFLICT");
+        if (policies.findByTenantIdAndEventIdAndActivePerformanceId(scope.tenantId(),eventId,input.performanceId()).isPresent()) throw conflict("PURCHASE_LIMIT_POLICY_CONFLICT");
+        if (policies.existsByTenantIdAndEventIdAndPerformanceIdAndPolicyVersion(scope.tenantId(),eventId,input.performanceId(),input.policyVersion())) throw conflict("PURCHASE_LIMIT_POLICY_VERSION_REUSE");
         LocalDateTime now=now(); PurchaseLimitPolicy policy;
         try { policy=policies.saveAndFlush(new PurchaseLimitPolicy(UUID.randomUUID(),scope.tenantId(),eventId,input.performanceId(),input.maxTicketsPerAccount(),input.policyVersion(),input.effectiveFrom(),input.effectiveUntil(),input.policySource(),input.verificationBasis(),scope.membershipId(),now)); }
         catch (DataIntegrityViolationException e) { throw conflict("PURCHASE_LIMIT_POLICY_CONFLICT"); }

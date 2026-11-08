@@ -136,7 +136,7 @@ paths:
                     requestId: 2136558c-2326-4430-a46d-0793494e9b49
                     status: COMPLETED
                     algorithm: LOUVAIN
-                    algorithmVersion: gds-2.6.6;projection-v2;score-v2
+                    algorithmVersion: gds-2.6.6;projection-v2-account;score-v2-exp1
                     analyzedAt: '2026-11-08T10:00:01Z'
                     clusters: []
                     purchaseLimitEvaluations:
@@ -152,7 +152,7 @@ paths:
                     requestId: 4136558c-2326-4430-a46d-0793494e9b49
                     status: COMPLETED
                     algorithm: LOUVAIN
-                    algorithmVersion: gds-2.6.6;projection-v2;score-v2
+                    algorithmVersion: gds-2.6.6;projection-v2-account;score-v2-exp1
                     analyzedAt: '2026-11-08T10:00:01Z'
                     clusters: []
                     purchaseLimitEvaluations:
@@ -175,7 +175,7 @@ paths:
                     requestId: 5136558c-2326-4430-a46d-0793494e9b49
                     status: COMPLETED
                     algorithm: LOUVAIN
-                    algorithmVersion: gds-2.6.6;projection-v2;score-v2
+                    algorithmVersion: gds-2.6.6;projection-v2-account;score-v2-exp1
                     analyzedAt: '2026-11-08T10:00:01Z'
                     clusters: []
                     purchaseLimitEvaluations:
@@ -263,7 +263,7 @@ components:
         quantityDataStatus:
           type: string
           enum: [COMPLETE, INCOMPLETE, UNKNOWN]
-          description: COMPLETE only means the entire relevant performance snapshot has authoritative, net effective quantities.
+          description: COMPLETE only means the entire relevant performance snapshot has authoritative, net effective quantities; it requires non-null quantitySourceVersion and quantityAsOf.
         quantitySourceVersion:
           type: [string, 'null']
           maxLength: 128
@@ -305,7 +305,7 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-          description: Immutable version selected by Spring for this analysis.
+          description: Immutable version selected by Spring for this analysis. effectiveFrom is inclusive and effectiveUntil is exclusive, after conversion to UTC instants.
         effectiveFrom:
           type: string
           format: date-time

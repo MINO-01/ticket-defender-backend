@@ -1,6 +1,7 @@
 package com.ticket.defender_core.application.service;
 
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
+import com.ticket.defender_core.adapter.in.web.dto.Track1CandidateLinkDto;
 import com.ticket.defender_core.adapter.out.persistence.CaseActivityRepository;
 import com.ticket.defender_core.adapter.out.persistence.CaseIdempotencyRepository;
 import com.ticket.defender_core.adapter.out.persistence.CaseRepository;
@@ -50,6 +51,7 @@ public class CaseService {
     private final CaseSourceReferenceRepository sources;
     private final ListingCandidateMatchRunRepository candidateRuns;
     private final CandidateRunApplicability candidateApplicability;
+    private final Track1CandidateLinkService track1CandidateLinks;
     private final CaseActivityRepository activities;
     private final CaseIdempotencyRepository idempotency;
     private final ObjectMapper json;
@@ -149,6 +151,13 @@ public class CaseService {
                         == com.ticket.defender_core.domain.CaseSourceReference.Type.LISTING_CANDIDATE_MATCH
                         ? candidateRuns.findById(source.getListingCandidateMatchRunId())
                         .map(candidateApplicability::assess).map(Enum::name).orElse("NOT_APPLICABLE") : null)).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public Track1CandidateLinkDto.View track1CandidateLinks(UUID caseId) {
+        Case target = authorizedForView(caseId);
+        return track1CandidateLinks.query(target.getTenantId(), target.getEventId(),
+                sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId), candidateRuns::findById);
     }
 
     @Transactional(readOnly = true)

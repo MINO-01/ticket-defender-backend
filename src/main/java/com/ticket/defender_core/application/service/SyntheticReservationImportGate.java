@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -75,6 +76,18 @@ public class SyntheticReservationImportGate {
             return new TenantPurposeReferenceHasher(hmacMasterKey, hmacKeyVersion);
         } catch (IllegalArgumentException invalid) {
             throw conflict(ISOLATION_UNVERIFIED);
+        }
+    }
+
+    /**
+     * Read-only correlation may remain available after the one-time synthetic import switch is disabled.
+     * It never enables import, and deliberately returns no hasher when the configured key material is unusable.
+     */
+    public Optional<TenantPurposeReferenceHasher> referenceHasherForRead() {
+        try {
+            return Optional.of(new TenantPurposeReferenceHasher(hmacMasterKey, hmacKeyVersion));
+        } catch (IllegalArgumentException invalid) {
+            return Optional.empty();
         }
     }
 

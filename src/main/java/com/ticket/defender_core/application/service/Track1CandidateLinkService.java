@@ -2,11 +2,9 @@ package com.ticket.defender_core.application.service;
 
 import com.ticket.defender_core.adapter.in.web.dto.Track1CandidateLinkDto;
 import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceReadRepository;
-import com.ticket.defender_core.adapter.out.persistence.ReservationCandidateRepository;
 import com.ticket.defender_core.domain.CaseSourceReference;
 import com.ticket.defender_core.domain.ListingCandidateMatchRun;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
-import com.ticket.defender_core.domain.ReservationCandidate;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -23,7 +21,6 @@ import java.util.function.Function;
 @RequiredArgsConstructor
 public class Track1CandidateLinkService {
     private final MacroAuditEvidenceReadRepository clusters;
-    private final ReservationCandidateRepository candidates;
     private final Track1LedgerSeatLookupService ledgerSeats;
     private final CandidateRunApplicability applicability;
 
@@ -57,12 +54,9 @@ public class Track1CandidateLinkService {
                     graph.getAnalysisRequestId(), graph.getClusterId());
             if (members.isEmpty()) return item(graph, candidate, runId,
                     Track1CandidateLinkDto.Status.NOT_APPLICABLE, List.of());
-            String candidateReference = candidates.findById(run.getCandidateId())
-                    .filter(found -> run.getReservationBatchId().equals(found.getBatchId()))
-                    .map(ReservationCandidate::getReservationRefHmac).orElse("");
             Track1LedgerSeatLookupService.Result lookup = ledgerSeats.lookup(tenantId, eventId,
                     run.getVerifiedPerformanceId(), run.getReservationSourceVersion(), run.getReservationBatchId(),
-                    candidateReference, members);
+                    run.getCandidateId(), members);
             List<Track1CandidateLinkDto.LedgerSeat> seats = lookup.seats().stream().map(seat ->
                     new Track1CandidateLinkDto.LedgerSeat(seat.auditId(),
                             Track1CandidateLinkDto.LedgerSeatStatus.valueOf(seat.status().name()),

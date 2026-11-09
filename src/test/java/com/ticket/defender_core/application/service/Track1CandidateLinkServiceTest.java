@@ -3,11 +3,9 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.in.web.dto.CandidatePipelineDto;
 import com.ticket.defender_core.adapter.in.web.dto.Track1CandidateLinkDto;
 import com.ticket.defender_core.adapter.out.persistence.MacroAuditEvidenceReadRepository;
-import com.ticket.defender_core.adapter.out.persistence.ReservationCandidateRepository;
 import com.ticket.defender_core.domain.CaseSourceReference;
 import com.ticket.defender_core.domain.ListingCandidateMatchRun;
 import com.ticket.defender_core.domain.MacroAuditEvidence;
-import com.ticket.defender_core.domain.ReservationCandidate;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -86,11 +84,9 @@ class Track1CandidateLinkServiceTest {
         UUID candidateId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
         MacroAuditEvidenceReadRepository clusters = mock(MacroAuditEvidenceReadRepository.class);
-        ReservationCandidateRepository candidates = mock(ReservationCandidateRepository.class);
         Track1LedgerSeatLookupService ledgerSeats = mock(Track1LedgerSeatLookupService.class);
         CandidateRunApplicability applicability = mock(CandidateRunApplicability.class);
-        Track1CandidateLinkService service = new Track1CandidateLinkService(clusters, candidates, ledgerSeats,
-                applicability);
+        Track1CandidateLinkService service = new Track1CandidateLinkService(clusters, ledgerSeats, applicability);
 
         CaseSourceReference graph = mock(CaseSourceReference.class);
         when(graph.getId()).thenReturn(UUID.randomUUID());
@@ -120,13 +116,8 @@ class Track1CandidateLinkServiceTest {
         when(member.getAuditId()).thenReturn(17L);
         when(clusters.findMembers(eq(tenantId), eq(eventId), any(), eq("cluster-1"))).thenReturn(List.of(member));
 
-        ReservationCandidate selected = mock(ReservationCandidate.class);
-        when(selected.getId()).thenReturn(candidateId);
-        when(selected.getBatchId()).thenReturn(batchId);
-        when(selected.getReservationRefHmac()).thenReturn("opaque-reference-hmac");
-        when(candidates.findById(candidateId)).thenReturn(Optional.of(selected));
         when(ledgerSeats.lookup(eq(tenantId), eq(eventId), eq(performanceId), eq("ledger-sha256-fixed-v1"),
-                eq(batchId), eq("opaque-reference-hmac"), any())).thenReturn(new Track1LedgerSeatLookupService.Result(
+                eq(batchId), eq(candidateId), any())).thenReturn(new Track1LedgerSeatLookupService.Result(
                 true, linked, List.of(new Track1LedgerSeatLookupService.LedgerSeat(17L,
                 linked ? Track1LedgerSeatLookupService.Status.FOUND : Track1LedgerSeatLookupService.Status.NOT_IN_LEDGER,
                 linked ? "A" : null, linked ? "1" : null, linked ? "2" : null))));

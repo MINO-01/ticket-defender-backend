@@ -62,6 +62,69 @@ class Track1LedgerSeatLookupServiceTest {
                 .containsExactly(Track1LedgerSeatLookupService.Status.LEDGER_UNAVAILABLE);
     }
 
+    @Test
+    void returnsLedgerUnavailableWhenTheBoundCandidateRowIsMissing() {
+        Fixture fixture = fixture(true);
+        UUID candidateId = UUID.randomUUID();
+        when(fixture.candidates.findById(candidateId)).thenReturn(Optional.empty());
+
+        assertUnavailable(lookupTarget(fixture, candidateId));
+    }
+
+    @Test
+    void returnsLedgerUnavailableWhenTheBoundCandidateBelongsToAnotherBatch() {
+        Fixture fixture = fixture(true);
+        UUID candidateId = target(fixture, UUID.randomUUID(), "any-reference");
+
+        assertUnavailable(lookupTarget(fixture, candidateId));
+    }
+
+    @Test
+    void reportsAResolvedCandidateWithADifferentReferenceAsARealMissEvenWhenMembersHaveSeats() {
+        Fixture fixture = fixture(true);
+        UUID candidateId = target(fixture, fixture.batchId, "different-reference");
+
+        Track1LedgerSeatLookupService.Result result = lookupTarget(fixture, candidateId);
+
+        assertThat(result.ledgerAvailable()).isTrue();
+        assertThat(result.targetReferenceFound()).isFalse();
+        assertThat(result.seats()).extracting(Track1LedgerSeatLookupService.LedgerSeat::status)
+                .containsExactly(Track1LedgerSeatLookupService.Status.FOUND);
+    }
+
+    @Test
+    void reportsTargetFoundOnlyForAnExactMemberReferenceMatch() {
+        Fixture fixture = fixture(true);
+        UUID candidateId = target(fixture, fixture.batchId,
+                new TenantPurposeReferenceHasher(KEY, "v1").hash(fixture.tenantId, "track1-reservation"));
+
+        Track1LedgerSeatLookupService.Result result = lookupTarget(fixture, candidateId);
+
+        assertThat(result.ledgerAvailable()).isTrue();
+        assertThat(result.targetReferenceFound()).isTrue();
+    }
+
+    private static UUID target(Fixture fixture, UUID batchId, String reference) {
+        UUID candidateId = UUID.randomUUID();
+        ReservationCandidate target = mock(ReservationCandidate.class);
+        when(target.getBatchId()).thenReturn(batchId);
+        when(target.getReservationRefHmac()).thenReturn(reference);
+        when(fixture.candidates.findById(candidateId)).thenReturn(Optional.of(target));
+        return candidateId;
+    }
+
+    private static Track1LedgerSeatLookupService.Result lookupTarget(Fixture fixture, UUID candidateId) {
+        return fixture.service.lookup(fixture.tenantId, fixture.eventId, fixture.performanceId,
+                fixture.sourceVersion, fixture.batchId, candidateId, List.of(fixture.member));
+    }
+
+    private static void assertUnavailable(Track1LedgerSeatLookupService.Result result) {
+        assertThat(result.ledgerAvailable()).isFalse();
+        assertThat(result.targetReferenceFound()).isFalse();
+        assertThat(result.seats()).extracting(Track1LedgerSeatLookupService.LedgerSeat::status)
+                .containsExactly(Track1LedgerSeatLookupService.Status.LEDGER_UNAVAILABLE);
+    }
+
     private static Fixture fixture(boolean found) {
         UUID tenantId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
@@ -73,7 +136,8 @@ class Track1LedgerSeatLookupServiceTest {
         ReservationImportBatchRepository batches = mock(ReservationImportBatchRepository.class);
         ReservationDataSourceRepository sources = mock(ReservationDataSourceRepository.class);
         SyntheticReservationImportGate gate = mock(SyntheticReservationImportGate.class);
-        Track1LedgerSeatLookupService service = new Track1LedgerSeatLookupService(candidates, batches, sources, gate);
+        Track1LedgerSeatLookupService service = new Track1LedgerSeatLookupService(
+                new Track1LedgerSnapshotReader(candidates, batches, sources), gate);
 
         MacroAuditEvidence member = mock(MacroAuditEvidence.class);
         when(member.getAuditId()).thenReturn(17L);
@@ -105,9 +169,10 @@ class Track1LedgerSeatLookupServiceTest {
         } else {
             when(candidates.findByBatchIdAndReservationRefHmacIn(eq(batchId), any())).thenReturn(List.of());
         }
-        return new Fixture(service, tenantId, eventId, performanceId, sourceVersion, member);
+        return new Fixture(service, candidates, tenantId, eventId, performanceId, batchId, sourceVersion, member);
     }
 
-    private record Fixture(Track1LedgerSeatLookupService service, UUID tenantId, UUID eventId, UUID performanceId,
+    private record Fixture(Track1LedgerSeatLookupService service, ReservationCandidateRepository candidates,
+                           UUID tenantId, UUID eventId, UUID performanceId, UUID batchId,
                            String sourceVersion, MacroAuditEvidence member) { }
 }

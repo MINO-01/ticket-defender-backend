@@ -33,7 +33,7 @@ Backend는 기존 `TenantPurposeReferenceHasher`로 구성원 예매참조를 te
 
 ## Case 수렴 API와의 차이
 
-`GET /api/v1/cases/{caseId}/track1-candidate-links`는 이미 생성된 Case의 `graphClusters`와 `candidateRunIds`를 함께 읽는다. Track 2 `MATCH_CANDIDATE` 실행의 고정 batch/sourceVersion/회차와 비교해 `LINKED`, `NO_TRACK1_LINK`, `NOT_APPLICABLE`, `LEDGER_UNAVAILABLE`를 반환한다.
+`GET /api/v1/cases/{caseId}/track1-candidate-links`는 이미 생성된 Case의 `graphClusters`와 `candidateRunIds`를 함께 읽는다. Track 2 `MATCH_CANDIDATE` 실행의 고정 batch/sourceVersion/회차와 비교해 `LINKED`, `NO_TRACK1_LINK`, `NOT_APPLICABLE`, `LEDGER_UNAVAILABLE`를 반환한다. `NO_TRACK1_LINK`는 고정 후보를 실제로 확인해 구성원과 비교한 결과에만 사용하며, 후보 레코드가 없거나 후보의 batch가 실행 이력과 다르면 `LEDGER_UNAVAILABLE`이다.
 
 반면 군집 상세의 `ledgerSeat`은 Case 생성 전 조사 화면에서 구성원별 원장 좌석 존재만 보여 준다. Track 2 후보 실행이나 Case를 생성·변경하지 않으며 `LINKED` 판정을 만들지 않는다.
 

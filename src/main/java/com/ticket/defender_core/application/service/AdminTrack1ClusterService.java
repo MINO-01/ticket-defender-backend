@@ -138,14 +138,14 @@ public class AdminTrack1ClusterService {
                 .map(MacroAuditEvidence::getAccountId).distinct().toList(), "account");
         List<Track1ClusterDto.GraphNode> nodes = new ArrayList<>();
         accountNodes.forEach((account, id) -> nodes.add(new Track1ClusterDto.GraphNode(
-                id, "계정 " + ordinal(id), Track1ClusterDto.GraphNodeKind.ACCOUNT)));
+                id, "계정 " + ordinal(id), Track1ClusterDto.GraphNodeKind.ACCOUNT, null)));
         List<Track1ClusterDto.GraphEdge> edges = new ArrayList<>();
 
         int reservationOrdinal = 0;
         for (MacroAuditEvidence row : orderedRows) {
             String reservationId = "reservation-" + (++reservationOrdinal);
             nodes.add(new Track1ClusterDto.GraphNode(reservationId, "예매 " + reservationOrdinal,
-                    Track1ClusterDto.GraphNodeKind.RESERVATION));
+                    Track1ClusterDto.GraphNodeKind.RESERVATION, null));
             edges.add(new Track1ClusterDto.GraphEdge("edge-reservation-" + reservationOrdinal,
                     accountNodes.get(row.getAccountId()), reservationId, Track1ClusterDto.GraphEdgeKind.RESERVATION));
         }
@@ -156,7 +156,7 @@ public class AdminTrack1ClusterService {
             String signalId = "signal-" + (++signalOrdinal);
             nodes.add(new Track1ClusterDto.GraphNode(signalId,
                     (signal.type() == StoredSignalType.DEVICE ? "공유 기기 " : "공유 IP ") + signalOrdinal,
-                    Track1ClusterDto.GraphNodeKind.SIGNAL));
+                    Track1ClusterDto.GraphNodeKind.SIGNAL, signalType(signal.type())));
             for (String accountId : signal.accountIds()) {
                 edges.add(new Track1ClusterDto.GraphEdge("edge-signal-" + signalOrdinal + "-" + ordinal(accountNodes.get(accountId)),
                         accountNodes.get(accountId), signalId, Track1ClusterDto.GraphEdgeKind.SHARED_SIGNAL));
@@ -201,6 +201,13 @@ public class AdminTrack1ClusterService {
         if (token != null && !token.isBlank()) {
             owners.computeIfAbsent(new SignalKey(type, token), ignored -> new java.util.TreeSet<>()).add(accountId);
         }
+    }
+
+    private static Track1ClusterDto.GraphSignalType signalType(StoredSignalType type) {
+        return switch (type) {
+            case DEVICE -> Track1ClusterDto.GraphSignalType.DEVICE_ID_HASH;
+            case IP -> Track1ClusterDto.GraphSignalType.IP_HASH;
+        };
     }
 
     private enum StoredSignalType { DEVICE, IP }

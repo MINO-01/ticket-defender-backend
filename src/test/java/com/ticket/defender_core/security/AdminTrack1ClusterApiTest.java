@@ -175,14 +175,16 @@ class AdminTrack1ClusterApiTest {
     void authorizedAdminReadsDisplaySafeGraphReconstructedFromStoredEvidence() throws Exception {
         String hiddenAccountOne = "raw-account-alpha";
         String hiddenAccountTwo = "raw-account-beta";
+        String hiddenAccountThree = "raw-account-gamma";
         String hiddenReservationOne = "raw-reservation-alpha";
         String hiddenDeviceToken = "d".repeat(64);
+        String hiddenIpToken = "e".repeat(64);
         saveEvidence(TENANT_A, EVENT_A, hiddenAccountOne, hiddenReservationOne, RUN_1, "graph-cluster", 0.82,
-                "2026-10-08T10:15:30", hiddenDeviceToken, null);
-        saveEvidence(TENANT_A, EVENT_A, hiddenAccountOne, "raw-reservation-alpha-2", RUN_1, "graph-cluster", 0.82,
-                "2026-10-08T10:15:30", hiddenDeviceToken, null);
+                "2026-10-08T10:15:30", hiddenDeviceToken, hiddenIpToken);
         saveEvidence(TENANT_A, EVENT_A, hiddenAccountTwo, "raw-reservation-beta", RUN_1, "graph-cluster", 0.82,
-                "2026-10-08T10:15:30", hiddenDeviceToken, "e".repeat(64));
+                "2026-10-08T10:15:30", hiddenDeviceToken, "g".repeat(64));
+        saveEvidence(TENANT_A, EVENT_A, hiddenAccountThree, "raw-reservation-gamma", RUN_1, "graph-cluster", 0.82,
+                "2026-10-08T10:15:30", "f".repeat(64), hiddenIpToken);
 
         mvc.perform(graph(EVENT_A, RUN_1, "graph-cluster").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
@@ -190,21 +192,30 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(jsonPath("$.clusterId").value("graph-cluster"))
                 .andExpect(jsonPath("$.algorithmVersion").value("1.0.0"))
                 .andExpect(jsonPath("$.coverage").value("STORED_EVIDENCE_RECONSTRUCTION"))
-                .andExpect(jsonPath("$.nodes.length()").value(6))
+                .andExpect(jsonPath("$.nodes.length()").value(8))
                 .andExpect(jsonPath("$.nodes[0].id").value("account-1"))
                 .andExpect(jsonPath("$.nodes[0].label").value("계정 1"))
                 .andExpect(jsonPath("$.nodes[0].kind").value("ACCOUNT"))
-                .andExpect(jsonPath("$.nodes[5].id").value("signal-1"))
-                .andExpect(jsonPath("$.nodes[5].label").value("공유 기기 1"))
-                .andExpect(jsonPath("$.edges.length()").value(5))
+                .andExpect(jsonPath("$.nodes[0].signalType").doesNotExist())
+                .andExpect(jsonPath("$.nodes[3].kind").value("RESERVATION"))
+                .andExpect(jsonPath("$.nodes[3].signalType").doesNotExist())
+                .andExpect(jsonPath("$.nodes[6].id").value("signal-1"))
+                .andExpect(jsonPath("$.nodes[6].label").value("공유 기기 1"))
+                .andExpect(jsonPath("$.nodes[6].signalType").value("DEVICE_ID_HASH"))
+                .andExpect(jsonPath("$.nodes[7].id").value("signal-2"))
+                .andExpect(jsonPath("$.nodes[7].label").value("공유 IP 2"))
+                .andExpect(jsonPath("$.nodes[7].signalType").value("IP_HASH"))
+                .andExpect(jsonPath("$.edges.length()").value(7))
                 .andExpect(jsonPath("$.edges[0].source").value("account-1"))
                 .andExpect(jsonPath("$.edges[0].target").value("reservation-1"))
                 .andExpect(jsonPath("$.edges[3].kind").value("SHARED_SIGNAL"))
                 .andExpect(jsonPath("$.warnings[0]").value(containsString("not the original GDS projection")))
                 .andExpect(content().string(not(containsString(hiddenAccountOne))))
                 .andExpect(content().string(not(containsString(hiddenAccountTwo))))
+                .andExpect(content().string(not(containsString(hiddenAccountThree))))
                 .andExpect(content().string(not(containsString(hiddenReservationOne))))
-                .andExpect(content().string(not(containsString(hiddenDeviceToken))));
+                .andExpect(content().string(not(containsString(hiddenDeviceToken))))
+                .andExpect(content().string(not(containsString(hiddenIpToken))));
     }
 
     @Test

@@ -77,9 +77,11 @@ public final class Track1ClusterDto {
 
     public enum GraphNodeKind { ACCOUNT, RESERVATION, SIGNAL }
 
+    public enum GraphSignalType { DEVICE_ID_HASH, IP_HASH }
+
     public enum GraphEdgeKind { RESERVATION, SHARED_SIGNAL }
 
-    public record GraphNode(String id, String label, GraphNodeKind kind) {
+    public record GraphNode(String id, String label, GraphNodeKind kind, GraphSignalType signalType) {
     }
 
     public record GraphEdge(String id, String source, String target, GraphEdgeKind kind) {

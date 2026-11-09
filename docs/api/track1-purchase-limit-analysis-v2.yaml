@@ -19,6 +19,20 @@ info:
     ticket-level phase reference are agreed; Spring must report that scope as not confirmed rather than guess.
   x-contract-status: PROPOSED_FOR_CROSS_REPOSITORY_REVIEW
   x-data-issue: https://github.com/MINO-01/ticket-defender-data/issues/30
+  x-backend-input-contract:
+    status: BACKEND_VALIDATION_BOUNDARY_IMPLEMENTED_DATA_CHANGE_REQUIRED
+    current-data-v2: "INDIVIDUAL_TICKET only; it must carry an actual purchasedAt and an explicit quantity."
+    aggregate-snapshot: "ACCOUNT_LIMIT_SNAPSHOT is retained separately by the Spring contract and is never converted to the current Data #30 request."
+    quantity-meaning: "purchaseLimitCalculationQuantity is distinct from currentEffectiveTicketQuantity; neither may be inferred by Spring."
+    required-data-change:
+      - "Add quantityInputType: INDIVIDUAL_TICKET | ACCOUNT_LIMIT_SNAPSHOT."
+      - "For individual tickets provide actual purchasedAt, ticket/order-line quantity, cancellation/refund status, sourceVersion, and sourceAsOf."
+      - "For snapshots provide purchaseLimitCalculationQuantity, calculationBasisVersion, asOf, scope coverage, and optionally currentEffectiveTicketQuantity."
+      - "Carry confirmed policy subject, application scope, sales-phase reference when applicable, cancellation/refund rule, and presale inclusion; PERSON requires a customer-authorized identity basis."
+    conservative-outcomes:
+      - Missing policy semantics returns POLICY_NOT_CONFIRMED.
+      - Missing factual quantity/time/status returns QUANTITY_DATA_INCOMPLETE.
+      - An unsupported account snapshot is not a completed no-violation result.
 servers:
   - url: http://localhost:8000/api/v2
     description: Isolated FastAPI Track 1 internal endpoint

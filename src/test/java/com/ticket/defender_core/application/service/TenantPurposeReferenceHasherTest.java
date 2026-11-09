@@ -27,10 +27,12 @@ class TenantPurposeReferenceHasherTest {
     @Test
     void purposeIsPartOfTheDerivedKeyDomain() {
         UUID tenant = UUID.fromString("11111111-1111-4111-8111-111111111111");
-        String reservation = new TenantPurposeReferenceHasher(MASTER_KEY, "v1").hash(tenant, "reservation-100");
-        String otherPurpose = new TenantPurposeReferenceHasher(MASTER_KEY, "TRACK2_OTHER_REFERENCE", "v1")
+        String reservation = new TenantPurposeReferenceHasher(MASTER_KEY, "TRACK1_QTY_RESERVATION", "v1")
+                .hash(tenant, "reservation-100");
+        String track2Reservation = new TenantPurposeReferenceHasher(MASTER_KEY,
+                TenantPurposeReferenceHasher.RESERVATION_REFERENCE_PURPOSE, "v1")
                 .hash(tenant, "reservation-100");
 
-        assertThat(otherPurpose).isNotEqualTo(reservation);
+        assertThat(track2Reservation).isNotEqualTo(reservation);
     }
 }

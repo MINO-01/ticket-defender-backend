@@ -63,7 +63,9 @@ public class Track1PurchaseLedgerBatch {
         idempotencyKeyDigest = required(spec.keyDigest(), 64);
         requestDigest = required(spec.requestDigest(), 64);
         rowsDigest = spec.rowsDigest();
-        track2LinkDigest = status == Status.ACCEPTED ? required(spec.track2LinkDigest(), 64) : null;
+        // Use the incoming status.  The entity field has not been assigned at this point,
+        // so consulting it would silently drop the accepted batch's correlation digest.
+        track2LinkDigest = spec.status() == Status.ACCEPTED ? required(spec.track2LinkDigest(), 64) : null;
         inputType = Objects.requireNonNull(spec.inputType());
         sourceVersion = required(spec.sourceVersion(), 128);
         sourceAsOf = Objects.requireNonNull(spec.sourceAsOf());

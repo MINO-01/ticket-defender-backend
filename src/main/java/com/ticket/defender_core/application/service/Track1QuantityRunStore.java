@@ -14,6 +14,7 @@ import com.ticket.defender_core.adapter.out.persistence.Track1PurchaseLimitFindi
 import com.ticket.defender_core.adapter.out.persistence.Track1PurchaseLimitFindingReservationRepository;
 import com.ticket.defender_core.adapter.out.persistence.Track1PurchaseLimitRunClusterRepository;
 import com.ticket.defender_core.adapter.out.persistence.Track1PurchaseLimitRunRepository;
+import com.ticket.defender_core.adapter.out.persistence.Track1PurchaseLimitSharedSignalObservationRepository;
 import com.ticket.defender_core.adapter.out.persistence.VerifiedPerformanceRepository;
 import com.ticket.defender_core.domain.PurchaseLimitPolicy;
 import com.ticket.defender_core.domain.TenantEvent;
@@ -23,6 +24,7 @@ import com.ticket.defender_core.domain.Track1PurchaseLimitFinding;
 import com.ticket.defender_core.domain.Track1PurchaseLimitFindingReservation;
 import com.ticket.defender_core.domain.Track1PurchaseLimitRun;
 import com.ticket.defender_core.domain.Track1PurchaseLimitRunCluster;
+import com.ticket.defender_core.domain.Track1PurchaseLimitSharedSignalObservation;
 import com.ticket.defender_core.domain.VerifiedPerformance;
 import com.ticket.defender_core.security.AdminRole;
 import com.ticket.defender_core.security.AnalysisIngestScope;
@@ -70,6 +72,7 @@ class Track1QuantityRunStore {
     private final Track1PurchaseLimitFindingRepository findings;
     private final Track1PurchaseLimitFindingReservationRepository findingReservations;
     private final Track1PurchaseLimitRunClusterRepository clusters;
+    private final Track1PurchaseLimitSharedSignalObservationRepository sharedSignalObservations;
     private final MacroAuditPersistenceService macroAudits;
 
     /** call이 null이면 재생이거나 입력 단계에서 끝난 실행이므로 외부 호출을 하지 않습니다. */
@@ -134,7 +137,7 @@ class Track1QuantityRunStore {
             run.fail(status, code, now());
             runs.saveAndFlush(run);
         }
-        return view(run, List.of(), Map.of(), List.of());
+        return view(run, List.of(), Map.of(), List.of(), List.of(), true);
     }
 
     @Transactional
@@ -152,6 +155,13 @@ class Track1QuantityRunStore {
         }
         clusters.saveAll(response.clusters().stream().map(cluster -> new Track1PurchaseLimitRunCluster(run.getId(), cluster.clusterId(),
                 cluster.riskScore(), cluster.members().size())).toList());
+        sharedSignalObservations.saveAll(response.sharedSignalObservations().stream().map(item ->
+                new Track1PurchaseLimitSharedSignalObservation(run.getId(), item.observationId(), item.scopeType(), item.scopeId(),
+                        Track1PurchaseLimitSharedSignalObservation.SignalType.valueOf(item.signalType().name()),
+                        item.distinctAccountCount(), item.scopeAccountCount(), item.distinctReservationCount(), item.totalTicketQuantity(),
+                        Track1PurchaseLimitSharedSignalObservation.TicketQuantityStatus.valueOf(item.ticketQuantityStatus().name()),
+                        item.corroboration().paymentSharedAccountCount(), item.corroboration().deviceSharedAccountCount(),
+                        item.ipNetworkType(), item.purchaseWindowSeconds(), item.excludedFromLouvain())).toList());
         persistClusterEvidence(opened, response);
         run.succeed(evaluation.status().name(), response.algorithm(), response.algorithmVersion(), response.clusters().size(),
                 response.analyzedAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(), now());
@@ -165,13 +175,14 @@ class Track1QuantityRunStore {
         CandidatePipelineAccess.Scope scope = access.event(eventId, Track1QuantityLedgerService.VIEW_ROLES);
         var found = runs.findByTenantIdAndEventId(scope.tenantId(), scope.eventId(),
                 PageRequest.of(page, pageSize, Sort.by("createdAt").descending().and(Sort.by("id").descending())));
-        return new Track1QuantityDto.Page<>(views(found.getContent()), page, pageSize, found.hasNext());
+        return new Track1QuantityDto.Page<>(views(found.getContent(), false), page, pageSize, found.hasNext());
     }
 
     @Transactional(readOnly = true)
     public Track1QuantityDto.AnalysisRun get(UUID eventId, UUID runId) {
         CandidatePipelineAccess.Scope scope = access.event(eventId, Track1QuantityLedgerService.VIEW_ROLES);
-        return viewOne(runs.findByIdAndTenantIdAndEventId(runId, scope.tenantId(), scope.eventId()).orElseThrow(Track1QuantityRunStore::notFound));
+        return views(List.of(runs.findByIdAndTenantIdAndEventId(runId, scope.tenantId(), scope.eventId())
+                .orElseThrow(Track1QuantityRunStore::notFound)), true).getFirst();
     }
 
     /** 활성 실행이 남아 있으면 거절하고, 프로세스 중단으로 방치된 실행만 INTERRUPTED로 닫아 재시도를 허용합니다. */
@@ -186,16 +197,22 @@ class Track1QuantityRunStore {
     private static String integrityFailure(Track1PurchaseLedgerBatch batch, List<Track1PurchaseLedgerRow> ledger) {
         if (ledger.size() != batch.getAcceptedRowCount()) return "LEDGER_INTEGRITY_MISMATCH";
         List<Track1QuantityLedgerService.DigestRow> digestRows = ledger.stream().map(row -> (Track1QuantityLedgerService.DigestRow) new StoredRow(row)).toList();
-        return Track1QuantityLedgerService.rowsDigest(digestRows).equals(batch.getRowsDigest()) ? null : "LEDGER_INTEGRITY_MISMATCH";
+        List<Track1QuantityLedgerService.LinkDigestRow> linkRows = ledger.stream()
+                .map(row -> (Track1QuantityLedgerService.LinkDigestRow) new StoredRow(row)).toList();
+        return Track1QuantityLedgerService.rowsDigest(digestRows).equals(batch.getRowsDigest())
+                && batch.getTrack2LinkDigest() != null
+                && Track1QuantityLedgerService.track2LinkDigest(linkRows).equals(batch.getTrack2LinkDigest())
+                ? null : "LEDGER_INTEGRITY_MISMATCH";
     }
 
-    private record StoredRow(Track1PurchaseLedgerRow row) implements Track1QuantityLedgerService.DigestRow {
+    private record StoredRow(Track1PurchaseLedgerRow row) implements Track1QuantityLedgerService.DigestRow, Track1QuantityLedgerService.LinkDigestRow {
         @Override public int index() { return row.getSourceRowIndex(); }
         @Override public List<String> canonical() {
             return Track1QuantityLedgerService.canonical(row.getSourceRowIndex(), row.getAccountRefHmac(), row.getReservationRefHmac(), row.getTicketRefHmac(),
                     row.getPurchasedAt(), row.getTicketQuantity(), row.getQuantityUnit(), row.getTicketStatus(),
                     new Track1PurchaseLedgerRow.Signals(row.getPaymentHmac(), row.getAddressHmac(), row.getDeviceHmac(), row.getIpHmac()));
         }
+        @Override public String track2Reservation() { return row.getTrack2ReservationRefHmac(); }
     }
 
     /** 정책과 수량 완전성을 판단합니다. 확인되지 않은 규칙은 Data에 평가 불가 상태로 그대로 전달합니다. */
@@ -265,23 +282,40 @@ class Track1QuantityRunStore {
     private void persistClusterEvidence(Opened opened, Track1PurchaseLimitAnalysisResponse response) {
         if (response.clusters().isEmpty()) return;
         Map<String, MacroAnalysisRequest.Ticket> tickets = new LinkedHashMap<>();
+        Track1PurchaseLimitRun run = runs.findById(opened.runId()).orElseThrow(Track1QuantityRunStore::notFound);
+        Map<String, String> track2References = rows.findByBatchIdOrderBySourceRowIndexAsc(run.getLedgerBatchId()).stream()
+                .collect(Collectors.toMap(row -> row.getAccountRefHmac() + ":" + row.getReservationRefHmac(),
+                        Track1PurchaseLedgerRow::getTrack2ReservationRefHmac, (first, ignored) -> first));
         for (Track1PurchaseLimitAnalysisRequest.Ticket ticket : opened.call().tickets()) {
-            tickets.putIfAbsent(ticket.accountId() + ":" + ticket.reservationNo(), new MacroAnalysisRequest.Ticket(ticket.accountId(), ticket.reservationNo(),
+            String track2Reference = track2References.get(ticket.accountId() + ":" + ticket.reservationNo());
+            if (track2Reference == null) throw new IllegalStateException("Track 2 reservation correlation token is unavailable");
+            tickets.putIfAbsent(ticket.accountId() + ":" + ticket.reservationNo(), new MacroAnalysisRequest.Ticket(ticket.accountId(), track2Reference,
                     ticket.eventId(), ticket.paymentHash(), ticket.addressHash(), ticket.deviceIdHash(), ticket.ipHash()));
         }
+        List<FastApiClusterResponse> correlationClusters = response.clusters().stream().map(cluster -> new FastApiClusterResponse(
+                cluster.clusterId(), cluster.members().stream().map(member -> new FastApiClusterResponse.Member(member.accountId(),
+                        requiredTrack2Reference(track2References, member.accountId(), member.reservationNo()), member.eventId())).toList(),
+                cluster.paymentHashes(), cluster.addressHashes(), cluster.deviceIdHashes(), cluster.ipHashes(), cluster.riskScore())).toList();
         macroAudits.persistDetectedAudits(
-                new MacroAnalysisResponse(response.requestId(), MacroAnalysisResponse.Status.COMPLETED, response.algorithm(), response.algorithmVersion(), response.analyzedAt(), response.clusters()),
+                new MacroAnalysisResponse(response.requestId(), MacroAnalysisResponse.Status.COMPLETED, response.algorithm(), response.algorithmVersion(), response.analyzedAt(), correlationClusters),
                 new MacroAnalysisRequest(response.requestId(), List.copyOf(tickets.values())),
-                new AnalysisIngestScope(opened.tenantId(), Map.of(opened.externalEventRef(), opened.eventId())));
+                new AnalysisIngestScope(opened.tenantId(), Map.of(opened.externalEventRef(), opened.eventId())),
+                TenantPurposeReferenceHasher.RESERVATION_REFERENCE_PURPOSE);
+    }
+
+    private static String requiredTrack2Reference(Map<String, String> references, String account, String reservation) {
+        String value = references.get(account + ":" + reservation);
+        if (value == null) throw new IllegalStateException("Track 2 reservation correlation token is unavailable");
+        return value;
     }
 
     private Opened finished(Track1PurchaseLimitRun run) {
         return new Opened(run.getId(), run.getTenantId(), run.getEventId(), null, null, viewOne(run));
     }
 
-    private Track1QuantityDto.AnalysisRun viewOne(Track1PurchaseLimitRun run) { return views(List.of(run)).getFirst(); }
+    private Track1QuantityDto.AnalysisRun viewOne(Track1PurchaseLimitRun run) { return views(List.of(run), true).getFirst(); }
 
-    private List<Track1QuantityDto.AnalysisRun> views(List<Track1PurchaseLimitRun> items) {
+    private List<Track1QuantityDto.AnalysisRun> views(List<Track1PurchaseLimitRun> items, boolean includeObservations) {
         if (items.isEmpty()) return List.of();
         Collection<UUID> ids = items.stream().map(Track1PurchaseLimitRun::getId).toList();
         Map<UUID, List<Track1PurchaseLimitFinding>> findingsByRun = findings.findByRunIdIn(ids).stream().collect(Collectors.groupingBy(Track1PurchaseLimitFinding::getRunId));
@@ -289,11 +323,15 @@ class Track1QuantityRunStore {
         Map<UUID, List<Track1PurchaseLimitFindingReservation>> reservations = findingIds.isEmpty() ? Map.of()
                 : findingReservations.findByFindingIdIn(findingIds).stream().collect(Collectors.groupingBy(Track1PurchaseLimitFindingReservation::getFindingId));
         Map<UUID, List<Track1PurchaseLimitRunCluster>> clustersByRun = clusters.findByRunIdIn(ids).stream().collect(Collectors.groupingBy(Track1PurchaseLimitRunCluster::getRunId));
-        return items.stream().map(run -> view(run, findingsByRun.getOrDefault(run.getId(), List.of()), reservations, clustersByRun.getOrDefault(run.getId(), List.of()))).toList();
+        Map<UUID, List<Track1PurchaseLimitSharedSignalObservation>> observationsByRun = sharedSignalObservations.findByRunIdIn(ids).stream()
+                .collect(Collectors.groupingBy(Track1PurchaseLimitSharedSignalObservation::getRunId));
+        return items.stream().map(run -> view(run, findingsByRun.getOrDefault(run.getId(), List.of()), reservations,
+                clustersByRun.getOrDefault(run.getId(), List.of()), observationsByRun.getOrDefault(run.getId(), List.of()), includeObservations)).toList();
     }
 
     private static Track1QuantityDto.AnalysisRun view(Track1PurchaseLimitRun run, List<Track1PurchaseLimitFinding> runFindings,
-            Map<UUID, List<Track1PurchaseLimitFindingReservation>> reservations, List<Track1PurchaseLimitRunCluster> runClusters) {
+            Map<UUID, List<Track1PurchaseLimitFindingReservation>> reservations, List<Track1PurchaseLimitRunCluster> runClusters,
+            List<Track1PurchaseLimitSharedSignalObservation> observations, boolean includeObservations) {
         boolean succeeded = run.getExecutionStatus() == Track1PurchaseLimitRun.Execution.SUCCEEDED;
         Track1QuantityDto.Evaluation evaluation = !succeeded ? null : new Track1QuantityDto.Evaluation(run.getEvaluationStatus(), run.getEvaluationReason(), run.getPolicyVersion(),
                 runFindings.stream().sorted(Comparator.comparing(Track1PurchaseLimitFinding::getAccountRefHmac)).map(finding -> new Track1QuantityDto.Finding(
@@ -303,7 +341,12 @@ class Track1QuantityRunStore {
         return new Track1QuantityDto.AnalysisRun(run.getId(), run.getEventId(), run.getPerformanceId(), run.getLedgerBatchId(), run.getLedgerSourceVersion(),
                 externalStatus(run), run.getErrorCode(), run.isRetryable(), run.getPolicyId(), run.getPolicyVersion(), run.getAlgorithmVersion(), run.getAnalysisRequestId(), run.getClusterCount(),
                 runClusters.stream().sorted(Comparator.comparing(Track1PurchaseLimitRunCluster::getClusterId)).map(item -> new Track1QuantityDto.Cluster(item.getClusterId(), item.getRiskScore(), item.getMemberCount())).toList(),
-                run.getNettedExcludedRowCount(), run.getCreatedAt().atOffset(ZoneOffset.UTC), run.getCompletedAt() == null ? null : run.getCompletedAt().atOffset(ZoneOffset.UTC), evaluation);
+                run.getNettedExcludedRowCount(), run.getCreatedAt().atOffset(ZoneOffset.UTC), run.getCompletedAt() == null ? null : run.getCompletedAt().atOffset(ZoneOffset.UTC), evaluation,
+                observations.size(), includeObservations ? observations.stream().map(item -> new Track1QuantityDto.SharedSignalObservation(
+                        item.getObservationId(), item.getScopeType(), item.getScopeId(), item.getSignalType().name(), item.getDistinctAccountCount(),
+                        item.getScopeAccountCount(), item.getDistinctReservationCount(), item.getTotalTicketQuantity(), item.getTicketQuantityStatus().name(),
+                        new Track1QuantityDto.Corroboration(item.getPaymentSharedAccountCount(), item.getDeviceSharedAccountCount()),
+                        item.getIpNetworkType(), item.getPurchaseWindowSeconds(), item.isExcludedFromLouvain())).toList() : List.of());
     }
 
     private static String externalStatus(Track1PurchaseLimitRun run) {

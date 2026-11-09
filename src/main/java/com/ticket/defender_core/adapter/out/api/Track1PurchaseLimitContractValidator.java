@@ -78,6 +78,22 @@ final class Track1PurchaseLimitContractValidator {
             evaluation(scope, ticketsFor(request, scope), item);
         }
         if (received.size() != requested.size()) throw invalid("v2 response omitted a requested performance");
+        for (Track1PurchaseLimitAnalysisResponse.SharedSignalObservation observation : response.sharedSignalObservations()) {
+            sharedSignalObservation(observation);
+        }
+    }
+
+    private static void sharedSignalObservation(Track1PurchaseLimitAnalysisResponse.SharedSignalObservation item) {
+        if (item == null || blank(item.observationId()) || blank(item.scopeType()) || blank(item.scopeId())
+                || item.signalType() == null || item.ticketQuantityStatus() == null || item.corroboration() == null
+                || item.distinctAccountCount() < 0 || item.scopeAccountCount() < 0 || item.distinctReservationCount() < 0
+                || item.corroboration().paymentSharedAccountCount() < 0 || item.corroboration().deviceSharedAccountCount() < 0
+                || item.purchaseWindowSeconds() != null && item.purchaseWindowSeconds() < 0
+                || item.totalTicketQuantity() != null && item.totalTicketQuantity() < 0
+                || item.ticketQuantityStatus() == Track1PurchaseLimitAnalysisResponse.TicketQuantityStatus.VERIFIED
+                    && item.totalTicketQuantity() == null
+                || item.ticketQuantityStatus() == Track1PurchaseLimitAnalysisResponse.TicketQuantityStatus.UNAVAILABLE
+                    && item.totalTicketQuantity() != null) throw invalid("shared signal observation is invalid");
     }
 
     private static List<Track1PurchaseLimitAnalysisRequest.Ticket> ticketsFor(

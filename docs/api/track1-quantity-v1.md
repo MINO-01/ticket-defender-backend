@@ -2,6 +2,19 @@
 
 상태: **IMPLEMENTED**. 실제 코드와 통합 테스트 기준이며 OpenAPI는 `track1-quantity-v1.yaml`, 합성 예시는 `fixtures/track1-quantity/`에 있습니다.
 
+## DEMO_V1 호환 확장
+
+`GET /api/v1/admin/events/{eventId}/track1-quantity/analysis-runs/{runId}`의 실행 상세에는
+`sharedSignalObservations`와 `sharedSignalObservationCount`가 추가된다. 관찰값은 해당 실행에 고정 저장되며
+원본 IP·주소·HMAC은 반환하지 않는다. 목록은 화면 표시용 건수만 반환하고 관찰 상세 배열은 항상 빈 배열이다.
+
+각 관찰값은 `observationId`, `scopeType`, `scopeId`, `signalType` (`IP`/`ADDRESS`),
+`distinctAccountCount`, `scopeAccountCount`, `distinctReservationCount`, `totalTicketQuantity`,
+`ticketQuantityStatus` (`VERIFIED`/`UNAVAILABLE`), `corroboration.paymentSharedAccountCount`,
+`corroboration.deviceSharedAccountCount`, `ipNetworkType`, `purchaseWindowSeconds`,
+`excludedFromLouvain`을 가진다. `VERIFIED`일 때만 `totalTicketQuantity`는 0 이상의 정수이고,
+`UNAVAILABLE`일 때는 `null`이다. `purchaseWindowSeconds`와 `ipNetworkType`은 `null`일 수 있다.
+
 공통: 관리자 JWT 필수, `tenantId`는 요청으로 받지 않습니다. 범위 밖 자원은 `404 RESOURCE_NOT_FOUND`, 역할 부족은 `403`, 오류는 `application/problem+json`의 `code`입니다. 응답에 원문 참조와 저장 HMAC은 없습니다.
 
 운영 게이트: `TRACK1_V2_ENABLED` 기본값은 `false`이며 꺼져 있으면 실행 요청은 `503 TRACK1_V2_DISABLED`입니다. 반입과 실행은 기존 합성 격리 게이트(`SYNTHETIC_ISOLATED`, 격리 DB, 등록 tenant)를 통과해야 합니다. 실제 고객사 데이터 반입은 활성화되어 있지 않습니다.

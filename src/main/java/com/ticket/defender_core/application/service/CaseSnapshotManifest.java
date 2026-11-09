@@ -142,6 +142,7 @@ public class CaseSnapshotManifest {
                                 fingerprint.put("auditId", member.getAuditId());
                                 fingerprint.put("evidenceKey", member.getEvidenceKey());
                                 fingerprint.put("riskScore", member.getRiskScore());
+                                fingerprint.put("referencePurpose", member.getReferencePurpose());
                                 return fingerprint;
                             }).toList())));
                 }

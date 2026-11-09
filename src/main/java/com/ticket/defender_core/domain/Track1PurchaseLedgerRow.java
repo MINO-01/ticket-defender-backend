@@ -32,6 +32,8 @@ public class Track1PurchaseLedgerRow {
     @Column(name = "source_row_index", nullable = false) private int sourceRowIndex;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "account_ref_hmac", nullable = false, length = 64) private String accountRefHmac;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "reservation_ref_hmac", nullable = false, length = 64) private String reservationRefHmac;
+    /** Private Track 2-purpose correlation token; never returned by an API. */
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "track2_reservation_ref_hmac", length = 64) private String track2ReservationRefHmac;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "ticket_ref_hmac", nullable = false, length = 64) private String ticketRefHmac;
     @Column(name = "purchased_at", nullable = false) private LocalDateTime purchasedAt;
     @Column(name = "ticket_quantity", nullable = false) private int ticketQuantity;
@@ -44,7 +46,7 @@ public class Track1PurchaseLedgerRow {
     @Column(name = "source_version", nullable = false, length = 128) private String sourceVersion;
     @Column(name = "source_as_of", nullable = false) private LocalDateTime sourceAsOf;
 
-    public Track1PurchaseLedgerRow(UUID batchId, int index, String account, String reservation, String ticket,
+    public Track1PurchaseLedgerRow(UUID batchId, int index, String account, String reservation, String track2Reservation, String ticket,
             LocalDateTime purchasedAt, int quantity, QuantityUnit unit, TicketStatus status, Signals signals,
             String sourceVersion, LocalDateTime sourceAsOf) {
         id = UUID.randomUUID();
@@ -55,6 +57,7 @@ public class Track1PurchaseLedgerRow {
         sourceRowIndex = index;
         accountRefHmac = required(account, 64);
         reservationRefHmac = required(reservation, 64);
+        track2ReservationRefHmac = required(track2Reservation, 64);
         ticketRefHmac = required(ticket, 64);
         this.purchasedAt = Objects.requireNonNull(purchasedAt);
         ticketQuantity = quantity;

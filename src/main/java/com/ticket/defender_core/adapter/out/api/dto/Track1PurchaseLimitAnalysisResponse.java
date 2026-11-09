@@ -12,8 +12,17 @@ public record Track1PurchaseLimitAnalysisResponse(
         String algorithmVersion,
         OffsetDateTime analyzedAt,
         List<FastApiClusterResponse> clusters,
-        List<PurchaseLimitEvaluation> purchaseLimitEvaluations
+        List<PurchaseLimitEvaluation> purchaseLimitEvaluations,
+        List<SharedSignalObservation> sharedSignalObservations
 ) {
+    public Track1PurchaseLimitAnalysisResponse {
+        sharedSignalObservations = sharedSignalObservations == null ? List.of() : List.copyOf(sharedSignalObservations);
+    }
+    public Track1PurchaseLimitAnalysisResponse(String requestId, Status status, String algorithm, String algorithmVersion,
+            OffsetDateTime analyzedAt, List<FastApiClusterResponse> clusters,
+            List<PurchaseLimitEvaluation> purchaseLimitEvaluations) {
+        this(requestId, status, algorithm, algorithmVersion, analyzedAt, clusters, purchaseLimitEvaluations, List.of());
+    }
     public enum Status { COMPLETED }
     public enum EvaluationStatus {
         EVALUATED, POLICY_NOT_CONFIRMED, QUANTITY_DATA_INCOMPLETE, POLICY_TIME_NOT_APPLICABLE
@@ -37,4 +46,16 @@ public record Track1PurchaseLimitAnalysisResponse(
     ) { }
 
     public record ReservationQuantity(String reservationNo, int effectiveTicketQuantity) { }
+
+    public enum SignalType { IP, ADDRESS }
+    public enum TicketQuantityStatus { VERIFIED, UNAVAILABLE }
+
+    public record Corroboration(int paymentSharedAccountCount, int deviceSharedAccountCount) { }
+
+    /** Aggregated signal only: raw IP/address values and their HMACs are intentionally absent. */
+    public record SharedSignalObservation(String observationId, String scopeType, String scopeId, SignalType signalType,
+                                          int distinctAccountCount, int scopeAccountCount, int distinctReservationCount,
+                                          Integer totalTicketQuantity, TicketQuantityStatus ticketQuantityStatus,
+                                          Corroboration corroboration, String ipNetworkType,
+                                          Integer purchaseWindowSeconds, boolean excludedFromLouvain) { }
 }

@@ -27,7 +27,8 @@ public class PurchaseLimitPolicyAudit {
     @Column(name="sales_phase_ref", length=128) private String salesPhaseRef;
     @Enumerated(EnumType.STRING) @Column(name="cancellation_refund_rule", length=16) private PurchaseLimitPolicy.CancellationRefundRule cancellationRefundRule;
     @Column(name="includes_presale") private Boolean includesPresale;
-    @Column(name="policy_scope_key", nullable=false, length=256) private String policyScopeKey;
+    /** Historical rows predating Issue #79 keep this null rather than inferring a scope from a later revision. */
+    @Column(name="policy_scope_key", length=256) private String policyScopeKey;
     @Column(nullable=false) private int revision;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name="actor_membership_id", nullable=false, length=36) private UUID actorMembershipId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name="request_id", nullable=false, length=36) private UUID requestId;

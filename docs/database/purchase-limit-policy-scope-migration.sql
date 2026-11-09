@@ -16,11 +16,4 @@ ALTER TABLE purchase_limit_policies
 
 ALTER TABLE purchase_limit_policy_audits
     ADD COLUMN policy_scope_key VARCHAR(256) NULL AFTER includes_presale;
-
-UPDATE purchase_limit_policy_audits a
-JOIN purchase_limit_policies p ON p.id = a.policy_id
-SET a.policy_scope_key = p.policy_scope_key
-WHERE a.policy_scope_key IS NULL;
-
-ALTER TABLE purchase_limit_policy_audits
-    MODIFY COLUMN policy_scope_key VARCHAR(256) NOT NULL;
+-- Do not backfill historical audit rows from the current policy: their former scope is unknown.

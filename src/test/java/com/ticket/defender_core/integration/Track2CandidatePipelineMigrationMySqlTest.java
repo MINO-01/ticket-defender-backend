@@ -45,6 +45,8 @@ class Track2CandidatePipelineMigrationMySqlTest {
         try (Connection connection = source.getConnection()) {
             ScriptUtils.executeSqlScript(connection,
                     new FileSystemResource("docs/database/track2-candidate-pipeline-migration.sql"));
+            ScriptUtils.executeSqlScript(connection,
+                    new FileSystemResource("docs/database/track2-candidate-multiseat-migration.sql"));
         }
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM reservation", Integer.class)).isEqualTo(legacyReservations);
         assertThat(issue68Tables(jdbc)).containsExactlyInAnyOrderElementsOf(ISSUE68_TABLES);
@@ -78,9 +80,19 @@ class Track2CandidatePipelineMigrationMySqlTest {
                         + "VALUES (?,?,?,?,?,?,?,?,?,0)", UUID.randomUUID().toString(), tenant, event, performance,
                 batch, "source-v1", true, 1, NOW);
 
+        jdbc.update("INSERT INTO reservation_candidates (id,batch_id,source_row_index,"
+                        + "reservation_ref_hmac,reference_hmac_key_version,zone,row_num,seat_num) VALUES (?,?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), batch, 1, "c".repeat(64), "v1", "VIP", "10", "6");
         assertThatThrownBy(() -> jdbc.update("INSERT INTO reservation_candidates (id,batch_id,source_row_index,"
                         + "reservation_ref_hmac,reference_hmac_key_version,zone,row_num,seat_num) VALUES (?,?,?,?,?,?,?,?)",
-                UUID.randomUUID().toString(), batch, 1, "c".repeat(64), "v1", "VIP", "10", "6"))
+                UUID.randomUUID().toString(), batch, 2, "c".repeat(64), "v1", "VIP", "10", "6"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        jdbc.update("INSERT INTO reservation_candidates (id,batch_id,source_row_index,reservation_ref_hmac,ticket_ref_hmac,"
+                        + "reference_hmac_key_version,zone,row_num,seat_num) VALUES (?,?,?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), batch, 3, "d".repeat(64), "e".repeat(64), "v1", "VIP", "10", "7");
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO reservation_candidates (id,batch_id,source_row_index,reservation_ref_hmac,ticket_ref_hmac,"
+                        + "reference_hmac_key_version,zone,row_num,seat_num) VALUES (?,?,?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), batch, 4, "d".repeat(64), "e".repeat(64), "v1", "VIP", "10", "8"))
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertCheck(() -> jdbc.update("INSERT INTO reservation_import_batches (id,tenant_id,event_id,performance_id,"
                         + "performance_ref,created_by_membership_id,idempotency_key_digest,request_digest,source_version,"

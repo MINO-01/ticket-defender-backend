@@ -104,7 +104,7 @@ public class ReservationImportService {
             }
 
             candidates.saveAll(validation.rows().stream().map(row -> new ReservationCandidate(batch.getId(), row.index(),
-                    row.referenceHmac(), hasher.keyVersion(), row.zone(), row.row(), row.seat())).toList());
+                    row.referenceHmac(), row.ticketHmac(), hasher.keyVersion(), row.zone(), row.row(), row.seat())).toList());
             candidates.flush();
             ReservationDataSource source = sources.lockByScope(scope.tenantId(), scope.eventId(), performance.getId()).orElse(null);
             if (source == null) {
@@ -127,7 +127,8 @@ public class ReservationImportService {
         List<Row> valid = new ArrayList<>();
         List<RowError> invalid = new ArrayList<>();
         if (!Boolean.TRUE.equals(input.completeSnapshot())) invalid.add(new RowError(0, "INCOMPLETE_SOURCE"));
-        Set<String> references = new HashSet<>();
+        Set<String> reservationSeats = new HashSet<>();
+        Set<String> reservationTickets = new HashSet<>();
         for (int index = 0; index < submitted.size(); index++) {
             CandidatePipelineDto.ReservationRow row = submitted.get(index);
             if (row == null) {
@@ -137,12 +138,20 @@ public class ReservationImportService {
             try {
                 String reference = CandidatePipelineSupport.bounded(row.reservationReference(), 128);
                 String hmac = hasher.hash(tenantId, reference);
-                if (!references.add(hmac)) {
-                    invalid.add(new RowError(index, "DUPLICATE_RESERVATION_REFERENCE"));
+                String zone = CandidatePipelineSupport.seat(row.zone());
+                String rowNum = CandidatePipelineSupport.seat(row.row());
+                String seat = CandidatePipelineSupport.seat(row.seat());
+                String ticketHmac = row.ticketReference() == null ? null
+                        : hasher.hash(tenantId, CandidatePipelineSupport.bounded(row.ticketReference(), 128));
+                if (!reservationSeats.add(hmac + "\u0000" + zone + "\u0000" + rowNum + "\u0000" + seat)) {
+                    invalid.add(new RowError(index, "DUPLICATE_RESERVATION_SEAT"));
                     continue;
                 }
-                valid.add(new Row(index, hmac, CandidatePipelineSupport.seat(row.zone()),
-                        CandidatePipelineSupport.seat(row.row()), CandidatePipelineSupport.seat(row.seat())));
+                if (ticketHmac != null && !reservationTickets.add(hmac + "\u0000" + ticketHmac)) {
+                    invalid.add(new RowError(index, "DUPLICATE_TICKET_REFERENCE"));
+                    continue;
+                }
+                valid.add(new Row(index, hmac, ticketHmac, zone, rowNum, seat));
             } catch (CaseApiException invalidRow) {
                 invalid.add(new RowError(index, "INVALID_RESERVATION_ROW"));
             } catch (IllegalArgumentException invalidReference) {
@@ -177,7 +186,8 @@ public class ReservationImportService {
                     continue;
                 }
                 fields.add("PRESENT");
-                appendReferenceToken(fields, tenantId, hasher, row.reservationReference());
+                appendReferenceToken(fields, "reservationReference", tenantId, hasher, row.reservationReference());
+                appendReferenceToken(fields, "ticketReference", tenantId, hasher, row.ticketReference());
                 appendString(fields, "zone", row.zone());
                 appendString(fields, "row", row.row());
                 appendString(fields, "seat", row.seat());
@@ -186,9 +196,9 @@ public class ReservationImportService {
         return hasher.hash(tenantId, CandidatePipelineSupport.sha256(fields.toArray(String[]::new)));
     }
 
-    private static void appendReferenceToken(List<String> fields, UUID tenantId, TenantPurposeReferenceHasher hasher,
-            String reference) {
-        fields.add("reservationReference");
+    private static void appendReferenceToken(List<String> fields, String field, UUID tenantId,
+            TenantPurposeReferenceHasher hasher, String reference) {
+        fields.add(field);
         if (reference == null) {
             fields.add("NULL");
             return;
@@ -238,7 +248,7 @@ public class ReservationImportService {
         return new CaseApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND");
     }
 
-    private record Row(int index, String referenceHmac, String zone, String row, String seat) { }
+    private record Row(int index, String referenceHmac, String ticketHmac, String zone, String row, String seat) { }
     private record RowError(int rowIndex, String code) { }
     private record Validation(int inputCount, List<Row> rows, List<RowError> errors) { }
 }

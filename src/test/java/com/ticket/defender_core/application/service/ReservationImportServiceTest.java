@@ -7,6 +7,8 @@ import com.ticket.defender_core.adapter.out.persistence.ReservationImportBatchRe
 import com.ticket.defender_core.adapter.out.persistence.ReservationImportErrorRepository;
 import com.ticket.defender_core.adapter.out.persistence.VerifiedPerformanceRepository;
 import com.ticket.defender_core.domain.ReservationImportBatch;
+import com.ticket.defender_core.domain.ReservationCandidate;
+import com.ticket.defender_core.domain.ReservationImportError;
 import com.ticket.defender_core.domain.VerifiedPerformance;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,6 +98,37 @@ class ReservationImportServiceTest {
         assertThat(result.acceptedRowCount()).isEqualTo(1);
         verify(candidates).saveAll(any());
         verify(sources).saveAndFlush(any());
+    }
+
+    @Test
+    void acceptsTwoSeatsForOneReservationButRejectsDuplicateSeat() {
+        when(sources.lockByScope(tenantId, eventId, performanceId)).thenReturn(Optional.empty());
+        CandidatePipelineDto.ImportReservations multiSeat = new CandidatePipelineDto.ImportReservations(performanceId,
+                "source-v1", true, List.of(new CandidatePipelineDto.ReservationRow("reservation-1", "VIP", "10", "1", "ticket-1"),
+                        new CandidatePipelineDto.ReservationRow("reservation-1", "VIP", "10", "2", "ticket-2")));
+
+        CandidatePipelineDto.ImportResult accepted = service.importSnapshot(eventId, UUID.randomUUID().toString(), multiSeat);
+        ArgumentCaptor<List<ReservationCandidate>> rows = ArgumentCaptor.forClass(List.class);
+        verify(candidates).saveAll(rows.capture());
+        assertThat(accepted.status()).isEqualTo(ReservationImportBatch.Status.ACCEPTED);
+        assertThat(rows.getValue()).hasSize(2);
+        assertThat(rows.getValue()).extracting(ReservationCandidate::getTicketRefHmac).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void rejectsDuplicateSeatAndDuplicateTicketWithinOneReservation() {
+        CandidatePipelineDto.ImportReservations duplicate = new CandidatePipelineDto.ImportReservations(performanceId,
+                "source-v1", true, List.of(new CandidatePipelineDto.ReservationRow("reservation-1", "VIP", "10", "1", "ticket-1"),
+                        new CandidatePipelineDto.ReservationRow("reservation-1", "VIP", "10", "1", "ticket-2"),
+                        new CandidatePipelineDto.ReservationRow("reservation-1", "VIP", "10", "2", "ticket-1")));
+
+        CandidatePipelineDto.ImportResult result = service.importSnapshot(eventId, UUID.randomUUID().toString(), duplicate);
+        assertThat(result.status()).isEqualTo(ReservationImportBatch.Status.REJECTED);
+        ArgumentCaptor<List<ReservationImportError>> errorsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(errors).saveAll(errorsCaptor.capture());
+        assertThat(errorsCaptor.getValue()).extracting(ReservationImportError::getCode)
+                .containsExactlyInAnyOrder("DUPLICATE_RESERVATION_SEAT", "DUPLICATE_TICKET_REFERENCE");
+        verify(candidates, never()).saveAll(any());
     }
 
     @Test

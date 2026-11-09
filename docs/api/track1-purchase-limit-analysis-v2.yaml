@@ -27,6 +27,7 @@ info:
     required-data-change:
       - "Add quantityInputType: INDIVIDUAL_TICKET | ACCOUNT_LIMIT_SNAPSHOT."
       - "For individual tickets provide actual purchasedAt, ticket/order-line quantity, cancellation/refund status, sourceVersion, and sourceAsOf."
+      - "For multi-seat reservations provide a stable ticketReference or order-line reference and quantityGranularity; reservationNo alone cannot deduplicate multiple ticket rows."
       - "For snapshots provide purchaseLimitCalculationQuantity, calculationBasisVersion, asOf, scope coverage, and optionally currentEffectiveTicketQuantity."
       - "Carry confirmed policy subject, application scope, sales-phase reference when applicable, cancellation/refund rule, and presale inclusion; PERSON requires a customer-authorized identity basis."
     conservative-outcomes:

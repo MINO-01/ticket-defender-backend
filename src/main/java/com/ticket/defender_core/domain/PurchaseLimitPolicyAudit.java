@@ -27,11 +27,12 @@ public class PurchaseLimitPolicyAudit {
     @Column(name="sales_phase_ref", length=128) private String salesPhaseRef;
     @Enumerated(EnumType.STRING) @Column(name="cancellation_refund_rule", length=16) private PurchaseLimitPolicy.CancellationRefundRule cancellationRefundRule;
     @Column(name="includes_presale") private Boolean includesPresale;
+    @Column(name="policy_scope_key", nullable=false, length=256) private String policyScopeKey;
     @Column(nullable=false) private int revision;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name="actor_membership_id", nullable=false, length=36) private UUID actorMembershipId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name="request_id", nullable=false, length=36) private UUID requestId;
     @Column(name="occurred_at", nullable=false) private LocalDateTime occurredAt;
     public PurchaseLimitPolicyAudit(PurchaseLimitPolicy p, Action action, UUID actor, UUID requestId, LocalDateTime now) {
-        id=UUID.randomUUID(); policyId=p.getId(); tenantId=p.getTenantId(); eventId=p.getEventId(); performanceId=p.getPerformanceId(); this.action=action; status=p.getStatus(); maxTicketsPerAccount=p.getMaxTicketsPerAccount(); policyVersion=p.getPolicyVersion(); effectiveFrom=p.getEffectiveFrom(); effectiveUntil=p.getEffectiveUntil(); policySource=p.getPolicySource(); verificationBasis=p.getVerificationBasis(); limitSubject=p.getLimitSubject(); applicationScope=p.getApplicationScope(); salesPhaseRef=p.getSalesPhaseRef(); cancellationRefundRule=p.getCancellationRefundRule(); includesPresale=p.getIncludesPresale(); revision=p.getRevision(); actorMembershipId=actor; this.requestId=requestId; occurredAt=now;
+        id=UUID.randomUUID(); policyId=p.getId(); tenantId=p.getTenantId(); eventId=p.getEventId(); performanceId=p.getPerformanceId(); this.action=action; status=p.getStatus(); maxTicketsPerAccount=p.getMaxTicketsPerAccount(); policyVersion=p.getPolicyVersion(); effectiveFrom=p.getEffectiveFrom(); effectiveUntil=p.getEffectiveUntil(); policySource=p.getPolicySource(); verificationBasis=p.getVerificationBasis(); limitSubject=p.getLimitSubject(); applicationScope=p.getApplicationScope(); salesPhaseRef=p.getSalesPhaseRef(); cancellationRefundRule=p.getCancellationRefundRule(); includesPresale=p.getIncludesPresale(); policyScopeKey=p.getPolicyScopeKey(); revision=p.getRevision(); actorMembershipId=actor; this.requestId=requestId; occurredAt=now;
     }
 }

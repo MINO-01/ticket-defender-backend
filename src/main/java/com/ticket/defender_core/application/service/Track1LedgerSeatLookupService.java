@@ -17,7 +17,14 @@ import java.util.UUID;
 public class Track1LedgerSeatLookupService {
     public enum Status { FOUND, NOT_IN_LEDGER, LEDGER_UNAVAILABLE }
 
-    public record LedgerSeat(Long auditId, Status status, String zone, String row, String seat) { }
+    public record Seat(String zone, String row, String seat) { }
+    /** Legacy scalar fields are populated only for one seat; seats preserves every matching ticket seat. */
+    public record LedgerSeat(Long auditId, Status status, String zone, String row, String seat, List<Seat> seats) {
+        public LedgerSeat(Long auditId, Status status, String zone, String row, String seat) {
+            this(auditId, status, zone, row, seat,
+                    zone == null ? List.of() : List.of(new Seat(zone, row, seat)));
+        }
+    }
     public record Result(boolean ledgerAvailable, boolean targetReferenceFound, List<LedgerSeat> seats) { }
 
     private final Track1LedgerSnapshotReader snapshots;
@@ -38,6 +45,6 @@ public class Track1LedgerSeatLookupService {
 
     static Result unavailable(List<MacroAuditEvidence> members) {
         return new Result(false, false, members.stream().map(member -> new LedgerSeat(member.getAuditId(),
-                Status.LEDGER_UNAVAILABLE, null, null, null)).toList());
+                Status.LEDGER_UNAVAILABLE, null, null, null, List.of())).toList());
     }
 }

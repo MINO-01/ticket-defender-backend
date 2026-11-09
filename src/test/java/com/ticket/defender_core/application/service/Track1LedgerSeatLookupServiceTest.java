@@ -104,6 +104,30 @@ class Track1LedgerSeatLookupServiceTest {
         assertThat(result.targetReferenceFound()).isTrue();
     }
 
+    @Test
+    void returnsEverySeatForOneReservationReferenceWithoutMapKeyCollision() {
+        Fixture fixture = fixture(true);
+        ReservationCandidate second = mock(ReservationCandidate.class);
+        when(second.getReservationRefHmac()).thenReturn(new TenantPurposeReferenceHasher(KEY, "v1")
+                .hash(fixture.tenantId, "track1-reservation"));
+        when(second.getZone()).thenReturn("A"); when(second.getRowNum()).thenReturn("1"); when(second.getSeatNum()).thenReturn("3");
+        when(second.getSourceRowIndex()).thenReturn(1);
+        ReservationCandidate first = mock(ReservationCandidate.class);
+        when(first.getReservationRefHmac()).thenReturn(new TenantPurposeReferenceHasher(KEY, "v1")
+                .hash(fixture.tenantId, "track1-reservation"));
+        when(first.getZone()).thenReturn("A"); when(first.getRowNum()).thenReturn("1"); when(first.getSeatNum()).thenReturn("2");
+        when(first.getSourceRowIndex()).thenReturn(0);
+        when(fixture.candidates.findByBatchIdAndReservationRefHmacIn(eq(fixture.batchId), any())).thenReturn(List.of(second, first));
+
+        Track1LedgerSeatLookupService.Result result = lookupTarget(fixture, null);
+
+        assertThat(result.seats()).singleElement().satisfies(seat -> {
+            assertThat(seat.status()).isEqualTo(Track1LedgerSeatLookupService.Status.FOUND);
+            assertThat(seat.zone()).isNull();
+            assertThat(seat.seats()).extracting(Track1LedgerSeatLookupService.Seat::seat).containsExactly("2", "3");
+        });
+    }
+
     private static UUID target(Fixture fixture, UUID batchId, String reference) {
         UUID candidateId = UUID.randomUUID();
         ReservationCandidate target = mock(ReservationCandidate.class);

@@ -60,7 +60,9 @@ public class Track1CandidateLinkService {
             List<Track1CandidateLinkDto.LedgerSeat> seats = lookup.seats().stream().map(seat ->
                     new Track1CandidateLinkDto.LedgerSeat(seat.auditId(),
                             Track1CandidateLinkDto.LedgerSeatStatus.valueOf(seat.status().name()),
-                            seat.zone(), seat.row(), seat.seat())).toList();
+                            seat.zone(), seat.row(), seat.seat(), seat.seats().stream()
+                                    .map(value -> new Track1CandidateLinkDto.Seat(value.zone(), value.row(), value.seat()))
+                                    .toList())).toList();
             if (!lookup.ledgerAvailable()) return item(graph, candidate, runId,
                     Track1CandidateLinkDto.Status.LEDGER_UNAVAILABLE, seats);
             return item(graph, candidate, runId, lookup.targetReferenceFound()
@@ -89,7 +91,7 @@ public class Track1CandidateLinkService {
                     graph.getAnalysisRequestId(), graph.getClusterId());
             return item(graph, candidate, runId, Track1CandidateLinkDto.Status.LEDGER_UNAVAILABLE, members.stream()
                     .map(member -> new Track1CandidateLinkDto.LedgerSeat(member.getAuditId(),
-                            Track1CandidateLinkDto.LedgerSeatStatus.LEDGER_UNAVAILABLE, null, null, null)).toList());
+                            Track1CandidateLinkDto.LedgerSeatStatus.LEDGER_UNAVAILABLE, null, null, null, List.of())).toList());
         } catch (RuntimeException ignored) {
             return item(graph, candidate, runId, Track1CandidateLinkDto.Status.LEDGER_UNAVAILABLE, List.of());
         }
@@ -97,6 +99,7 @@ public class Track1CandidateLinkService {
 
     private static Track1CandidateLinkDto.Item item(CaseSourceReference graph, CaseSourceReference candidate,
             UUID runId, Track1CandidateLinkDto.Status status, List<Track1CandidateLinkDto.LedgerSeat> seats) {
-        return new Track1CandidateLinkDto.Item(graph.getId(), candidate.getId(), runId, status, seats);
+        return new Track1CandidateLinkDto.Item(graph.getId(), candidate.getId(), runId, status, seats,
+                Track1CandidateLinkDto.LinkBasis.RESERVATION_REFERENCE);
     }
 }

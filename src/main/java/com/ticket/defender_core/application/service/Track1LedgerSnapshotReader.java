@@ -14,9 +14,9 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.UUID;
-import java.util.function.Function;
 
 /**
  * 원장 테이블을 호출자와 분리된 짧은 읽기 트랜잭션의 단일 스냅샷으로 조회한다.
@@ -47,18 +47,24 @@ public class Track1LedgerSnapshotReader {
                     .map(ReservationCandidate::getReservationRefHmac).orElse(null);
             if (targetReference == null) return Track1LedgerSeatLookupService.unavailable(members);
         }
-        Map<String, ReservationCandidate> ledger = candidates.findByBatchIdAndReservationRefHmacIn(batch.getId(),
+        Map<String, List<ReservationCandidate>> ledger = candidates.findByBatchIdAndReservationRefHmacIn(batch.getId(),
                         members.stream().map(member -> hasher.hash(tenantId, member.getReservationNo())).toList())
-                .stream().collect(java.util.stream.Collectors.toMap(ReservationCandidate::getReservationRefHmac,
-                        Function.identity()));
+                .stream().collect(java.util.stream.Collectors.groupingBy(ReservationCandidate::getReservationRefHmac));
         List<Track1LedgerSeatLookupService.LedgerSeat> seats = members.stream().map(member -> {
-            ReservationCandidate found = ledger.get(hasher.hash(tenantId, member.getReservationNo()));
-            return found == null
+            List<ReservationCandidate> found = ledger.get(hasher.hash(tenantId, member.getReservationNo()));
+            if (found == null || found.isEmpty())
+                return new Track1LedgerSeatLookupService.LedgerSeat(member.getAuditId(),
+                        Track1LedgerSeatLookupService.Status.NOT_IN_LEDGER, null, null, null, List.of());
+            List<Track1LedgerSeatLookupService.Seat> all = found.stream()
+                    .sorted(Comparator.comparingInt(ReservationCandidate::getSourceRowIndex))
+                    .map(candidate -> new Track1LedgerSeatLookupService.Seat(candidate.getZone(), candidate.getRowNum(),
+                            candidate.getSeatNum())).toList();
+            Track1LedgerSeatLookupService.Seat only = all.size() == 1 ? all.getFirst() : null;
+            return only == null
                     ? new Track1LedgerSeatLookupService.LedgerSeat(member.getAuditId(),
-                            Track1LedgerSeatLookupService.Status.NOT_IN_LEDGER, null, null, null)
+                            Track1LedgerSeatLookupService.Status.FOUND, null, null, null, all)
                     : new Track1LedgerSeatLookupService.LedgerSeat(member.getAuditId(),
-                            Track1LedgerSeatLookupService.Status.FOUND, found.getZone(), found.getRowNum(),
-                            found.getSeatNum());
+                            Track1LedgerSeatLookupService.Status.FOUND, only.zone(), only.row(), only.seat(), all);
         }).toList();
         return new Track1LedgerSeatLookupService.Result(true,
                 targetReference != null && ledger.containsKey(targetReference), seats);

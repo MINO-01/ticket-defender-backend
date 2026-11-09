@@ -37,6 +37,8 @@ spring:
       max-request-size: 101MB
 
 ticket-defender:
+  track1-v2:
+    enabled: ${TRACK1_V2_ENABLED:false}
   track1-internal-auth:
     shared-secret: ${TRACK1_INTERNAL_SHARED_SECRET:}
   evidence-preservation:

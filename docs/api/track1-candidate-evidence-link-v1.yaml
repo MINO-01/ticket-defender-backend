@@ -1,0 +1,63 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender Track 1 / Track 2 evidence-link query API
+  version: 1.0.0
+  description: >-
+    A read-only Case query that compares persisted Track 1 cluster-member reservation references with an immutable
+    Track 2 MATCH_CANDIDATE run through the server-side tenant-scoped HMAC contract. It never returns reservation
+    references, HMAC values, account IDs, object keys, or model input, and it is not a fraud, authenticity, or
+    ownership finding.
+paths:
+  /api/v1/cases/{caseId}/track1-candidate-links:
+    get:
+      operationId: getTrack1CandidateEvidenceLinks
+      description: >-
+        Uses only graphClusters and candidateRunIds already bound to the Case. A candidate must still point to the
+        same tenant, event, verified performance, complete accepted batch, sourceVersion, and HMAC key version.
+        The response is a current read; it does not modify an immutable run or a ledger snapshot.
+      parameters:
+        - name: caseId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Current convergence result.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EvidenceLinkView'}
+        '401': {description: Unauthenticated}
+        '403': {description: Same-scope role is insufficient}
+        '404': {description: Case is outside the caller tenant/event scope or is not visible}
+components:
+  schemas:
+    EvidenceLinkStatus:
+      type: string
+      enum: [LINKED, NO_TRACK1_LINK, NOT_APPLICABLE, LEDGER_UNAVAILABLE]
+    LedgerSeatStatus:
+      type: string
+      enum: [FOUND, NOT_IN_LEDGER, LEDGER_UNAVAILABLE]
+    LedgerSeat:
+      type: object
+      required: [auditId, status]
+      properties:
+        auditId: {type: integer, format: int64, description: Opaque existing Track 1 audit row ID}
+        status: {$ref: '#/components/schemas/LedgerSeatStatus'}
+        zone: {type: [string, 'null']}
+        row: {type: [string, 'null']}
+        seat: {type: [string, 'null']}
+    EvidenceLink:
+      type: object
+      required: [graphSourceId, candidateSourceId, candidateRunId, status, ledgerSeats]
+      properties:
+        graphSourceId: {type: string, format: uuid}
+        candidateSourceId: {type: string, format: uuid}
+        candidateRunId: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/EvidenceLinkStatus'}
+        ledgerSeats: {type: array, items: {$ref: '#/components/schemas/LedgerSeat'}}
+    EvidenceLinkView:
+      type: object
+      required: [status, items]
+      properties:
+        status: {$ref: '#/components/schemas/EvidenceLinkStatus'}
+        items: {type: array, items: {$ref: '#/components/schemas/EvidenceLink'}}

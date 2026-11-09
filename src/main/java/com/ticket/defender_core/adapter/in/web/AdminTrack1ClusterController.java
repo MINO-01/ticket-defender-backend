@@ -26,7 +26,9 @@ public class AdminTrack1ClusterController {
 
     @GetMapping("/clusters/detail")
     public Track1ClusterDto.Detail detail(@RequestParam UUID eventId,
-            @RequestParam String analysisRequestId, @RequestParam String clusterId) {
-        return clusters.detail(eventId, analysisRequestId, clusterId);
+            @RequestParam String analysisRequestId, @RequestParam String clusterId,
+            @RequestParam(required = false) UUID performanceId,
+            @RequestParam(required = false) String sourceVersion) {
+        return clusters.detail(eventId, analysisRequestId, clusterId, performanceId, sourceVersion);
     }
 }

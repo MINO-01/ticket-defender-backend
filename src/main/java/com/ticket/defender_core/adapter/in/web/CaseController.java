@@ -3,6 +3,7 @@ package com.ticket.defender_core.adapter.in.web;
 import com.ticket.defender_core.adapter.in.web.dto.CaseDto;
 import com.ticket.defender_core.adapter.in.web.dto.CaseWorkflowDto;
 import com.ticket.defender_core.adapter.in.web.dto.ApprovalAuditDto;
+import com.ticket.defender_core.adapter.in.web.dto.Track1CandidateLinkDto;
 import com.ticket.defender_core.application.service.CaseService;
 import com.ticket.defender_core.application.service.CaseWorkflowQueryService;
 import com.ticket.defender_core.domain.Case;
@@ -56,6 +57,11 @@ public class CaseController {
     @GetMapping("/{caseId}/sources")
     public List<CaseDto.Source> sources(@PathVariable UUID caseId) {
         return cases.sources(caseId);
+    }
+
+    @GetMapping("/{caseId}/track1-candidate-links")
+    public Track1CandidateLinkDto.View track1CandidateLinks(@PathVariable UUID caseId) {
+        return cases.track1CandidateLinks(caseId);
     }
 
     @GetMapping("/{caseId}/activities")

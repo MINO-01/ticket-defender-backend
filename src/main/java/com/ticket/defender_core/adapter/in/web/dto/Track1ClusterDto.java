@@ -22,7 +22,12 @@ public final class Track1ClusterDto {
     ) {
     }
 
-    public record Member(Long auditId, String accountId, String reservationNo) {
+    public enum LedgerSeatStatus { FOUND, NOT_IN_LEDGER, LEDGER_UNAVAILABLE }
+
+    /** The raw account and reservation references remain in protected evidence and are never returned. */
+    public record LedgerSeat(LedgerSeatStatus status, String zone, String row, String seat) { }
+
+    public record Member(Long auditId, LedgerSeat ledgerSeat) {
     }
 
     /** Shared signal values are deliberately not exposed. Counts refer only to persisted cluster members. */

@@ -9,4 +9,6 @@ import java.util.UUID;
 public interface ReservationCandidateRepository extends JpaRepository<ReservationCandidate, UUID> {
     List<ReservationCandidate> findTop2ByBatchIdAndZoneAndRowNumAndSeatNum(UUID batchId, String zone,
             String rowNum, String seatNum);
+
+    List<ReservationCandidate> findByBatchIdAndReservationRefHmacIn(UUID batchId, List<String> reservationRefHmacs);
 }

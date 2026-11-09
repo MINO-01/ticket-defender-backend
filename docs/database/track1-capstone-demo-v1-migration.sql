@@ -22,7 +22,7 @@ SET @td_sql = IF((SELECT COUNT(*) FROM information_schema.table_constraints WHER
     'ALTER TABLE track1_purchase_ledger_rows ADD CONSTRAINT chk_t1_ledger_track2_reference CHECK (track2_reservation_ref_hmac IS NULL OR CHAR_LENGTH(track2_reservation_ref_hmac) = 64)', 'SELECT 1');
 PREPARE td_stmt FROM @td_sql; EXECUTE td_stmt; DEALLOCATE PREPARE td_stmt;
 
-CREATE TABLE track1_purchase_limit_shared_signal_observations (
+CREATE TABLE IF NOT EXISTS track1_purchase_limit_shared_signal_observations (
     id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     run_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     observation_id VARCHAR(128) NOT NULL,

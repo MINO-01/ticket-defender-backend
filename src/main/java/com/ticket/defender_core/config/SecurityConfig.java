@@ -98,7 +98,9 @@ public class SecurityConfig {
                                  "/api/v1/admin/events/*/verified-performances/*/withdrawals",
                                  "/api/v1/admin/events/*/purchase-limit-policies",
                                  "/api/v1/admin/events/*/purchase-limit-policies/*/withdrawals",
-                                 "/api/v1/admin/events/*/reservation-imports").authenticated()
+                                 "/api/v1/admin/events/*/reservation-imports",
+                                 "/api/v1/admin/events/*/track1-quantity/ledger-imports",
+                                 "/api/v1/admin/events/*/track1-quantity/analysis-runs").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/cases",
                                 "/api/v1/cases/*", "/api/v1/cases/*/sources",
                                 "/api/v1/cases/*/track1-candidate-links",
@@ -117,6 +119,12 @@ public class SecurityConfig {
                                 "/api/v1/admin/fan-reports/*/evidence/*/listing-analyses/*/candidate-matches",
                                 "/api/v1/admin/fan-reports/*/performance-link",
                                 "/api/v1/admin/events/*/verified-performances", "/api/v1/admin/events/*/purchase-limit-policies",
+                                "/api/v1/admin/events/*/track1-quantity/ledger-imports",
+                                "/api/v1/admin/events/*/track1-quantity/analysis-runs",
+                                "/api/v1/admin/events/*/track1-quantity/analysis-runs/*",
+                                "/api/v1/admin/me", "/api/v1/admin/events/*/approval-requests",
+                                "/api/v1/admin/events/*/approval-audit-events", "/api/v1/admin/events/*/workflow-summary",
+                                "/api/v1/admin/events/*/reservation-imports",
                                 "/api/v1/admin/fan-reports/*/evidence/*/content").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/approval-decisions/*/official-pdf-issuances",
                                 "/api/v1/official-pdf-issuances/*/retry").authenticated()

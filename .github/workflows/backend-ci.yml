@@ -120,6 +120,14 @@ jobs:
         run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 schema test ran
         run: python3 .github/scripts/check_junit_results.py case-w05-schema
+      - name: Apply Track 1 purchase ledger migration
+        run: bash ./gradlew test --tests '*Track1QuantityMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 1 purchase ledger migration ran
+        run: python3 .github/scripts/check_junit_results.py track1-quantity-migration
+      - name: Verify Track 1 quantity HTTP flow
+        run: bash ./gradlew test --tests '*Track1QuantityHttpMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm Track 1 quantity HTTP flow ran
+        run: python3 .github/scripts/check_junit_results.py track1-quantity-http
       - name: Verify W05 snapshot and draft concurrency
         run: bash ./gradlew test --tests '*CaseW05ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 concurrency tests ran

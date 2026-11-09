@@ -21,6 +21,12 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.Track1TenantMigrationMySqlTest": (
         1, "Runs in its own isolated legacy MySQL CI job"
     ),
+    "com.ticket.defender_core.integration.Track1QuantityMigrationMySqlTest": (
+        1, "Runs after Hibernate baseline in the isolated MySQL CI job"
+    ),
+    "com.ticket.defender_core.integration.Track1QuantityHttpMySqlTest": (
+        7, "Runs over real HTTP in the isolated MySQL CI job"
+    ),
     "com.ticket.defender_core.integration.Track1LiveIntegrationTest": (
         2, "Requires a live FastAPI analysis service"
     ),
@@ -283,6 +289,12 @@ MYSQL_SUITES = {
     ),
     "track2-candidate-schema": (
         "com.ticket.defender_core.integration.Track2CandidatePipelineSchemaValidateMySqlTest", 1
+    ),
+    "track1-quantity-migration": (
+        "com.ticket.defender_core.integration.Track1QuantityMigrationMySqlTest", 1
+    ),
+    "track1-quantity-http": (
+        "com.ticket.defender_core.integration.Track1QuantityHttpMySqlTest", 7
     ),
     "track2-candidate-http": (
         "com.ticket.defender_core.integration.Track2CandidatePipelineHttpMySqlTest", 1

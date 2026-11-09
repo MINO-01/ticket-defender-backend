@@ -30,7 +30,8 @@ import java.util.UUID;
         OfficialPdfIssuanceController.class, ListingContextAnalysisController.class,
         AdminFanReportController.class, AdminAnalysisRunController.class, AdminEventController.class,
         VerifiedPerformanceController.class,
-        PerformanceLinkController.class, ReservationImportController.class, ListingCandidateMatchController.class})
+        PerformanceLinkController.class, ReservationImportController.class, ListingCandidateMatchController.class,
+        PurchaseLimitPolicyController.class, Track1QuantityController.class, AdminConsoleController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)
     ResponseEntity<ProblemDetail> api(CaseApiException error) {

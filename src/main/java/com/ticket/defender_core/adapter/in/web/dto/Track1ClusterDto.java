@@ -66,7 +66,12 @@ public final class Track1ClusterDto {
     ) {
     }
 
+    /** 저장된 device/IP 공유 근거에서만 만든 그래프입니다. 식별자는 군집별 불투명 값이며 신호 원문과 HMAC을 담지 않습니다. */
+    public record GraphNode(String id, String kind, String label) { }
+    public record GraphEdge(String id, String source, String target, String signalKind) { }
+    public record Graph(List<GraphNode> nodes, List<GraphEdge> edges) { }
+
     public record Detail(Event event, Summary cluster, List<Member> members,
-                         RelationshipExplanation relationship, String coverage) {
+                         RelationshipExplanation relationship, Graph graph, String coverage) {
     }
 }

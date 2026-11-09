@@ -12,4 +12,6 @@ public interface ReservationImportBatchRepository extends JpaRepository<Reservat
 
     Optional<ReservationImportBatch> findByTenantIdAndEventIdAndPerformanceIdAndSourceVersion(
             UUID tenantId, UUID eventId, UUID performanceId, String sourceVersion);
+
+    org.springframework.data.domain.Page<ReservationImportBatch> findByTenantIdAndEventId(java.util.UUID tenantId, java.util.UUID eventId, org.springframework.data.domain.Pageable pageable);
 }

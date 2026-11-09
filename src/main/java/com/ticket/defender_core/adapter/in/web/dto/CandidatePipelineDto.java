@@ -59,4 +59,6 @@ public final class CandidatePipelineDto {
                                String analysisResponseSha256, Long analysisRowVersion,
                                Applicability applicability, LocalDateTime createdAt, LocalDateTime completedAt) { }
     public record CandidateRunPage(List<CandidateRun> items, int page, int pageSize, boolean hasNext) { }
+
+    public record ImportHistory(java.util.List<ImportResult> items, int page, int pageSize, boolean hasNext) { }
 }

@@ -1,0 +1,390 @@
+openapi: 3.0.3
+info:
+  title: Track 1 구매 수량 원장과 v2 분석
+  version: 1.0.0
+  description: Backend Issue 81 구현 계약입니다. 구매 한도 결과는 조사 신호이며 부정 확정이 아닙니다.
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/admin/events/{eventId}/track1-quantity/ledger-imports:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      summary: 구매 수량 원장 반입
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '201':
+          description: 수락 또는 거절된 배치
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerBatch'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+    get:
+      summary: 반입 이력
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 최신순 배치 페이지
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageInfo'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/LedgerBatch'
+  /api/v1/admin/events/{eventId}/track1-quantity/analysis-runs:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      summary: v2 분석 실행
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [performanceId, ledgerBatchId]
+              properties:
+                performanceId:
+                  type: string
+                  format: uuid
+                ledgerBatchId:
+                  type: string
+                  format: uuid
+      responses:
+        '202':
+          description: 완료된 실행 상태. FAILED도 202로 반환되며 evaluation은 null입니다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisRun'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    get:
+      summary: 실행 목록
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 최신순 실행 페이지
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageInfo'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AnalysisRun'
+  /api/v1/admin/events/{eventId}/track1-quantity/analysis-runs/{runId}:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: 실행 단건
+      responses:
+        '200':
+          description: 실행 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisRun'
+        '404':
+          $ref: '#/components/responses/Problem'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    Problem:
+      description: 오류
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: integer
+              code:
+                type: string
+  schemas:
+    PageInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasNext:
+          type: boolean
+    ImportRequest:
+      type: object
+      required: [performanceId, inputType, sourceVersion, sourceAsOf]
+      properties:
+        performanceId:
+          type: string
+          format: uuid
+        inputType:
+          type: string
+          enum: [INDIVIDUAL_TICKET, ACCOUNT_LIMIT_SNAPSHOT]
+        sourceVersion:
+          type: string
+          maxLength: 128
+        sourceAsOf:
+          type: string
+          format: date-time
+        quantityBasis:
+          type: string
+          maxLength: 128
+        completeSnapshot:
+          type: boolean
+        rows:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/ImportRow'
+    ImportRow:
+      type: object
+      description: 관계 신호 참조(payment, address, device, ip)는 하나 이상 필요합니다.
+      required: [accountReference, reservationReference, ticketReference, purchasedAt, quantity, quantityUnit, ticketStatus]
+      properties:
+        accountReference:
+          type: string
+          maxLength: 128
+        reservationReference:
+          type: string
+          maxLength: 128
+        ticketReference:
+          type: string
+          maxLength: 128
+        purchasedAt:
+          type: string
+          format: date-time
+        quantity:
+          type: integer
+          minimum: 1
+        quantityUnit:
+          type: string
+          enum: [TICKET, ORDER_LINE]
+        ticketStatus:
+          type: string
+          enum: [ACTIVE, CANCELLED, REFUNDED, UNKNOWN]
+        paymentReference:
+          type: string
+          maxLength: 128
+        addressReference:
+          type: string
+          maxLength: 128
+        deviceReference:
+          type: string
+          maxLength: 128
+        ipReference:
+          type: string
+          maxLength: 128
+    LedgerBatch:
+      type: object
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        performanceId:
+          type: string
+          format: uuid
+        inputType:
+          type: string
+        sourceVersion:
+          type: string
+        sourceAsOf:
+          type: string
+          format: date-time
+        ledgerVersion:
+          type: integer
+        quantityBasis:
+          type: string
+          nullable: true
+        completeSnapshot:
+          type: boolean
+        status:
+          type: string
+          enum: [ACCEPTED, REJECTED]
+        inputRowCount:
+          type: integer
+        acceptedRowCount:
+          type: integer
+        rejectedRowCount:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              rowIndex:
+                type: integer
+                nullable: true
+              code:
+                type: string
+        completedAt:
+          type: string
+          format: date-time
+    AnalysisRun:
+      type: object
+      properties:
+        runId:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        performanceId:
+          type: string
+          format: uuid
+        ledgerBatchId:
+          type: string
+          format: uuid
+        sourceVersion:
+          type: string
+        executionStatus:
+          type: string
+          enum: [RUNNING, SUCCEEDED, FAILED]
+        failureCode:
+          type: string
+          nullable: true
+        retryable:
+          type: boolean
+        policyId:
+          type: string
+          format: uuid
+          nullable: true
+        policyVersion:
+          type: string
+          nullable: true
+        algorithmVersion:
+          type: string
+          nullable: true
+        analysisRequestId:
+          type: string
+          format: uuid
+        clusterCount:
+          type: integer
+          nullable: true
+        clusters:
+          type: array
+          items:
+            type: object
+            properties:
+              clusterId:
+                type: string
+              riskScore:
+                type: number
+                description: 조사 우선순위이며 불법 확률이 아닙니다.
+              memberCount:
+                type: integer
+        nettedExcludedRowCount:
+          type: integer
+        requestedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        evaluation:
+          nullable: true
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [EVALUATED, POLICY_NOT_CONFIRMED, QUANTITY_DATA_INCOMPLETE, POLICY_TIME_NOT_APPLICABLE]
+            reasonCode:
+              type: string
+              nullable: true
+            policyVersion:
+              type: string
+              nullable: true
+            findings:
+              type: array
+              items:
+                type: object
+                properties:
+                  accountToken:
+                    type: string
+                  effectiveTicketQuantity:
+                    type: integer
+                  maxTicketsPerAccount:
+                    type: integer
+                  policyVersion:
+                    type: string
+                  reservationQuantities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        reservationToken:
+                          type: string
+                        effectiveTicketQuantity:
+                          type: integer

@@ -1,0 +1,14 @@
+{
+  "performanceId": "22222222-2222-4222-8222-222222222222",
+  "inputType": "INDIVIDUAL_TICKET",
+  "sourceVersion": "synthetic-ledger-v1",
+  "sourceAsOf": "2026-11-08T10:00:00Z",
+  "quantityBasis": "PROVIDER_TICKET_LEDGER",
+  "completeSnapshot": true,
+  "rows": [
+    { "accountReference": "synthetic-account-a", "reservationReference": "synthetic-reservation-a", "ticketReference": "synthetic-ticket-1", "purchasedAt": "2026-11-02T10:00:00Z", "quantity": 1, "quantityUnit": "TICKET", "ticketStatus": "ACTIVE", "deviceReference": "synthetic-device-shared" },
+    { "accountReference": "synthetic-account-a", "reservationReference": "synthetic-reservation-a", "ticketReference": "synthetic-ticket-2", "purchasedAt": "2026-11-02T10:00:00Z", "quantity": 1, "quantityUnit": "TICKET", "ticketStatus": "ACTIVE", "deviceReference": "synthetic-device-shared" },
+    { "accountReference": "synthetic-account-a", "reservationReference": "synthetic-reservation-a", "ticketReference": "synthetic-ticket-3", "purchasedAt": "2026-11-02T10:00:00Z", "quantity": 1, "quantityUnit": "TICKET", "ticketStatus": "ACTIVE", "deviceReference": "synthetic-device-shared" },
+    { "accountReference": "synthetic-account-b", "reservationReference": "synthetic-reservation-b", "ticketReference": "synthetic-order-line-1", "purchasedAt": "2026-11-02T11:00:00Z", "quantity": 2, "quantityUnit": "ORDER_LINE", "ticketStatus": "ACTIVE", "deviceReference": "synthetic-device-shared" }
+  ]
+}

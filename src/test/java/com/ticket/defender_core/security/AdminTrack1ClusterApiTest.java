@@ -144,9 +144,9 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cluster.analyzedAt").value("2026-10-08T10:15:30Z"))
                 .andExpect(jsonPath("$.members.length()").value(2))
-                .andExpect(jsonPath("$.members[0].accountId").value("account-1"))
-                .andExpect(jsonPath("$.members[0].reservationNo").value("reservation-1"))
                 .andExpect(jsonPath("$.members[0].auditId").isNumber())
+                .andExpect(jsonPath("$.members[0].accountId").doesNotExist())
+                .andExpect(jsonPath("$.members[0].reservationNo").doesNotExist())
                 .andExpect(jsonPath("$.members[0].paymentHash").doesNotExist())
                 .andExpect(jsonPath("$.members[0].seat").doesNotExist())
                 .andExpect(jsonPath("$.members[0].signals").doesNotExist())
@@ -206,12 +206,12 @@ class AdminTrack1ClusterApiTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.members.length()").value(1))
-                .andExpect(jsonPath("$.members[0].accountId").value("account-a"));
+                .andExpect(jsonPath("$.members[0].accountId").doesNotExist());
         mvc.perform(detail(EVENT_A_OTHER, RUN_1, "same-cluster")
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.members.length()").value(1))
-                .andExpect(jsonPath("$.members[0].accountId").value("account-other"));
+                .andExpect(jsonPath("$.members[0].accountId").doesNotExist());
     }
 
     @Test
@@ -249,11 +249,11 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(jsonPath("$.items[0].analysisRequestId").value("run/2"));
         mvc.perform(detail(EVENT_A, "run/1", "cluster/x").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.members[0].accountId").value("account-1"))
+                .andExpect(jsonPath("$.members[0].accountId").doesNotExist())
                 .andExpect(jsonPath("$.members.length()").value(1));
         mvc.perform(detail(EVENT_A, "run/2", "cluster/x").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.members[0].accountId").value("account-2"));
+                .andExpect(jsonPath("$.members[0].accountId").doesNotExist());
         mvc.perform(detail(EVENT_A, "missing", "cluster/x").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isNotFound());
     }

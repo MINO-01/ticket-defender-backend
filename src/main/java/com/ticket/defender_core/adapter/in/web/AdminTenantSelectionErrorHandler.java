@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
         AdminAnalysisRunController.class, AdminOperationSettingsController.class,
         ListingContextAnalysisController.class, CaseController.class, CasePreparationController.class,
         ReportDraftController.class, EvidenceIntegrityController.class, ApprovalRequestController.class,
-        OfficialPdfIssuanceController.class, AdminEventController.class})
+        OfficialPdfIssuanceController.class, AdminEventController.class, Track1QuantityController.class, AdminConsoleController.class})
 public class AdminTenantSelectionErrorHandler {
     @ExceptionHandler(TenantSelectionRequiredException.class)
     ResponseEntity<ProblemDetail> tenantSelectionRequired(TenantSelectionRequiredException ignored) {

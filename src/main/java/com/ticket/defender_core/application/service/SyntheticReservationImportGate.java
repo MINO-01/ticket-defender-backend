@@ -79,6 +79,15 @@ public class SyntheticReservationImportGate {
         }
     }
 
+    /** 신호별로 분리된 토큰이 필요한 합성 반입 경로에 목적이 고정된 hasher를 제공합니다. */
+    TenantPurposeReferenceHasher referenceHasher(String purpose) {
+        try {
+            return new TenantPurposeReferenceHasher(hmacMasterKey, purpose, hmacKeyVersion);
+        } catch (IllegalArgumentException invalid) {
+            throw conflict(ISOLATION_UNVERIFIED);
+        }
+    }
+
     /**
      * Read-only correlation may remain available after the one-time synthetic import switch is disabled.
      * It never enables import, and deliberately returns no hasher when the configured key material is unusable.

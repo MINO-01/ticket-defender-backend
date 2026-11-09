@@ -14,6 +14,8 @@ import com.ticket.defender_core.domain.VerifiedPerformance;
 import com.ticket.defender_core.security.AdminRole;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +33,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ReservationImportService {
     private static final Set<AdminRole> IMPORT_ROLES = Set.of(AdminRole.TENANT_ADMIN);
+    private static final Set<AdminRole> HISTORY_ROLES = Set.of(AdminRole.TENANT_ADMIN, AdminRole.ANALYST, AdminRole.REVIEWER);
     private static final int MAX_ROWS = 1_000;
 
     private final CandidatePipelineAccess access;
@@ -226,6 +229,16 @@ public class ReservationImportService {
             fields.add("BOOLEAN");
             fields.add(Boolean.toString(value));
         }
+    }
+
+    /** 저장된 반입 배치만 최신순으로 돌려줍니다. */
+    @Transactional(readOnly = true)
+    public CandidatePipelineDto.ImportHistory history(UUID eventId, int page, int pageSize) {
+        Track1QuantityLedgerService.validatePage(page, pageSize);
+        CandidatePipelineAccess.Scope scope = access.event(eventId, HISTORY_ROLES);
+        var found = batches.findByTenantIdAndEventId(scope.tenantId(), scope.eventId(), PageRequest.of(page, pageSize,
+                Sort.by("completedAt").descending().and(Sort.by("id").descending())));
+        return new CandidatePipelineDto.ImportHistory(found.stream().map(this::view).toList(), page, pageSize, found.hasNext());
     }
 
     private CandidatePipelineDto.ImportResult view(ReservationImportBatch batch) {

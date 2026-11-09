@@ -24,4 +24,7 @@ public interface CaseRepository extends JpaRepository<Case, UUID> {
             """)
     Page<Case> findVisible(UUID tenantId, UUID eventId, Case.Status status,
                            UUID membershipId, Pageable pageable);
+
+    @Query("select c.status, count(c) from Case c where c.tenantId = :tenant and c.eventId = :event group by c.status")
+    java.util.List<Object[]> countByStatus(@org.springframework.data.repository.query.Param("tenant") UUID tenant, @org.springframework.data.repository.query.Param("event") UUID event);
 }

@@ -11,4 +11,6 @@ import java.util.UUID;
 public interface ApprovalAuditEventRepository extends JpaRepository<ApprovalAuditEvent, UUID> {
     List<ApprovalAuditEvent> findByApprovalRequestIdOrderByOccurredAtAscIdAsc(UUID approvalRequestId);
     Page<ApprovalAuditEvent> findByCaseId(UUID caseId, Pageable pageable);
+
+    Page<ApprovalAuditEvent> findByTenantIdAndEventId(UUID tenantId, UUID eventId, Pageable pageable);
 }

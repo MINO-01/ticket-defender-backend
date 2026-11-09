@@ -23,9 +23,14 @@ public class Track1PurchaseLimitAnalysisService {
     public Track1PurchaseLimitAnalysisResponse analyzeTrustedLedgerInput(
             Track1PurchaseLimitAnalysisRequest request
     ) {
+        requireEnabled();
+        return fastApiAdapter.requestPurchaseLimitAnalysis(request);
+    }
+
+    /** 실행 기록을 만들기 전에 기본 비활성 게이트를 확인합니다. */
+    public void requireEnabled() {
         if (!enabled) {
             throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "TRACK1_V2_DISABLED");
         }
-        return fastApiAdapter.requestPurchaseLimitAnalysis(request);
     }
 }

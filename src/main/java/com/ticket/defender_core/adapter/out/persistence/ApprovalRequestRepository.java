@@ -1,5 +1,8 @@
 package com.ticket.defender_core.adapter.out.persistence;
 
+import java.util.List;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Page;
 import com.ticket.defender_core.domain.ApprovalRequest;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -32,4 +35,11 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
     Optional<ApprovalRequest> findByTenantIdAndCaseIdAndStatus(
             UUID tenantId, UUID caseId, ApprovalRequest.Status status);
     Optional<ApprovalRequest> findByReportVersionId(UUID reportVersionId);
+
+    Page<ApprovalRequest> findByTenantIdAndEventId(UUID tenantId, UUID eventId, Pageable pageable);
+
+    Page<ApprovalRequest> findByTenantIdAndEventIdAndStatus(UUID tenantId, UUID eventId, ApprovalRequest.Status status, Pageable pageable);
+
+    @Query("select r.status, count(r) from ApprovalRequest r where r.tenantId = :tenant and r.eventId = :event group by r.status")
+    List<Object[]> countByStatus(@org.springframework.data.repository.query.Param("tenant") UUID tenant, @org.springframework.data.repository.query.Param("event") UUID event);
 }

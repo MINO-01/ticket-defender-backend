@@ -80,7 +80,7 @@ public class AdminTrack1ClusterService {
                 first.getRiskScore(), first.getAnalysisAlgorithm(), first.getAnalysisAlgorithmVersion(),
                 first.getAnalysisCompletedAt().atOffset(ZoneOffset.UTC), rows.size());
         List<Track1ClusterDto.Member> members = members(actor, rows, performanceId, sourceVersion);
-        return new Track1ClusterDto.Detail(event, cluster, members, relationship(rows), COVERAGE);
+        return new Track1ClusterDto.Detail(event, cluster, members, relationship(rows), graph(analysisRequestId, clusterId, rows), COVERAGE);
     }
 
     private List<Track1ClusterDto.Member> members(AdminActor actor, List<MacroAuditEvidence> rows,
@@ -131,6 +131,39 @@ public class AdminTrack1ClusterService {
         long connections = signals.stream().mapToLong(Track1ClusterDto.SharedSignal::verifiedConnectionCount).sum();
         return new Track1ClusterDto.RelationshipExplanation(signals, connections,
                 List.of("PAYMENT_HASH", "ADDRESS_HASH"), PRIORITY_SOURCE, NORMAL_SHARING_NOTICE, MEMBER_COVERAGE);
+    }
+
+    /** 2개 이상 계정이 공유한 저장 신호만 간선으로 만듭니다. 원본 그래프 전체를 복원한다는 뜻이 아닙니다. */
+    private static Track1ClusterDto.Graph graph(String analysisRequestId, String clusterId, List<MacroAuditEvidence> rows) {
+        Map<String, Track1ClusterDto.GraphNode> nodes = new java.util.LinkedHashMap<>();
+        List<Track1ClusterDto.GraphEdge> edges = new java.util.ArrayList<>();
+        graphSignal(analysisRequestId, clusterId, rows, "DEVICE", MacroAuditEvidence::getDeviceIdHash, nodes, edges);
+        graphSignal(analysisRequestId, clusterId, rows, "IP", MacroAuditEvidence::getIpHash, nodes, edges);
+        return new Track1ClusterDto.Graph(List.copyOf(nodes.values()), List.copyOf(edges));
+    }
+
+    private static void graphSignal(String analysisRequestId, String clusterId, List<MacroAuditEvidence> rows, String kind,
+            java.util.function.Function<MacroAuditEvidence, String> signal, Map<String, Track1ClusterDto.GraphNode> nodes,
+            List<Track1ClusterDto.GraphEdge> edges) {
+        Map<String, java.util.Set<String>> accounts = new java.util.TreeMap<>();
+        rows.stream().filter(row -> signal.apply(row) != null && !signal.apply(row).isBlank())
+                .forEach(row -> accounts.computeIfAbsent(signal.apply(row), ignored -> new java.util.TreeSet<>()).add(row.getAccountId()));
+        int[] signalNumber = {0};
+        accounts.forEach((value, owners) -> {
+            if (owners.size() < 2) return;
+            signalNumber[0]++;
+            String signalId = opaque(analysisRequestId, clusterId, kind, value);
+            nodes.put(signalId, new Track1ClusterDto.GraphNode(signalId, "signal", kind + " " + signalNumber[0]));
+            owners.forEach(owner -> {
+                String accountId = opaque(analysisRequestId, clusterId, "ACCOUNT", owner);
+                nodes.computeIfAbsent(accountId, id -> new Track1ClusterDto.GraphNode(id, "account", "계정 " + id.substring(0, 6)));
+                edges.add(new Track1ClusterDto.GraphEdge(opaque(analysisRequestId, clusterId, "EDGE", accountId + signalId), accountId, signalId, kind));
+            });
+        });
+    }
+
+    private static String opaque(String analysisRequestId, String clusterId, String kind, String value) {
+        return CandidatePipelineSupport.sha256("TRACK1_GRAPH", analysisRequestId, clusterId, kind, value).substring(0, 24);
     }
 
     private static Track1ClusterDto.SharedSignal shared(Track1ClusterDto.SharedSignalType type, List<String> values) {

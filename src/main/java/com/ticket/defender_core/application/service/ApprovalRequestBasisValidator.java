@@ -14,6 +14,8 @@ import com.ticket.defender_core.domain.EvidenceSnapshot;
 import com.ticket.defender_core.domain.EvidenceVerificationRecord;
 import com.ticket.defender_core.domain.ReportVersion;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -24,6 +26,11 @@ import java.util.Objects;
 @Component
 @RequiredArgsConstructor
 public class ApprovalRequestBasisValidator {
+    @Autowired(required = false)
+    private OfficialPdfOperationGate operations;
+
+    @Value("${ticket-defender.official-pdf.demo-v1-enabled:false}")
+    private boolean demoV1Enabled;
     private final CaseSourceReferenceRepository sources;
     private final EvidenceAssetRepository assets;
     private final EvidenceVerificationRecordRepository verifications;
@@ -38,9 +45,19 @@ public class ApprovalRequestBasisValidator {
         for (CaseSourceReference source : references) {
             // Candidate runs are immutable investigative references, not approved fraud findings.
             // A separate policy is required before approval eligibility may rely on this source type.
-            if (source.getSourceType() == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH) throw blocked();
+            if (source.getSourceType() == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH && !demoCandidateAllowed(target)) throw blocked();
             if (source.getSourceType() != CaseSourceReference.Type.EVIDENCE_ASSET) continue;
             validateFile(target, snapshot, report, source, now);
+        }
+    }
+
+    private boolean demoCandidateAllowed(Case target) {
+        if (!demoV1Enabled || operations == null) return false;
+        try {
+            operations.requireSyntheticScope(target);
+            return true;
+        } catch (CaseApiException denied) {
+            return false;
         }
     }
 

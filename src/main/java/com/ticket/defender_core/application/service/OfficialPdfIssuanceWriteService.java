@@ -70,6 +70,8 @@ public class OfficialPdfIssuanceWriteService {
     /** A RUNNING attempt younger than this lease blocks retry; expiry never lets the old worker finalize. */
     @Value("${ticket-defender.official-pdf.attempt-lease:PT5M}")
     private Duration attemptLease;
+    @Value("${ticket-defender.official-pdf.demo-v1-enabled:false}")
+    private boolean demoV1Enabled;
 
     /** Lock order: scalar decision/issuance case ID, Case FOR UPDATE, then request/issuance FOR UPDATE. */
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -88,8 +90,9 @@ public class OfficialPdfIssuanceWriteService {
 
         OfficialPdfIssuance issuance = issuances.findByApprovalDecisionIdForUpdate(decisionId).orElse(null);
         if (issuance == null) {
-            requireCurrent(eligibility.assess(bound.value(), templates.current().version(), templates.current().sha256(), now()));
-            issuance = issuances.saveAndFlush(new OfficialPdfIssuance(decision, actor, templates.current(), now()));
+            OfficialPdfTemplateRegistry.Template template = demoV1Enabled ? templates.demoV1() : templates.current();
+            requireCurrent(eligibility.assess(bound.value(), template.version(), template.sha256(), now()));
+            issuance = issuances.saveAndFlush(new OfficialPdfIssuance(decision, actor, template, now()));
             issuance.beginAttempt();
             issuances.saveAndFlush(issuance);
             OfficialPdfIssuanceAttempt attempt = attempts.saveAndFlush(new OfficialPdfIssuanceAttempt(issuance,

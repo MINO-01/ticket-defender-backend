@@ -29,4 +29,10 @@ public class AdminTrack1ClusterController {
             @RequestParam String analysisRequestId, @RequestParam String clusterId) {
         return clusters.detail(eventId, analysisRequestId, clusterId);
     }
+
+    @GetMapping("/clusters/graph")
+    public Track1ClusterDto.Graph graph(@RequestParam UUID eventId,
+            @RequestParam String analysisRequestId, @RequestParam String clusterId) {
+        return clusters.graph(eventId, analysisRequestId, clusterId);
+    }
 }

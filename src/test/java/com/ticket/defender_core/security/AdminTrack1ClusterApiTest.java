@@ -172,6 +172,54 @@ class AdminTrack1ClusterApiTest {
     }
 
     @Test
+    void authorizedAdminReadsDisplaySafeGraphReconstructedFromStoredEvidence() throws Exception {
+        String hiddenAccountOne = "raw-account-alpha";
+        String hiddenAccountTwo = "raw-account-beta";
+        String hiddenReservationOne = "raw-reservation-alpha";
+        String hiddenDeviceToken = "d".repeat(64);
+        saveEvidence(TENANT_A, EVENT_A, hiddenAccountOne, hiddenReservationOne, RUN_1, "graph-cluster", 0.82,
+                "2026-10-08T10:15:30", hiddenDeviceToken, null);
+        saveEvidence(TENANT_A, EVENT_A, hiddenAccountOne, "raw-reservation-alpha-2", RUN_1, "graph-cluster", 0.82,
+                "2026-10-08T10:15:30", hiddenDeviceToken, null);
+        saveEvidence(TENANT_A, EVENT_A, hiddenAccountTwo, "raw-reservation-beta", RUN_1, "graph-cluster", 0.82,
+                "2026-10-08T10:15:30", hiddenDeviceToken, "e".repeat(64));
+
+        mvc.perform(graph(EVENT_A, RUN_1, "graph-cluster").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.analysisRequestId").value(RUN_1))
+                .andExpect(jsonPath("$.clusterId").value("graph-cluster"))
+                .andExpect(jsonPath("$.algorithmVersion").value("1.0.0"))
+                .andExpect(jsonPath("$.coverage").value("STORED_EVIDENCE_RECONSTRUCTION"))
+                .andExpect(jsonPath("$.nodes.length()").value(6))
+                .andExpect(jsonPath("$.nodes[0].id").value("account-1"))
+                .andExpect(jsonPath("$.nodes[0].label").value("계정 1"))
+                .andExpect(jsonPath("$.nodes[0].kind").value("ACCOUNT"))
+                .andExpect(jsonPath("$.nodes[5].id").value("signal-1"))
+                .andExpect(jsonPath("$.nodes[5].label").value("공유 기기 1"))
+                .andExpect(jsonPath("$.edges.length()").value(5))
+                .andExpect(jsonPath("$.edges[0].source").value("account-1"))
+                .andExpect(jsonPath("$.edges[0].target").value("reservation-1"))
+                .andExpect(jsonPath("$.edges[3].kind").value("SHARED_SIGNAL"))
+                .andExpect(jsonPath("$.warnings[0]").value(containsString("not the original GDS projection")))
+                .andExpect(content().string(not(containsString(hiddenAccountOne))))
+                .andExpect(content().string(not(containsString(hiddenAccountTwo))))
+                .andExpect(content().string(not(containsString(hiddenReservationOne))))
+                .andExpect(content().string(not(containsString(hiddenDeviceToken))));
+    }
+
+    @Test
+    void graphResponseHasANonEmptyHardLimit() throws Exception {
+        for (int index = 0; index < 201; index++) {
+            saveEvidence(TENANT_A, EVENT_A, "limit-account-" + index, "limit-reservation-" + index,
+                    RUN_1, "large-graph", 0.5, "2026-10-08T10:15:30");
+        }
+
+        mvc.perform(graph(EVENT_A, RUN_1, "large-graph").header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(content().string(not(containsString("limit-reservation-0"))));
+    }
+
+    @Test
     void missingInvalidAndServiceAudienceTokensAreRejected() throws Exception {
         mvc.perform(list(EVENT_A)).andExpect(status().isUnauthorized());
         mvc.perform(list(EVENT_A).header(HttpHeaders.AUTHORIZATION, "Bearer broken"))
@@ -190,6 +238,9 @@ class AdminTrack1ClusterApiTest {
         mvc.perform(list(EVENT_A_OTHER).header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isNotFound());
         mvc.perform(detail(EVENT_B, RUN_1, "cluster-1")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isNotFound());
+        mvc.perform(graph(EVENT_B, RUN_1, "cluster-1")
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                 .andExpect(status().isNotFound());
     }
@@ -310,7 +361,8 @@ class AdminTrack1ClusterApiTest {
         // 같은 subject가 두 번째 활성 고객사에도 활성 멤버십을 가지면 DEC-02 확정 전까지 업무 API를 쓸 수 없습니다.
         extraMembership("admin-a", AccessRecordStatus.ACTIVE, AccessRecordStatus.ACTIVE);
 
-        for (var request : List.of(list(EVENT_A), detail(EVENT_A, RUN_1, "cluster-1"))) {
+        for (var request : List.of(list(EVENT_A), detail(EVENT_A, RUN_1, "cluster-1"),
+                graph(EVENT_A, RUN_1, "cluster-1"))) {
             mvc.perform(request.header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.code").value("TENANT_SELECTION_REQUIRED"))
@@ -352,9 +404,16 @@ class AdminTrack1ClusterApiTest {
 
     private void saveEvidence(UUID tenantId, UUID eventId, String accountId, String reservationNo,
             String analysisRequestId, String clusterId, double riskScore, String analyzedAt) {
+        saveEvidence(tenantId, eventId, accountId, reservationNo, analysisRequestId, clusterId, riskScore,
+                analyzedAt, "b".repeat(64), null);
+    }
+
+    private void saveEvidence(UUID tenantId, UUID eventId, String accountId, String reservationNo,
+            String analysisRequestId, String clusterId, double riskScore, String analyzedAt,
+            String deviceIdHash, String ipHash) {
         audits.saveAndFlush(TicketAudit.createMacroAudit(new MacroAnalysisEvidence(
                 accountId, reservationNo, eventId.equals(EVENT_A_OTHER) ? "other-event" : "shared-event",
-                "a".repeat(64), null, "b".repeat(64), null,
+                "a".repeat(64), null, deviceIdHash, ipHash,
                 clusterId, riskScore, "LOUVAIN", "1.0.0", analysisRequestId,
                 LocalDateTime.parse(analyzedAt), tenantId, eventId)));
     }
@@ -378,6 +437,13 @@ class AdminTrack1ClusterApiTest {
 
     private static MockHttpServletRequestBuilder detail(UUID eventId, String runId, String clusterId) {
         return get("/api/v1/admin/track1/clusters/detail")
+                .param("eventId", eventId.toString())
+                .param("analysisRequestId", runId)
+                .param("clusterId", clusterId);
+    }
+
+    private static MockHttpServletRequestBuilder graph(UUID eventId, String runId, String clusterId) {
+        return get("/api/v1/admin/track1/clusters/graph")
                 .param("eventId", eventId.toString())
                 .param("analysisRequestId", runId)
                 .param("clusterId", clusterId);

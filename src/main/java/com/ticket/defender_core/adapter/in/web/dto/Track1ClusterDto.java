@@ -59,4 +59,29 @@ public final class Track1ClusterDto {
     public record Detail(Event event, Summary cluster, List<Member> members,
                          RelationshipExplanation relationship, String coverage) {
     }
+
+    /**
+     * A display-safe reconstruction from MySQL evidence.  Node ids and labels are ordinal aliases,
+     * never account ids, reservation numbers, or HMAC values.
+     */
+    public record Graph(
+            String analysisRequestId,
+            String clusterId,
+            String algorithmVersion,
+            String coverage,
+            List<GraphNode> nodes,
+            List<GraphEdge> edges,
+            List<String> warnings
+    ) {
+    }
+
+    public enum GraphNodeKind { ACCOUNT, RESERVATION, SIGNAL }
+
+    public enum GraphEdgeKind { RESERVATION, SHARED_SIGNAL }
+
+    public record GraphNode(String id, String label, GraphNodeKind kind) {
+    }
+
+    public record GraphEdge(String id, String source, String target, GraphEdgeKind kind) {
+    }
 }

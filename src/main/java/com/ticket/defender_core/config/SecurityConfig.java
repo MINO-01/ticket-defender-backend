@@ -76,7 +76,8 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/track1/clusters",
-                                "/api/v1/admin/track1/clusters/detail").authenticated()
+                                "/api/v1/admin/track1/clusters/detail",
+                                "/api/v1/admin/track1/clusters/graph").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/analysis-runs",
                                 "/api/v1/admin/operations/settings").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/events").authenticated()

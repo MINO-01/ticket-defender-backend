@@ -56,6 +56,26 @@ public class MacroAuditEvidenceReadRepository {
 
     public List<MacroAuditEvidence> findMembers(UUID tenantId, UUID eventId,
             String analysisRequestId, String clusterId) {
+        return memberQuery(tenantId, eventId, analysisRequestId, clusterId)
+                .getResultList();
+    }
+
+    /**
+     * Reads one more row than the graph view allows so callers can reject an oversized response
+     * without treating it as an empty graph.  The tenant/event predicate is always applied here.
+     */
+    public List<MacroAuditEvidence> findMembersForGraph(UUID tenantId, UUID eventId,
+            String analysisRequestId, String clusterId, int maxRowsPlusOne) {
+        if (maxRowsPlusOne < 1) {
+            throw new IllegalArgumentException("maxRowsPlusOne must be positive");
+        }
+        return memberQuery(tenantId, eventId, analysisRequestId, clusterId)
+                .setMaxResults(maxRowsPlusOne)
+                .getResultList();
+    }
+
+    private jakarta.persistence.TypedQuery<MacroAuditEvidence> memberQuery(UUID tenantId, UUID eventId,
+            String analysisRequestId, String clusterId) {
         return entityManager.createQuery("""
                 select e from MacroAuditEvidence e
                 where e.tenantId = :tenantId and e.internalEventId = :eventId
@@ -65,7 +85,6 @@ public class MacroAuditEvidenceReadRepository {
                 .setParameter("tenantId", tenantId)
                 .setParameter("eventId", eventId)
                 .setParameter("analysisRequestId", analysisRequestId)
-                .setParameter("clusterId", clusterId)
-                .getResultList();
+                .setParameter("clusterId", clusterId);
     }
 }

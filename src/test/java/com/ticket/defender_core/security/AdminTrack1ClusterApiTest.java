@@ -150,6 +150,14 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(jsonPath("$.members[0].paymentHash").doesNotExist())
                 .andExpect(jsonPath("$.members[0].seat").doesNotExist())
                 .andExpect(jsonPath("$.members[0].signals").doesNotExist())
+                .andExpect(jsonPath("$.verificationContext.status").value("NOT_REQUESTED"))
+                .andExpect(jsonPath("$.verificationContext.basis").doesNotExist())
+                .andExpect(jsonPath("$.verificationContext.performanceId").doesNotExist())
+                .andExpect(jsonPath("$.verificationContext.sourceVersion").doesNotExist())
+                .andExpect(jsonPath("$.verificationContext.status").value("NOT_REQUESTED"))
+                .andExpect(jsonPath("$.verificationContext.basis").doesNotExist())
+                .andExpect(jsonPath("$.verificationContext.performanceId").doesNotExist())
+                .andExpect(jsonPath("$.verificationContext.sourceVersion").doesNotExist())
                 .andExpect(jsonPath("$.relationship.sharedSignals[0].type").value("DEVICE_ID_HASH"))
                 .andExpect(jsonPath("$.relationship.sharedSignals[0].sharedMemberCount").value(2))
                 .andExpect(jsonPath("$.relationship.sharedSignals[0].verifiedConnectionCount").value(1))
@@ -160,6 +168,16 @@ class AdminTrack1ClusterApiTest {
                 .andExpect(content().string(not(containsString("FRAUD_DETECTED"))))
                 .andExpect(content().string(not(containsString("a".repeat(64)))))
                 .andExpect(content().string(not(containsString("b".repeat(64)))));
+    }
+
+    @Test
+    void partialSeatLedgerScopeIsRejectedWithoutChangingTheExistingDetailContract() throws Exception {
+        saveEvidence(TENANT_A, EVENT_A, "account-1", "reservation-1", RUN_1, "cluster-1", 0.82,
+                "2026-10-08T10:15:30");
+
+        mvc.perform(detail(EVENT_A, RUN_1, "cluster-1").param("performanceId", UUID.randomUUID().toString())
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin-a")))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

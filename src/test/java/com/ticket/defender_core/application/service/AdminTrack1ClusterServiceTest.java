@@ -93,6 +93,81 @@ class AdminTrack1ClusterServiceTest {
             assertThat(found.ledgerSeat().status()).isEqualTo(com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.LedgerSeatStatus.FOUND);
             assertThat(found.ledgerSeat().seat()).isEqualTo("2");
         });
+        assertThat(result.verificationContext()).isEqualTo(
+                new com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.VerificationContext(
+                        com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.VerificationStatus.CURRENT_COMPLETE,
+                        com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.VerificationBasis.RESERVATION_REFERENCE,
+                        performanceId, "ledger-v1"));
+    }
+
+    @Test
+    void detailWithoutLedgerScopePreservesTheExistingMembersAndMarksVerificationNotRequested() {
+        UUID tenantId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        AdminAccessService access = mock(AdminAccessService.class);
+        TenantEventRepository events = mock(TenantEventRepository.class);
+        MacroAuditEvidenceReadRepository evidence = mock(MacroAuditEvidenceReadRepository.class);
+        AdminTrack1ClusterService service = new AdminTrack1ClusterService(access, events, evidence,
+                mock(VerifiedPerformanceRepository.class), mock(Track1LedgerSeatLookupService.class));
+        when(access.requireEventAccess(eq(eventId), any())).thenReturn(new AdminActor("admin", tenantId, eventId));
+        when(events.findById(eventId)).thenReturn(Optional.of(new TenantEvent(eventId, tenantId, "external-event",
+                "공연", AccessRecordStatus.ACTIVE)));
+        MacroAuditEvidence member = mock(MacroAuditEvidence.class);
+        when(member.getAuditId()).thenReturn(17L);
+        when(member.getRiskScore()).thenReturn(0.5);
+        when(member.getAnalysisAlgorithm()).thenReturn("LOUVAIN");
+        when(member.getAnalysisAlgorithmVersion()).thenReturn("v1");
+        when(member.getAnalysisCompletedAt()).thenReturn(LocalDateTime.now());
+        when(evidence.findMembers(tenantId, eventId, "run", "cluster")).thenReturn(List.of(member));
+
+        var result = service.detail(eventId, "run", "cluster");
+
+        assertThat(result.members()).singleElement().extracting(found -> found.ledgerSeat()).isNull();
+        assertThat(result.verificationContext().status()).isEqualTo(
+                com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.VerificationStatus.NOT_REQUESTED);
+        assertThat(result.verificationContext().basis()).isNull();
+    }
+
+    @Test
+    void unavailableSeatLedgerIsExplicitAndNeverRenderedAsANotInLedgerMiss() {
+        UUID tenantId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        UUID performanceId = UUID.randomUUID();
+        AdminAccessService access = mock(AdminAccessService.class);
+        TenantEventRepository events = mock(TenantEventRepository.class);
+        MacroAuditEvidenceReadRepository evidence = mock(MacroAuditEvidenceReadRepository.class);
+        VerifiedPerformanceRepository performances = mock(VerifiedPerformanceRepository.class);
+        Track1LedgerSeatLookupService ledgerSeats = mock(Track1LedgerSeatLookupService.class);
+        AdminTrack1ClusterService service = new AdminTrack1ClusterService(access, events, evidence, performances,
+                ledgerSeats);
+        when(access.requireEventAccess(eq(eventId), any())).thenReturn(new AdminActor("admin", tenantId, eventId));
+        when(events.findById(eventId)).thenReturn(Optional.of(new TenantEvent(eventId, tenantId, "external-event",
+                "공연", AccessRecordStatus.ACTIVE)));
+        MacroAuditEvidence member = mock(MacroAuditEvidence.class);
+        when(member.getAuditId()).thenReturn(17L);
+        when(member.getRiskScore()).thenReturn(0.5);
+        when(member.getAnalysisAlgorithm()).thenReturn("LOUVAIN");
+        when(member.getAnalysisAlgorithmVersion()).thenReturn("v1");
+        when(member.getAnalysisCompletedAt()).thenReturn(LocalDateTime.now());
+        when(evidence.findMembers(tenantId, eventId, "run", "cluster")).thenReturn(List.of(member));
+        VerifiedPerformance performance = mock(VerifiedPerformance.class);
+        when(performance.getId()).thenReturn(performanceId);
+        when(performance.getTenantId()).thenReturn(tenantId);
+        when(performance.getEventId()).thenReturn(eventId);
+        when(performance.getStatus()).thenReturn(VerifiedPerformance.Status.ACTIVE);
+        when(performances.findById(performanceId)).thenReturn(Optional.of(performance));
+        when(ledgerSeats.lookup(eq(tenantId), eq(eventId), eq(performanceId), eq("seat-ledger-v2"), eq(null),
+                eq(null), any())).thenReturn(new Track1LedgerSeatLookupService.Result(false, false, List.of(
+                new Track1LedgerSeatLookupService.LedgerSeat(17L,
+                        Track1LedgerSeatLookupService.Status.LEDGER_UNAVAILABLE, null, null, null, List.of()))));
+
+        var result = service.detail(eventId, "run", "cluster", performanceId, "seat-ledger-v2");
+
+        assertThat(result.verificationContext().status()).isEqualTo(
+                com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.VerificationStatus.LEDGER_UNAVAILABLE);
+        assertThat(result.verificationContext().basis()).isNull();
+        assertThat(result.members()).singleElement().extracting(found -> found.ledgerSeat().status()).isEqualTo(
+                com.ticket.defender_core.adapter.in.web.dto.Track1ClusterDto.LedgerSeatStatus.LEDGER_UNAVAILABLE);
     }
 
     @Test

@@ -51,11 +51,27 @@ public record Track1PurchaseLimitAnalysisRequest(
             String paymentHash,
             String addressHash,
             String deviceIdHash,
-            String ipHash
-    ) { }
+            String ipHash,
+            QuantityInputType quantityInputType,
+            String ticketReference,
+            TicketStatus ticketStatus,
+            String sourceVersion,
+            OffsetDateTime sourceAsOf
+    ) {
+        /** Source-compatible constructor for legacy one-row-per-reservation callers. */
+        public Ticket(String accountId, String reservationNo, String eventId, UUID performanceId,
+                OffsetDateTime purchasedAt, int effectiveTicketQuantity, String paymentHash, String addressHash,
+                String deviceIdHash, String ipHash) {
+            this(accountId, reservationNo, eventId, performanceId, purchasedAt, effectiveTicketQuantity,
+                    paymentHash, addressHash, deviceIdHash, ipHash, null, null, null, null, null);
+        }
+    }
 
     public enum PolicyVerificationStatus { CONFIRMED, POLICY_NOT_CONFIRMED }
     public enum QuantityDataStatus { COMPLETE, INCOMPLETE, UNKNOWN }
     public enum CancellationHandling { NETTED, NOT_CONFIRMED }
     public enum DuplicateHandling { DEDUPLICATED, NOT_CONFIRMED }
+    /** Data #31 currently accepts only provider-supplied individual ticket/order-line facts. */
+    public enum QuantityInputType { INDIVIDUAL_TICKET }
+    public enum TicketStatus { ACTIVE, CANCELLED, REFUNDED, UNKNOWN }
 }

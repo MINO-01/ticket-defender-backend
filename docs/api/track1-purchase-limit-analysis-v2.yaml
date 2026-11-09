@@ -17,17 +17,16 @@ info:
     NETTED, duplicate handling is DEDUPLICATED, and every relevant ticket timestamp is inside that policy interval.
     Sales-phase-specific policy selection is intentionally out of scope until an authoritative sales-phase source and
     ticket-level phase reference are agreed; Spring must report that scope as not confirmed rather than guess.
-  x-contract-status: PROPOSED_FOR_CROSS_REPOSITORY_REVIEW
+  x-contract-status: DATA31_INDIVIDUAL_TICKET_IMPLEMENTED_BACKEND_INGEST_BLOCKED
   x-data-issue: https://github.com/MINO-01/ticket-defender-data/issues/30
   x-backend-input-contract:
-    status: BACKEND_VALIDATION_BOUNDARY_IMPLEMENTED_DATA_CHANGE_REQUIRED
-    current-data-v2: "INDIVIDUAL_TICKET only; it must carry an actual purchasedAt and an explicit quantity."
+    status: DATA31_INDIVIDUAL_TICKET_COMPATIBLE_BACKEND_INGEST_BLOCKED
+    current-data-v2: "Data #31 accepts INDIVIDUAL_TICKET, ticketReference, ticketStatus, sourceVersion, and sourceAsOf. Spring sends them only when authoritative ledger facts exist."
     aggregate-snapshot: "ACCOUNT_LIMIT_SNAPSHOT is retained separately by the Spring contract and is never converted to the current Data #30 request."
     quantity-meaning: "purchaseLimitCalculationQuantity is distinct from currentEffectiveTicketQuantity; neither may be inferred by Spring."
-    required-data-change:
-      - "Add quantityInputType: INDIVIDUAL_TICKET | ACCOUNT_LIMIT_SNAPSHOT."
-      - "For individual tickets provide actual purchasedAt, ticket/order-line quantity, cancellation/refund status, sourceVersion, and sourceAsOf."
-      - "For multi-seat reservations provide a stable ticketReference or order-line reference and quantityGranularity; reservationNo alone cannot deduplicate multiple ticket rows."
+    required-backend-ingest:
+      - "Persist authoritative individual-ticket purchasedAt, ticket/order-line quantity, status, sourceVersion, and sourceAsOf before enabling the caller."
+      - "For multi-seat reservations provide a stable ticketReference or order-line reference; reservationNo alone cannot deduplicate multiple ticket rows."
       - "For snapshots provide purchaseLimitCalculationQuantity, calculationBasisVersion, asOf, scope coverage, and optionally currentEffectiveTicketQuantity."
       - "Carry confirmed policy subject, application scope, sales-phase reference when applicable, cancellation/refund rule, and presale inclusion; PERSON requires a customer-authorized identity basis."
     conservative-outcomes:
@@ -348,6 +347,23 @@ components:
         addressHash: {$ref: '#/components/schemas/HashTokenNullable'}
         deviceIdHash: {$ref: '#/components/schemas/HashTokenNullable'}
         ipHash: {$ref: '#/components/schemas/HashTokenNullable'}
+        quantityInputType:
+          type: [string, 'null']
+          enum: [INDIVIDUAL_TICKET, null]
+        ticketReference:
+          type: [string, 'null']
+          maxLength: 128
+          description: Stable provider ticket or order-line reference. Required to distinguish multiple rows for one account/reservation/event.
+        ticketStatus:
+          type: [string, 'null']
+          enum: [ACTIVE, CANCELLED, REFUNDED, UNKNOWN, null]
+        sourceVersion:
+          type: [string, 'null']
+          maxLength: 128
+        sourceAsOf:
+          type: [string, 'null']
+          format: date-time
+          description: Must not precede purchasedAt or exceed quantityAsOf when a COMPLETE typed input is evaluated.
     Track1PurchaseLimitAnalysisResponse:
       type: object
       additionalProperties: false

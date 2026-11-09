@@ -5,6 +5,7 @@ import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisR
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -54,6 +55,7 @@ final class Track1PurchaseLimitContractValidator {
                 throw invalid("v2 ticket scope does not match exactly one performance");
             }
             tokens(ticket.paymentHash(), ticket.addressHash(), ticket.deviceIdHash(), ticket.ipHash());
+            ticketProvenance(ticket);
         }
     }
 
@@ -73,16 +75,26 @@ final class Track1PurchaseLimitContractValidator {
                     || item.status() == null || item.accountLimitFindings() == null) throw invalid("v2 evaluation is incomplete");
             Track1PurchaseLimitAnalysisRequest.PerformanceScope scope = requested.get(ScopeKey.of(item));
             if (scope == null || !received.add(ScopeKey.of(item))) throw invalid("v2 evaluation scope mismatches request");
-            evaluation(scope, item);
+            evaluation(scope, ticketsFor(request, scope), item);
         }
         if (received.size() != requested.size()) throw invalid("v2 response omitted a requested performance");
     }
 
+    private static List<Track1PurchaseLimitAnalysisRequest.Ticket> ticketsFor(
+            Track1PurchaseLimitAnalysisRequest request,
+            Track1PurchaseLimitAnalysisRequest.PerformanceScope scope
+    ) {
+        return request.tickets().stream()
+                .filter(ticket -> scope.performanceId().equals(ticket.performanceId())).toList();
+    }
+
     private static void evaluation(Track1PurchaseLimitAnalysisRequest.PerformanceScope scope,
+            List<Track1PurchaseLimitAnalysisRequest.Ticket> tickets,
             Track1PurchaseLimitAnalysisResponse.PurchaseLimitEvaluation evaluation) {
+        Track1PurchaseLimitAnalysisResponse.EvaluationStatus expected = expectedNotEvaluated(scope, tickets);
         if (evaluation.status() == Track1PurchaseLimitAnalysisResponse.EvaluationStatus.EVALUATED) {
             if (scope.policyVerificationStatus() != Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.CONFIRMED
-                    || !scope.policy().policyVersion().equals(evaluation.policyVersion())) {
+                    || expected != null || !scope.policy().policyVersion().equals(evaluation.policyVersion())) {
                 throw invalid("unconfirmed policy was evaluated");
             }
             for (Track1PurchaseLimitAnalysisResponse.AccountLimitFinding finding : evaluation.accountLimitFindings()) {
@@ -96,10 +108,71 @@ final class Track1PurchaseLimitContractValidator {
             return;
         }
         if (!evaluation.accountLimitFindings().isEmpty()) throw invalid("non-evaluated scope returned limit findings");
+        if (expected != null && evaluation.status() != expected) {
+            throw invalid("v2 non-evaluation status mismatches sourced policy or quantity data");
+        }
         if (evaluation.status() == Track1PurchaseLimitAnalysisResponse.EvaluationStatus.POLICY_NOT_CONFIRMED
                 && scope.policyVerificationStatus() != Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.POLICY_NOT_CONFIRMED) {
             throw invalid("policy-not-confirmed status mismatches request");
         }
+    }
+
+    private static Track1PurchaseLimitAnalysisResponse.EvaluationStatus expectedNotEvaluated(
+            Track1PurchaseLimitAnalysisRequest.PerformanceScope scope,
+            List<Track1PurchaseLimitAnalysisRequest.Ticket> tickets
+    ) {
+        if (scope.policyVerificationStatus() == Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.POLICY_NOT_CONFIRMED) {
+            return Track1PurchaseLimitAnalysisResponse.EvaluationStatus.POLICY_NOT_CONFIRMED;
+        }
+        if (!completeQuantity(scope, tickets)) {
+            return Track1PurchaseLimitAnalysisResponse.EvaluationStatus.QUANTITY_DATA_INCOMPLETE;
+        }
+        if (tickets.stream().anyMatch(ticket -> !appliesAt(scope.policy(), ticket.purchasedAt()))) {
+            return Track1PurchaseLimitAnalysisResponse.EvaluationStatus.POLICY_TIME_NOT_APPLICABLE;
+        }
+        return null;
+    }
+
+    private static boolean completeQuantity(Track1PurchaseLimitAnalysisRequest.PerformanceScope scope,
+            List<Track1PurchaseLimitAnalysisRequest.Ticket> tickets) {
+        if (scope.quantityDataStatus() != Track1PurchaseLimitAnalysisRequest.QuantityDataStatus.COMPLETE
+                || scope.cancellationHandling() != Track1PurchaseLimitAnalysisRequest.CancellationHandling.NETTED
+                || scope.duplicateHandling() != Track1PurchaseLimitAnalysisRequest.DuplicateHandling.DEDUPLICATED
+                || blank(scope.quantitySourceVersion()) || scope.quantityAsOf() == null
+                || tickets.stream().anyMatch(ticket -> ticket.purchasedAt().isAfter(scope.quantityAsOf()))) return false;
+        boolean typed = tickets.stream().anyMatch(ticket -> ticket.quantityInputType() != null);
+        if (!typed) return tickets.stream().noneMatch(Track1PurchaseLimitContractValidator::hasAnyProvenance);
+        if (tickets.stream().anyMatch(ticket -> ticket.quantityInputType()
+                != Track1PurchaseLimitAnalysisRequest.QuantityInputType.INDIVIDUAL_TICKET)) return false;
+        Map<String, TicketKey> references = new HashMap<>();
+        Map<TicketKey, Long> rowsPerReservation = new HashMap<>();
+        tickets.forEach(ticket -> rowsPerReservation.merge(TicketKey.reservation(ticket), 1L, Long::sum));
+        for (Track1PurchaseLimitAnalysisRequest.Ticket ticket : tickets) {
+            if (ticket.ticketStatus() != Track1PurchaseLimitAnalysisRequest.TicketStatus.ACTIVE
+                    || !scope.quantitySourceVersion().equals(ticket.sourceVersion()) || ticket.sourceAsOf() == null
+                    || ticket.sourceAsOf().isAfter(scope.quantityAsOf()) || ticket.purchasedAt().isAfter(ticket.sourceAsOf())) return false;
+            TicketKey key = TicketKey.reservation(ticket);
+            if (blank(ticket.ticketReference())) {
+                if (rowsPerReservation.get(key) > 1) return false;
+            } else if (references.putIfAbsent(ticket.ticketReference(), key) != null
+                    && !references.get(ticket.ticketReference()).equals(key)) return false;
+        }
+        return true;
+    }
+
+    private static boolean appliesAt(Track1PurchaseLimitAnalysisRequest.ConfirmedPolicy policy,
+            java.time.OffsetDateTime purchasedAt) {
+        return !purchasedAt.isBefore(policy.effectiveFrom())
+                && (policy.effectiveUntil() == null || purchasedAt.isBefore(policy.effectiveUntil()));
+    }
+
+    private static void ticketProvenance(Track1PurchaseLimitAnalysisRequest.Ticket ticket) {
+        if (ticket.ticketReference() != null && blank(ticket.ticketReference())) throw invalid("ticket reference is blank");
+    }
+
+    private static boolean hasAnyProvenance(Track1PurchaseLimitAnalysisRequest.Ticket ticket) {
+        return ticket.quantityInputType() != null || ticket.ticketReference() != null || ticket.ticketStatus() != null
+                || ticket.sourceVersion() != null || ticket.sourceAsOf() != null;
     }
 
     private static void policy(Track1PurchaseLimitAnalysisRequest.ConfirmedPolicy policy) {
@@ -133,9 +206,14 @@ final class Track1PurchaseLimitContractValidator {
             return new ScopeKey(scope.internalEventId(), scope.eventId(), scope.performanceId());
         }
     }
-    private record TicketKey(String accountId, String reservationNo, String eventId, UUID performanceId) {
+    private record TicketKey(String accountId, String reservationNo, String eventId, UUID performanceId,
+            String ticketReference) {
         static TicketKey of(Track1PurchaseLimitAnalysisRequest.Ticket ticket) {
-            return new TicketKey(ticket.accountId(), ticket.reservationNo(), ticket.eventId(), ticket.performanceId());
+            return new TicketKey(ticket.accountId(), ticket.reservationNo(), ticket.eventId(), ticket.performanceId(),
+                    ticket.ticketReference());
+        }
+        static TicketKey reservation(Track1PurchaseLimitAnalysisRequest.Ticket ticket) {
+            return new TicketKey(ticket.accountId(), ticket.reservationNo(), ticket.eventId(), ticket.performanceId(), null);
         }
     }
 }

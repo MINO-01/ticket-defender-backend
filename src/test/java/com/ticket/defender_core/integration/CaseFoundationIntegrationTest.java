@@ -162,6 +162,29 @@ class CaseFoundationIntegrationTest {
     }
 
     @Test
+    void track1CandidateLinkEndpointUsesSecurityFilterAndExistingCaseViewScope() throws Exception {
+        UUID reportId = report(TENANT, EVENT).getFanReportId();
+        CaseDto.View created = service.create(createInput(reportId), UUID.randomUUID().toString());
+        String path = "/api/v1/cases/" + created.caseId() + "/track1-candidate-links";
+
+        mvc.perform(get(path).header("Authorization", "Bearer reviewer"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("NOT_APPLICABLE"));
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(get(path).header("Authorization", "Bearer approver")).andExpect(status().isForbidden());
+        // ANALYST access stays limited to the case creator or assignee, even within the granted event.
+        mvc.perform(get(path).header("Authorization", "Bearer second")).andExpect(status().isNotFound());
+
+        UUID otherCreator = UUID.randomUUID();
+        memberships.save(new AdminMembershipEntity(otherCreator, OTHER_TENANT,
+                "other-tenant-member", AccessRecordStatus.ACTIVE));
+        Case otherTenantCase = cases.saveAndFlush(new Case(UUID.randomUUID(), OTHER_TENANT, OTHER_EVENT,
+                otherCreator, Case.Type.FAN_REPORT, null, null, LocalDateTime.now()));
+        mvc.perform(get("/api/v1/cases/" + otherTenantCase.getId() + "/track1-candidate-links")
+                        .header("Authorization", "Bearer analyst"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void replayDoesNotDuplicateCaseAndChangedPayloadConflicts() {
         as("analyst");
         UUID reportId = report(TENANT, EVENT).getFanReportId();

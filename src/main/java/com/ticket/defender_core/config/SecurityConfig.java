@@ -101,6 +101,7 @@ public class SecurityConfig {
                                  "/api/v1/admin/events/*/reservation-imports").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/cases",
                                 "/api/v1/cases/*", "/api/v1/cases/*/sources",
+                                "/api/v1/cases/*/track1-candidate-links",
                                 "/api/v1/cases/*/activities",
                                 "/api/v1/cases/*/workflow",
                                 "/api/v1/cases/*/approval-audit-events",

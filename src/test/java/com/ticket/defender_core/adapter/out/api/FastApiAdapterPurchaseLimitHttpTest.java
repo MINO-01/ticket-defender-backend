@@ -53,6 +53,25 @@ class FastApiAdapterPurchaseLimitHttpTest {
         }
     }
 
+    @Test
+    void sendsData31IndividualTicketProvenanceAndPreservesMultiSeatRows() throws IOException {
+        AtomicReference<String> body = new AtomicReference<>();
+        HttpServer server = server(response("QUANTITY_DATA_INCOMPLETE", "policy-v1", "[]"), new AtomicReference<>(), body);
+        try {
+            Track1PurchaseLimitAnalysisRequest request = new Track1PurchaseLimitAnalysisRequest(REQUEST_ID,
+                    request().performanceScopes(), List.of(
+                    typedTicket("seat-ticket-1", OffsetDateTime.parse("2026-11-02T10:00:00Z")),
+                    typedTicket("seat-ticket-2", OffsetDateTime.parse("2026-11-10T10:00:00Z"))));
+            adapter(server.getAddress().getPort()).requestPurchaseLimitAnalysis(request);
+            assertThat(body.get()).contains("\"quantityInputType\":\"INDIVIDUAL_TICKET\"")
+                    .contains("\"ticketReference\":\"seat-ticket-1\"")
+                    .contains("\"ticketStatus\":\"ACTIVE\"")
+                    .contains("\"sourceVersion\":\"ledger-2026-11-09\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private FastApiAdapter adapter(int port) {
         FastApiAdapter adapter = new FastApiAdapter(RestClient.builder());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://127.0.0.1:" + port);
@@ -86,6 +105,14 @@ class FastApiAdapterPurchaseLimitHttpTest {
         return new Track1PurchaseLimitAnalysisRequest.Ticket("account-1", "reservation-1", "event-external",
                 PERFORMANCE_ID, OffsetDateTime.parse("2026-11-02T10:00:00Z"), 2,
                 "a".repeat(64), null, "b".repeat(64), null);
+    }
+
+    private Track1PurchaseLimitAnalysisRequest.Ticket typedTicket(String ticketReference, OffsetDateTime purchasedAt) {
+        return new Track1PurchaseLimitAnalysisRequest.Ticket("account-1", "reservation-1", "event-external",
+                PERFORMANCE_ID, purchasedAt, 1, "a".repeat(64), null, "b".repeat(64), null,
+                Track1PurchaseLimitAnalysisRequest.QuantityInputType.INDIVIDUAL_TICKET, ticketReference,
+                Track1PurchaseLimitAnalysisRequest.TicketStatus.ACTIVE, "ledger-2026-11-09",
+                OffsetDateTime.parse("2026-11-09T00:00:00Z"));
     }
 
     private HttpServer server(String response, AtomicReference<List<String>> keys, AtomicReference<String> body) throws IOException {

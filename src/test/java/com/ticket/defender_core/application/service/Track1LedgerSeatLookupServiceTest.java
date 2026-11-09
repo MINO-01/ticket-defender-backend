@@ -63,6 +63,18 @@ class Track1LedgerSeatLookupServiceTest {
     }
 
     @Test
+    void neverRehashesLegacyTrack1QuantityEvidenceAsATrack2ReservationReference() {
+        Fixture fixture = fixture(true);
+        when(fixture.member.getReferencePurpose()).thenReturn("LEGACY_V1_UNLINKABLE");
+        // This value looks like an HMAC, but no purpose declaration authorizes using it for Track 2 linkage.
+        when(fixture.member.getReservationNo()).thenReturn(new TenantPurposeReferenceHasher(KEY, "TRACK1_QTY_RESERVATION", "v1")
+                .hash(fixture.tenantId, "same-reservation"));
+
+        assertUnavailable(fixture.service.lookup(fixture.tenantId, fixture.eventId, fixture.performanceId,
+                fixture.sourceVersion, fixture.batchId, null, List.of(fixture.member)));
+    }
+
+    @Test
     void returnsLedgerUnavailableWhenTheBoundCandidateRowIsMissing() {
         Fixture fixture = fixture(true);
         UUID candidateId = UUID.randomUUID();
@@ -165,7 +177,8 @@ class Track1LedgerSeatLookupServiceTest {
 
         MacroAuditEvidence member = mock(MacroAuditEvidence.class);
         when(member.getAuditId()).thenReturn(17L);
-        when(member.getReservationNo()).thenReturn("track1-reservation");
+        when(member.getReferencePurpose()).thenReturn(TenantPurposeReferenceHasher.RESERVATION_REFERENCE_PURPOSE);
+        when(member.getReservationNo()).thenReturn(hasher.hash(tenantId, "track1-reservation"));
         ReservationDataSource source = mock(ReservationDataSource.class);
         when(source.isCompleteSnapshot()).thenReturn(true);
         when(source.getCurrentBatchId()).thenReturn(batchId);

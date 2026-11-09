@@ -1,0 +1,75 @@
+openapi: 3.0.3
+info:
+  title: Track 1 cluster seat investigation API
+  version: 1.0.0
+  description: Existing Track 1 cluster detail endpoint with optional current Track 2 seat-ledger verification.
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/admin/track1/clusters/detail:
+    get:
+      operationId: getTrack1ClusterDetail
+      parameters:
+        - {name: eventId, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: analysisRequestId, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: clusterId, in: query, required: true, schema: {type: string}}
+        - {name: performanceId, in: query, required: false, schema: {type: string, format: uuid}}
+        - {name: sourceVersion, in: query, required: false, schema: {type: string, minLength: 1, maxLength: 128}}
+      responses:
+        '200':
+          description: Stored cluster detail; optional seat verification never exposes source references or HMAC values.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClusterDetail'}
+        '400': {description: performanceId and sourceVersion must be supplied together}
+        '403': {description: authenticated actor lacks a permitted role}
+        '404': {description: inaccessible event, performance, or cluster}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  schemas:
+    ClusterDetail:
+      type: object
+      required: [event, cluster, members, relationship, graph, coverage, verificationContext]
+      properties:
+        event: {type: object}
+        cluster: {type: object}
+        relationship: {type: object}
+        graph: {type: object}
+        coverage: {type: string}
+        verificationContext: {$ref: '#/components/schemas/VerificationContext'}
+        members:
+          type: array
+          items:
+            type: object
+            required: [auditId]
+            properties:
+              auditId: {type: integer, format: int64}
+              ledgerSeat:
+                nullable: true
+                allOf: [{$ref: '#/components/schemas/LedgerSeat'}]
+    VerificationContext:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [NOT_REQUESTED, CURRENT_COMPLETE, LEDGER_UNAVAILABLE]}
+        basis: {type: string, nullable: true, enum: [RESERVATION_REFERENCE]}
+        performanceId: {type: string, format: uuid, nullable: true}
+        sourceVersion: {type: string, nullable: true}
+    LedgerSeat:
+      type: object
+      required: [status, seats]
+      properties:
+        status: {type: string, enum: [FOUND, NOT_IN_LEDGER, LEDGER_UNAVAILABLE]}
+        zone: {type: string, nullable: true}
+        row: {type: string, nullable: true}
+        seat: {type: string, nullable: true}
+        seats:
+          type: array
+          items:
+            type: object
+            required: [zone, row, seat]
+            properties:
+              zone: {type: string}
+              row: {type: string}
+              seat: {type: string}

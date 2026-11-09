@@ -20,8 +20,17 @@ public record MacroAnalysisEvidence(
         String analysisRequestId,
         LocalDateTime analyzedAt,
         UUID tenantId,
-        UUID internalEventId
+        UUID internalEventId,
+        String referencePurpose
 ) {
+    public MacroAnalysisEvidence(String accountId, String reservationNo, String eventId, String paymentHash,
+            String addressHash, String deviceIdHash, String ipHash, String clusterId, Double riskScore,
+            String algorithm, String algorithmVersion, String analysisRequestId, LocalDateTime analyzedAt,
+            UUID tenantId, UUID internalEventId) {
+        this(accountId, reservationNo, eventId, paymentHash, addressHash, deviceIdHash, ipHash, clusterId,
+                riskScore, algorithm, algorithmVersion, analysisRequestId, analyzedAt, tenantId, internalEventId,
+                "LEGACY_V1_UNLINKABLE");
+    }
     /** 저장에 필요한 식별자와 분석 정보를 확인합니다. */
     public MacroAnalysisEvidence {
         Objects.requireNonNull(accountId, "계정 식별자는 필수입니다.");

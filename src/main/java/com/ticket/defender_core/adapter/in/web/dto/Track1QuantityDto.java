@@ -33,11 +33,29 @@ public final class Track1QuantityDto {
 
     public record Cluster(String clusterId, double riskScore, int memberCount) { }
 
+    public record SharedSignalObservation(String observationId, String scopeType, String scopeId, String signalType,
+                                          int distinctAccountCount, int scopeAccountCount, int distinctReservationCount,
+                                          Integer totalTicketQuantity, String ticketQuantityStatus,
+                                          Corroboration corroboration, String ipNetworkType,
+                                          Integer purchaseWindowSeconds, boolean excludedFromLouvain) { }
+
+    public record Corroboration(int paymentSharedAccountCount, int deviceSharedAccountCount) { }
+
     public record AnalysisRun(UUID runId, UUID eventId, UUID performanceId, UUID ledgerBatchId, String sourceVersion,
                               String executionStatus, String failureCode, boolean retryable, UUID policyId,
                               String policyVersion, String algorithmVersion, UUID analysisRequestId, Integer clusterCount,
                               List<Cluster> clusters, int nettedExcludedRowCount, OffsetDateTime requestedAt,
-                              OffsetDateTime completedAt, Evaluation evaluation) { }
+                              OffsetDateTime completedAt, Evaluation evaluation, int sharedSignalObservationCount,
+                              List<SharedSignalObservation> sharedSignalObservations) {
+        public AnalysisRun(UUID runId, UUID eventId, UUID performanceId, UUID ledgerBatchId, String sourceVersion,
+                String executionStatus, String failureCode, boolean retryable, UUID policyId, String policyVersion,
+                String algorithmVersion, UUID analysisRequestId, Integer clusterCount, List<Cluster> clusters,
+                int nettedExcludedRowCount, OffsetDateTime requestedAt, OffsetDateTime completedAt, Evaluation evaluation) {
+            this(runId, eventId, performanceId, ledgerBatchId, sourceVersion, executionStatus, failureCode, retryable,
+                    policyId, policyVersion, algorithmVersion, analysisRequestId, clusterCount, clusters,
+                    nettedExcludedRowCount, requestedAt, completedAt, evaluation, 0, List.of());
+        }
+    }
 
     public record Page<T>(List<T> items, int page, int pageSize, boolean hasNext) { }
 }

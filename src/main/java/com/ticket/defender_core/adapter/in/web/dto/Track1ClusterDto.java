@@ -23,6 +23,12 @@ public final class Track1ClusterDto {
     }
 
     public enum LedgerSeatStatus { FOUND, NOT_IN_LEDGER, LEDGER_UNAVAILABLE }
+    public enum VerificationStatus { NOT_REQUESTED, CURRENT_COMPLETE, LEDGER_UNAVAILABLE }
+    public enum VerificationBasis { RESERVATION_REFERENCE }
+
+    /** Describes whether the optional current Track 2 seat-ledger comparison was performed. */
+    public record VerificationContext(VerificationStatus status, VerificationBasis basis,
+                                      UUID performanceId, String sourceVersion) { }
 
     /** The raw account and reservation references remain in protected evidence and are never returned. */
     public record Seat(String zone, String row, String seat) { }
@@ -72,6 +78,7 @@ public final class Track1ClusterDto {
     public record Graph(List<GraphNode> nodes, List<GraphEdge> edges) { }
 
     public record Detail(Event event, Summary cluster, List<Member> members,
-                         RelationshipExplanation relationship, Graph graph, String coverage) {
+                         RelationshipExplanation relationship, Graph graph, String coverage,
+                         VerificationContext verificationContext) {
     }
 }

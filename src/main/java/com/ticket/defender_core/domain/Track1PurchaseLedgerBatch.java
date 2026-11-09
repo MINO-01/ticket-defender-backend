@@ -24,7 +24,7 @@ public class Track1PurchaseLedgerBatch {
 
     /** 생성 입력을 한곳에 모아 같은 타입 인자가 뒤바뀌는 것을 막습니다. */
     public record Spec(UUID tenantId, UUID eventId, UUID performanceId, UUID membershipId, String keyDigest,
-                       String requestDigest, String rowsDigest, InputType inputType, String sourceVersion,
+                       String requestDigest, String rowsDigest, String track2LinkDigest, InputType inputType, String sourceVersion,
                        LocalDateTime sourceAsOf, int ledgerVersion, String quantityBasis, String hmacVersion,
                        UUID isolationId, boolean completeSnapshot, Status status, int inputRows, int acceptedRows,
                        int rejectedRows, LocalDateTime now) { }
@@ -37,6 +37,7 @@ public class Track1PurchaseLedgerBatch {
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "idempotency_key_digest", nullable = false, length = 64) private String idempotencyKeyDigest;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "request_digest", nullable = false, length = 64) private String requestDigest;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "rows_digest", length = 64) private String rowsDigest;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "track2_link_digest", length = 64) private String track2LinkDigest;
     @Enumerated(EnumType.STRING) @Column(name = "input_type", nullable = false, length = 32) private InputType inputType;
     @Column(name = "source_version", nullable = false, length = 128) private String sourceVersion;
     @Column(name = "accepted_source_version", length = 128) private String acceptedSourceVersion;
@@ -62,6 +63,9 @@ public class Track1PurchaseLedgerBatch {
         idempotencyKeyDigest = required(spec.keyDigest(), 64);
         requestDigest = required(spec.requestDigest(), 64);
         rowsDigest = spec.rowsDigest();
+        // Use the incoming status.  The entity field has not been assigned at this point,
+        // so consulting it would silently drop the accepted batch's correlation digest.
+        track2LinkDigest = spec.status() == Status.ACCEPTED ? required(spec.track2LinkDigest(), 64) : null;
         inputType = Objects.requireNonNull(spec.inputType());
         sourceVersion = required(spec.sourceVersion(), 128);
         sourceAsOf = Objects.requireNonNull(spec.sourceAsOf());

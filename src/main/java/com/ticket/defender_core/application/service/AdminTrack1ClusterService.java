@@ -79,25 +79,34 @@ public class AdminTrack1ClusterService {
         Track1ClusterDto.Summary cluster = new Track1ClusterDto.Summary(analysisRequestId, clusterId,
                 first.getRiskScore(), first.getAnalysisAlgorithm(), first.getAnalysisAlgorithmVersion(),
                 first.getAnalysisCompletedAt().atOffset(ZoneOffset.UTC), rows.size());
-        List<Track1ClusterDto.Member> members = members(actor, rows, performanceId, sourceVersion);
-        return new Track1ClusterDto.Detail(event, cluster, members, relationship(rows), graph(analysisRequestId, clusterId, rows), COVERAGE);
+        DetailMembers detailMembers = members(actor, rows, performanceId, sourceVersion);
+        return new Track1ClusterDto.Detail(event, cluster, detailMembers.members(), relationship(rows),
+                graph(analysisRequestId, clusterId, rows), COVERAGE, detailMembers.verificationContext());
     }
 
-    private List<Track1ClusterDto.Member> members(AdminActor actor, List<MacroAuditEvidence> rows,
+    private DetailMembers members(AdminActor actor, List<MacroAuditEvidence> rows,
             UUID performanceId, String sourceVersion) {
         if (performanceId == null && sourceVersion == null)
-            return rows.stream().map(row -> new Track1ClusterDto.Member(row.getAuditId(), null)).toList();
+            return new DetailMembers(rows.stream().map(row -> new Track1ClusterDto.Member(row.getAuditId(), null)).toList(),
+                    new Track1ClusterDto.VerificationContext(Track1ClusterDto.VerificationStatus.NOT_REQUESTED,
+                            null, null, null));
         VerifiedPerformance performance = performances.findById(performanceId)
                 .filter(found -> actor.tenantId().equals(found.getTenantId()) && actor.eventId().equals(found.getEventId())
                         && found.getStatus() == VerifiedPerformance.Status.ACTIVE)
                 .orElseThrow(AdminTrack1ClusterService::notFound);
         Track1LedgerSeatLookupService.Result result = ledgerSeats.lookup(actor.tenantId(), actor.eventId(),
                 performance.getId(), sourceVersion, null, null, rows);
-        return result.seats().stream().map(seat -> new Track1ClusterDto.Member(seat.auditId(),
+        List<Track1ClusterDto.Member> members = result.seats().stream().map(seat -> new Track1ClusterDto.Member(seat.auditId(),
                 new Track1ClusterDto.LedgerSeat(Track1ClusterDto.LedgerSeatStatus.valueOf(seat.status().name()),
                         seat.zone(), seat.row(), seat.seat(), seat.seats().stream()
                                 .map(value -> new Track1ClusterDto.Seat(value.zone(), value.row(), value.seat()))
                                 .toList()))).toList();
+        Track1ClusterDto.VerificationContext context = result.ledgerAvailable()
+                ? new Track1ClusterDto.VerificationContext(Track1ClusterDto.VerificationStatus.CURRENT_COMPLETE,
+                        Track1ClusterDto.VerificationBasis.RESERVATION_REFERENCE, performanceId, sourceVersion)
+                : new Track1ClusterDto.VerificationContext(Track1ClusterDto.VerificationStatus.LEDGER_UNAVAILABLE,
+                        null, performanceId, sourceVersion);
+        return new DetailMembers(members, context);
     }
 
     private Track1ClusterDto.Event event(AdminActor actor) {
@@ -191,4 +200,7 @@ public class AdminTrack1ClusterService {
     private static ResponseStatusException notFound() {
         return new ResponseStatusException(HttpStatus.NOT_FOUND, "Resource not found");
     }
+
+    private record DetailMembers(List<Track1ClusterDto.Member> members,
+                                 Track1ClusterDto.VerificationContext verificationContext) { }
 }

@@ -59,6 +59,10 @@ public class MacroAuditEvidence {
     @Column(name = "reservation_no", nullable = false)
     private String reservationNo;
 
+    @Column(name = "reference_purpose", nullable = false, length = 64,
+            columnDefinition = "varchar(64) default 'LEGACY_V1_UNLINKABLE'")
+    private String referencePurpose;
+
     @Column(name = "account_id", nullable = false)
     private String accountId;
 
@@ -94,6 +98,7 @@ public class MacroAuditEvidence {
         this.tenantId = evidence.tenantId();
         this.internalEventId = evidence.internalEventId();
         this.reservationNo = evidence.reservationNo();
+        this.referencePurpose = evidence.referencePurpose();
         this.accountId = evidence.accountId();
         this.deviceIdHash = evidence.deviceIdHash();
         this.ipHash = evidence.ipHash();

@@ -21,7 +21,7 @@ class Track1QuantityMigrationMySqlTest {
     private static final List<String> POLICY_SCRIPTS = List.of("purchase-limit-policy-migration.sql",
             "purchase-limit-policy-semantics-migration.sql", "purchase-limit-policy-scope-migration.sql");
 
-    private static final List<String> GENERATED_TABLES = List.of("track1_purchase_limit_run_clusters", "track1_purchase_limit_finding_reservations",
+    private static final List<String> GENERATED_TABLES = List.of("track1_purchase_limit_shared_signal_observations", "track1_purchase_limit_run_clusters", "track1_purchase_limit_finding_reservations",
             "track1_purchase_limit_findings", "track1_purchase_limit_runs", "track1_purchase_ledger_errors", "track1_purchase_ledger_rows",
             "track1_purchase_ledger_batches", "purchase_limit_policy_audits", "purchase_limit_policies");
 
@@ -38,8 +38,19 @@ class Track1QuantityMigrationMySqlTest {
             jdbc.execute("set foreign_key_checks=1");
             for (String script : POLICY_SCRIPTS) ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/" + script));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/track1-purchase-ledger-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/track1-capstone-demo-v1-migration.sql"));
+            // Hibernate-created current schemas already contain reference_purpose; the additive script must remain safe.
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/track1-capstone-demo-v1-migration.sql"));
         }
         assertThat(jdbc.queryForObject("select count(*) from reservation_candidates", Integer.class)).isEqualTo(reservations);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() "
+                + "and table_name='track1_purchase_limit_shared_signal_observations' and constraint_name='PRIMARY'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() "
+                + "and table_name='track1_purchase_limit_shared_signal_observations' and constraint_name='fk_t1_signal_observation_run'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() "
+                + "and table_name='track1_purchase_limit_shared_signal_observations' and constraint_name='uk_t1_signal_observation_run_id'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() "
+                + "and table_name='track1_purchase_limit_shared_signal_observations' and constraint_name='chk_t1_signal_observation_values'", Integer.class)).isEqualTo(1);
 
         String tenant = UUID.randomUUID().toString();
         String event = UUID.randomUUID().toString();

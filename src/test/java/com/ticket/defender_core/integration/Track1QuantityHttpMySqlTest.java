@@ -147,6 +147,18 @@ class Track1QuantityHttpMySqlTest {
         assertThat(imported.statusCode()).isEqualTo(201);
         assertThat(imported.body()).contains("\"status\":\"ACCEPTED\"", "\"ledgerVersion\":1").doesNotContain("acct-A", "res-A", "t-1\"", "dev-shared", "Hmac");
         JsonNode batch = JSON.readTree(imported.body());
+        List<Map<String, Object>> persistedReferences = jdbc.queryForList("select account_ref_hmac,reservation_ref_hmac,"
+                + "track2_reservation_ref_hmac,ticket_ref_hmac,device_hmac from track1_purchase_ledger_rows where batch_id=?",
+                batch.get("batchId").asText());
+        assertThat(persistedReferences).hasSize(6);
+        assertThat(persistedReferences.toString()).doesNotContain("acct-A", "res-A", "t-1", "dev-shared");
+        assertThat(persistedReferences).allSatisfy(row -> {
+            assertThat(row.get("track2_reservation_ref_hmac")).asString().matches("[0-9a-f]{64}");
+            assertThat(row.get("reservation_ref_hmac")).asString().matches("[0-9a-f]{64}");
+            assertThat(row.get("track2_reservation_ref_hmac")).isNotEqualTo(row.get("reservation_ref_hmac"));
+        });
+        assertThat(jdbc.queryForObject("select track2_link_digest from track1_purchase_ledger_batches where id=?",
+                String.class, batch.get("batchId").asText())).matches("[0-9a-f]{64}");
         assertThat(post(f, "/ledger-imports", body, key, f.admin()).body()).contains(batch.get("batchId").asText());
         assertThat(post(f, "/ledger-imports", body.replace("res-B", "res-Z"), key, f.admin()).statusCode()).isEqualTo(409);
 
@@ -164,8 +176,23 @@ class Track1QuantityHttpMySqlTest {
         assertThat(run.toString()).doesNotContain(hmacOfAny(run));
         assertThat(jdbc.queryForObject("select count(*) from macro_audit_evidence where tenant_id=? and analysis_request_id=?",
                 Integer.class, f.tenant().toString(), run.get("analysisRequestId").asText())).isGreaterThan(0);
+        HttpResponse<String> seatsImported = reservationImport(f, JSON.writeValueAsString(Map.of(
+                "performanceId", performance, "sourceVersion", "synthetic-seat-ledger-v1", "completeSnapshot", true,
+                "rows", List.of(
+                        Map.of("reservationReference", "res-A", "ticketReference", "seat-ticket-12",
+                                "zone", "19구역", "row", "8열", "seat", "12번"),
+                        Map.of("reservationReference", "res-A", "ticketReference", "seat-ticket-13",
+                                "zone", "19구역", "row", "8열", "seat", "13번")))),
+                UUID.randomUUID().toString(), f.admin());
+        assertThat(seatsImported.statusCode()).as(seatsImported.body()).isEqualTo(201);
+        assertThat(seatsImported.body()).contains("\"status\":\"ACCEPTED\"");
         JsonNode detail = JSON.readTree(rawGet("/api/v1/admin/track1/clusters/detail?eventId=" + f.event() + "&analysisRequestId=" + run.get("analysisRequestId").asText()
-                + "&clusterId=" + run.at("/clusters/0/clusterId").asText(), f.admin()).body());
+                + "&clusterId=" + run.at("/clusters/0/clusterId").asText() + "&performanceId=" + performance
+                + "&sourceVersion=synthetic-seat-ledger-v1", f.admin()).body());
+        assertThat(detail.at("/verificationContext/status").asText()).isEqualTo("CURRENT_COMPLETE");
+        assertThat(detail.at("/verificationContext/basis").asText()).isEqualTo("RESERVATION_REFERENCE");
+        assertThat(detail.at("/members").toString()).contains("FOUND", "19구역", "8열", "12번", "13번")
+                .doesNotContain("res-A", hmacOfAny(detail.at("/members")));
         assertThat(detail.at("/graph/edges").size()).isGreaterThan(1);
         assertThat(detail.at("/graph/nodes/0/kind").asText()).isEqualTo("signal");
         assertThat(detail.at("/graph").toString()).doesNotContain(hmacOfAny(detail.at("/graph")));
@@ -369,6 +396,11 @@ class Track1QuantityHttpMySqlTest {
 
     private HttpResponse<String> get(Fixture f, String path, String subject) throws Exception {
         return send(HttpRequest.newBuilder(URI.create(base(f) + path)).GET(), subject, null);
+    }
+
+    private HttpResponse<String> reservationImport(Fixture f, String body, String key, String subject) throws Exception {
+        return send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/v1/admin/events/" + f.event()
+                + "/reservation-imports")).POST(HttpRequest.BodyPublishers.ofString(body)), subject, key);
     }
 
     private HttpResponse<String> send(HttpRequest.Builder request, String subject, String key) throws Exception {

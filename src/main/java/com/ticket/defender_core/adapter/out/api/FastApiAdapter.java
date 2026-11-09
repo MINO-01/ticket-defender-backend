@@ -54,11 +54,17 @@ public class FastApiAdapter {
 
     /** 연결과 응답 대기 시간을 제한해 FastAPI 호출을 준비합니다. */
     @Autowired
-    public FastApiAdapter(RestClient.Builder restClientBuilder) {
+    public FastApiAdapter(RestClient.Builder restClientBuilder,
+            @Value("${ticket-defender.track1-internal-auth.read-timeout:PT60S}") Duration readTimeout) {
         SimpleClientHttpRequestFactory factory = new Track1RequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
-        factory.setReadTimeout(Duration.ofSeconds(5));
+        factory.setReadTimeout(readTimeout);
         this.restClient = restClientBuilder.requestFactory(factory).build();
+    }
+
+    /** Package-visible deterministic test constructor; production receives the configured timeout above. */
+    FastApiAdapter(RestClient.Builder restClientBuilder) {
+        this(restClientBuilder, Duration.ofSeconds(5));
     }
 
     /** 테스트용 RestClient를 받습니다. */

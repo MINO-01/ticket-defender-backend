@@ -29,6 +29,7 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 public class MacroAuditPersistenceService {
+    private static final String LEGACY_REFERENCE_PURPOSE = "LEGACY_V1_UNLINKABLE";
 
     private final TicketAuditRepository ticketAuditRepository;
     private final MacroAuditEvidenceRepository macroAuditEvidenceRepository;
@@ -40,6 +41,13 @@ public class MacroAuditPersistenceService {
             MacroAnalysisRequest request,
             AnalysisIngestScope scope
     ) {
+        persistDetectedAudits(response, request, scope, LEGACY_REFERENCE_PURPOSE);
+    }
+
+    /** The provenance purpose is explicit: HMAC-looking values are never classified by their shape. */
+    @Transactional
+    public void persistDetectedAudits(MacroAnalysisResponse response, MacroAnalysisRequest request,
+            AnalysisIngestScope scope, String referencePurpose) {
         if (scope == null) {
             throw new IllegalArgumentException("검증된 분석 반입 범위가 필요합니다.");
         }
@@ -64,7 +72,7 @@ public class MacroAuditPersistenceService {
 
         Set<TicketKey> existingMacroAudits = findExistingMacroAudits(requestedKeysByHash, scope);
         List<TicketAudit> newAudits = createNewAudits(
-                detectedMembers, requestedTickets, existingMacroAudits, response, scope);
+                detectedMembers, requestedTickets, existingMacroAudits, response, scope, referencePurpose);
 
         if (!newAudits.isEmpty()) {
             ticketAuditRepository.saveAll(newAudits);
@@ -154,7 +162,7 @@ public class MacroAuditPersistenceService {
             Map<TicketKey, MacroAnalysisRequest.Ticket> requestedTickets,
             Set<TicketKey> existingMacroAudits,
             MacroAnalysisResponse response,
-            AnalysisIngestScope scope
+            AnalysisIngestScope scope, String referencePurpose
     ) {
         List<TicketAudit> newAudits = new ArrayList<>();
         for (Map.Entry<TicketKey, ClusterMember> entry : detectedMembers.entrySet()) {
@@ -180,7 +188,7 @@ public class MacroAuditPersistenceService {
                     response.requestId(),
                     response.analyzedAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(),
                     scope.tenantId(),
-                    scope.requireEventId(ticket.eventId())
+                    scope.requireEventId(ticket.eventId()), referencePurpose
             );
             newAudits.add(TicketAudit.createMacroAudit(evidence));
         }

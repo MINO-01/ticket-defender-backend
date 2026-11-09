@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="ko"><head><meta charset="UTF-8" />
+<style>@page { size: A4; margin: 19mm 16mm; } body { font-family: NanumGothic; font-size: 10.5pt; line-height: 1.55; color: #172033; } h1,h2 { color: #0e3a66; } .notice { background: #edf4fb; border-left: 4px solid #2d6caa; padding: 3mm; } .content { white-space: pre-wrap; } .meta { width:100%; border-collapse:collapse; } .meta th,.meta td { border:1px solid #cdd8e4; padding:2.4mm; text-align:left; vertical-align:top; } .meta th { width:31%; background:#f4f7fa; }</style>
+</head><body>
+<h1>데이터 시연용 조사 보고서</h1>
+<p class="notice">합성 격리 환경에서 고정된 Case 출처와 승인 기록을 바탕으로 발급된 데이터 시연용 조사 보고서입니다.</p>
+<table class="meta"><tr><th>발급 ID</th><td>{{issuanceId}}</td></tr><tr><th>Case / 보고서 ID</th><td>{{caseId}} / {{reportVersionId}}</td></tr><tr><th>발급 시각</th><td>{{requestedAt}} / {{requestedAtKorea}}</td></tr><tr><th>독립 승인</th><td>{{approvalDecisionId}} / {{approverMembershipId}} / {{approvalDecidedAt}}</td></tr><tr><th>출처 고정</th><td>Snapshot {{evidenceSnapshotId}}, revision {{evidenceRevision}}, {{evidenceSourceCount}}건, manifest {{manifestSha256}}</td></tr><tr><th>템플릿</th><td>{{officialTemplateVersion}} / {{officialTemplateSha256}}</td></tr></table>
+<h2>조사 내용</h2><p><strong>제목</strong></p><div class="content">{{title}}</div><p><strong>평가</strong></p><div class="content">{{assessment}}</div><p><strong>한계 및 주의사항</strong></p><div class="content">{{limitations}}</div><p><strong>결론</strong></p><div class="content">{{conclusion}}</div>
+</body></html>

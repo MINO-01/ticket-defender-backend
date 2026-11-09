@@ -41,6 +41,7 @@ ticket-defender:
     enabled: ${TRACK1_V2_ENABLED:false}
   track1-internal-auth:
     shared-secret: ${TRACK1_INTERNAL_SHARED_SECRET:}
+    read-timeout: ${TRACK1_INTERNAL_READ_TIMEOUT:PT60S}
   evidence-preservation:
     enabled: ${EVIDENCE_PRESERVATION_ENABLED:false}
     max-bytes: ${EVIDENCE_PRESERVATION_MAX_BYTES:20971520}
@@ -91,6 +92,7 @@ ticket-defender:
   official-pdf:
     # This flag alone never authorizes operation; only synthetic isolated mode is currently accepted.
     enabled: ${OFFICIAL_PDF_ENABLED:false}
+    demo-v1-enabled: ${OFFICIAL_PDF_DEMO_V1_ENABLED:false}
     operational-mode: ${OFFICIAL_PDF_OPERATIONAL_MODE:DISABLED}
     # 합성 격리 환경 식별자(UUID)입니다. 서버 소유 official_pdf_synthetic_tenants 등록 행과 일치해야 하며,
     # 이 값과 운영 모드만으로는 발급되지 않습니다. 비어 있으면 발급을 차단합니다.

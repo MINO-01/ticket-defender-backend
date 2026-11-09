@@ -88,7 +88,8 @@ public class Track1QuantityLedgerService {
         int version = batches.maxLedgerVersion(scope.tenantId(), scope.eventId(), performance.getId()) + 1;
         Track1PurchaseLedgerBatch batch = new Track1PurchaseLedgerBatch(new Track1PurchaseLedgerBatch.Spec(
                 scope.tenantId(), scope.eventId(), performance.getId(), scope.membershipId(), keyDigest, requestDigest,
-                accepted ? rowsDigest(validation.rows()) : null, inputType, sourceVersion, utc(input.sourceAsOf()), version,
+                accepted ? rowsDigest(validation.rows()) : null, accepted ? track2LinkDigest(validation.rows()) : null,
+                inputType, sourceVersion, utc(input.sourceAsOf()), version,
                 blank(input.quantityBasis()) || input.quantityBasis().length() > MAX_REFERENCE ? null : input.quantityBasis(),
                 hashers.account().keyVersion(), isolationId, Boolean.TRUE.equals(input.completeSnapshot()), status,
                 validation.inputCount(), accepted ? validation.rows().size() : 0,
@@ -140,10 +141,17 @@ public class Track1QuantityLedgerService {
         return CandidatePipelineSupport.sha256(fields.toArray(String[]::new));
     }
 
+    static String track2LinkDigest(List<? extends LinkDigestRow> rows) {
+        List<String> fields = new ArrayList<>(List.of("TRACK1_PURCHASE_LEDGER_TRACK2_LINKS"));
+        rows.stream().sorted(Comparator.comparingInt(LinkDigestRow::index)).forEach(row -> fields.add(row.track2Reservation()));
+        return CandidatePipelineSupport.sha256(fields.toArray(String[]::new));
+    }
+
     interface DigestRow {
         int index();
         List<String> canonical();
     }
+    interface LinkDigestRow { int index(); String track2Reservation(); }
 
     static List<String> canonical(int index, String account, String reservation, String ticket, LocalDateTime purchasedAt, int quantity,
             Track1PurchaseLedgerRow.QuantityUnit unit, Track1PurchaseLedgerRow.TicketStatus status, Track1PurchaseLedgerRow.Signals signals) {
@@ -169,6 +177,7 @@ public class Track1QuantityLedgerService {
             }
             String account = hashers.account().hash(tenantId, row.accountReference());
             String reservation = hashers.reservation().hash(tenantId, row.reservationReference());
+            String track2Reservation = hashers.track2Reservation().hash(tenantId, row.reservationReference());
             String ticket = hashers.ticket().hash(tenantId, row.ticketReference());
             if (!tickets.add(ticket)) {
                 invalid.add(new RowError(index, "DUPLICATE_TICKET_REFERENCE"));
@@ -178,7 +187,7 @@ public class Track1QuantityLedgerService {
                 invalid.add(new RowError(index, "RESERVATION_ACCOUNT_CONFLICT"));
                 continue;
             }
-            valid.add(new Row(index, account, reservation, ticket, utc(row.purchasedAt()), row.quantity(),
+            valid.add(new Row(index, account, reservation, track2Reservation, ticket, utc(row.purchasedAt()), row.quantity(),
                     Track1PurchaseLedgerRow.QuantityUnit.valueOf(row.quantityUnit()),
                     Track1PurchaseLedgerRow.TicketStatus.valueOf(row.ticketStatus()),
                     new Track1PurchaseLedgerRow.Signals(signal(hashers.payment(), tenantId, row.paymentReference()),
@@ -230,6 +239,7 @@ public class Track1QuantityLedgerService {
 
     private Hashers hashers() {
         return new Hashers(gate.referenceHasher("TRACK1_QTY_ACCOUNT"), gate.referenceHasher("TRACK1_QTY_RESERVATION"),
+                gate.referenceHasher(TenantPurposeReferenceHasher.RESERVATION_REFERENCE_PURPOSE),
                 gate.referenceHasher("TRACK1_QTY_TICKET"), gate.referenceHasher("TRACK1_QTY_PAYMENT"),
                 gate.referenceHasher("TRACK1_QTY_ADDRESS"), gate.referenceHasher("TRACK1_QTY_DEVICE"), gate.referenceHasher("TRACK1_QTY_IP"));
     }
@@ -278,21 +288,23 @@ public class Track1QuantityLedgerService {
     private static CaseApiException conflict(String code) { return new CaseApiException(HttpStatus.CONFLICT, code); }
     private static CaseApiException notFound() { return new CaseApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND"); }
 
-    private record Hashers(TenantPurposeReferenceHasher account, TenantPurposeReferenceHasher reservation, TenantPurposeReferenceHasher ticket,
+    private record Hashers(TenantPurposeReferenceHasher account, TenantPurposeReferenceHasher reservation,
+                           TenantPurposeReferenceHasher track2Reservation, TenantPurposeReferenceHasher ticket,
                            TenantPurposeReferenceHasher payment, TenantPurposeReferenceHasher address, TenantPurposeReferenceHasher device,
                            TenantPurposeReferenceHasher ip) { }
 
     private record RowError(Integer rowIndex, String code) { }
 
-    private record Row(int index, String account, String reservation, String ticket, LocalDateTime purchasedAt, int quantity,
+    private record Row(int index, String account, String reservation, String track2Reservation, String ticket, LocalDateTime purchasedAt, int quantity,
                        Track1PurchaseLedgerRow.QuantityUnit unit, Track1PurchaseLedgerRow.TicketStatus status,
-                       Track1PurchaseLedgerRow.Signals signals) implements DigestRow {
+                       Track1PurchaseLedgerRow.Signals signals) implements DigestRow, LinkDigestRow {
         @Override public List<String> canonical() {
             return Track1QuantityLedgerService.canonical(index, account, reservation, ticket, purchasedAt, quantity, unit, status, signals);
         }
+        @Override public String track2Reservation() { return track2Reservation; }
 
         Track1PurchaseLedgerRow toEntity(UUID batchId, String sourceVersion, LocalDateTime sourceAsOf) {
-            return new Track1PurchaseLedgerRow(batchId, index, account, reservation, ticket, purchasedAt, quantity, unit, status, signals, sourceVersion, sourceAsOf);
+            return new Track1PurchaseLedgerRow(batchId, index, account, reservation, track2Reservation, ticket, purchasedAt, quantity, unit, status, signals, sourceVersion, sourceAsOf);
         }
     }
 

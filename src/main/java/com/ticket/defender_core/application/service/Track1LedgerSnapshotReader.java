@@ -39,6 +39,8 @@ public class Track1LedgerSnapshotReader {
         if (!currentCompleteLedger(tenantId, eventId, performanceId, sourceVersion, expectedBatchId, source, batch)
                 || !batch.getReferenceHmacKeyVersion().equals(hasher.keyVersion()))
             return Track1LedgerSeatLookupService.unavailable(members);
+        if (members.stream().anyMatch(member -> !TenantPurposeReferenceHasher.RESERVATION_REFERENCE_PURPOSE
+                .equals(member.getReferencePurpose()))) return Track1LedgerSeatLookupService.unavailable(members);
         String targetReference = null;
         if (targetCandidateId != null) {
             // 후보를 확인할 수 없으면 미일치 판정의 근거가 없으므로 NO_TRACK1_LINK로 내려가지 않게 한다.
@@ -48,10 +50,10 @@ public class Track1LedgerSnapshotReader {
             if (targetReference == null) return Track1LedgerSeatLookupService.unavailable(members);
         }
         Map<String, List<ReservationCandidate>> ledger = candidates.findByBatchIdAndReservationRefHmacIn(batch.getId(),
-                        members.stream().map(member -> hasher.hash(tenantId, member.getReservationNo())).toList())
+                        members.stream().map(MacroAuditEvidence::getReservationNo).toList())
                 .stream().collect(java.util.stream.Collectors.groupingBy(ReservationCandidate::getReservationRefHmac));
         List<Track1LedgerSeatLookupService.LedgerSeat> seats = members.stream().map(member -> {
-            List<ReservationCandidate> found = ledger.get(hasher.hash(tenantId, member.getReservationNo()));
+            List<ReservationCandidate> found = ledger.get(member.getReservationNo());
             if (found == null || found.isEmpty())
                 return new Track1LedgerSeatLookupService.LedgerSeat(member.getAuditId(),
                         Track1LedgerSeatLookupService.Status.NOT_IN_LEDGER, null, null, null, List.of());

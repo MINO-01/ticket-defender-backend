@@ -39,6 +39,8 @@ class Track1QuantityMigrationMySqlTest {
             for (String script : POLICY_SCRIPTS) ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/" + script));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/track1-purchase-ledger-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/track1-capstone-demo-v1-migration.sql"));
+            // Hibernate-created current schemas already contain reference_purpose; the additive script must remain safe.
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/track1-capstone-demo-v1-migration.sql"));
         }
         assertThat(jdbc.queryForObject("select count(*) from reservation_candidates", Integer.class)).isEqualTo(reservations);
 

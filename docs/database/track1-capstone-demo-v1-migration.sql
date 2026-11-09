@@ -1,18 +1,26 @@
 -- Apply after track1-purchase-ledger-migration.sql in the isolated MySQL 8 demonstration environment.
 -- Existing v2 rows cannot be re-derived: their source reservation reference is deliberately not retained.
-ALTER TABLE track1_purchase_ledger_rows
-    ADD COLUMN track2_reservation_ref_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL;
+-- CI exercises both a legacy schema and a Hibernate-created current schema, so additive columns are conditional.
+SET @td_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE()
+    AND table_name = 'track1_purchase_ledger_rows' AND column_name = 'track2_reservation_ref_hmac') = 0,
+    'ALTER TABLE track1_purchase_ledger_rows ADD COLUMN track2_reservation_ref_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL', 'SELECT 1');
+PREPARE td_stmt FROM @td_sql; EXECUTE td_stmt; DEALLOCATE PREPARE td_stmt;
 
-ALTER TABLE track1_purchase_ledger_batches
-    ADD COLUMN track2_link_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL;
+SET @td_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE()
+    AND table_name = 'track1_purchase_ledger_batches' AND column_name = 'track2_link_digest') = 0,
+    'ALTER TABLE track1_purchase_ledger_batches ADD COLUMN track2_link_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL', 'SELECT 1');
+PREPARE td_stmt FROM @td_sql; EXECUTE td_stmt; DEALLOCATE PREPARE td_stmt;
 
-ALTER TABLE macro_audit_evidence
-    ADD COLUMN reference_purpose VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'LEGACY_V1_UNLINKABLE';
+SET @td_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE()
+    AND table_name = 'macro_audit_evidence' AND column_name = 'reference_purpose') = 0,
+    'ALTER TABLE macro_audit_evidence ADD COLUMN reference_purpose VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''LEGACY_V1_UNLINKABLE''', 'SELECT 1');
+PREPARE td_stmt FROM @td_sql; EXECUTE td_stmt; DEALLOCATE PREPARE td_stmt;
 
 -- Do not populate this column by rehashing TRACK1_QTY_RESERVATION values.
-ALTER TABLE track1_purchase_ledger_rows
-    ADD CONSTRAINT chk_t1_ledger_track2_reference
-    CHECK (track2_reservation_ref_hmac IS NULL OR CHAR_LENGTH(track2_reservation_ref_hmac) = 64);
+SET @td_sql = IF((SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema = DATABASE()
+    AND table_name = 'track1_purchase_ledger_rows' AND constraint_name = 'chk_t1_ledger_track2_reference') = 0,
+    'ALTER TABLE track1_purchase_ledger_rows ADD CONSTRAINT chk_t1_ledger_track2_reference CHECK (track2_reservation_ref_hmac IS NULL OR CHAR_LENGTH(track2_reservation_ref_hmac) = 64)', 'SELECT 1');
+PREPARE td_stmt FROM @td_sql; EXECUTE td_stmt; DEALLOCATE PREPARE td_stmt;
 
 CREATE TABLE track1_purchase_limit_shared_signal_observations (
     id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

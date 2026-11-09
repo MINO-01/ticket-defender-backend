@@ -100,6 +100,7 @@ class MacroAuditEvidenceRepositoryTest {
         MacroAuditEvidence legacy = macroAuditEvidenceRepository.findAllByEvidenceKeyIn(List.of(legacyKey)).getFirst();
         assertThat(legacy.getTenantId()).isNull();
         assertThat(legacy.getInternalEventId()).isNull();
+        assertThat(legacy.getReferencePurpose()).isEqualTo("LEGACY_V1_UNLINKABLE");
     }
 
     /** 과거 적발 상태의 팬 제보 반려는 매크로 감사나 새 후보 상태에 영향을 주지 않습니다. */

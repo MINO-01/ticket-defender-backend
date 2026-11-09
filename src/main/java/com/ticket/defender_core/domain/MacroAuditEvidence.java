@@ -59,7 +59,8 @@ public class MacroAuditEvidence {
     @Column(name = "reservation_no", nullable = false)
     private String reservationNo;
 
-    @Column(name = "reference_purpose", nullable = false, length = 64)
+    @Column(name = "reference_purpose", nullable = false, length = 64,
+            columnDefinition = "varchar(64) default 'LEGACY_V1_UNLINKABLE'")
     private String referencePurpose;
 
     @Column(name = "account_id", nullable = false)

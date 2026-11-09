@@ -26,7 +26,12 @@ public final class CandidatePipelineDto {
                                   LocalDateTime createdAt, LocalDateTime endedAt) { }
     public record PerformanceLinkHistory(List<PerformanceLink> items) { }
 
-    public record ReservationRow(String reservationReference, String zone, String row, String seat) { }
+    /** ticketReference is optional for legacy one-seat sources; when supplied it is HMAC-protected before persistence. */
+    public record ReservationRow(String reservationReference, String zone, String row, String seat, String ticketReference) {
+        public ReservationRow(String reservationReference, String zone, String row, String seat) {
+            this(reservationReference, zone, row, seat, null);
+        }
+    }
     public record ImportReservations(UUID performanceId, String sourceVersion, Boolean completeSnapshot,
                                      List<ReservationRow> rows) { }
     public record ImportError(int rowIndex, String code) { }

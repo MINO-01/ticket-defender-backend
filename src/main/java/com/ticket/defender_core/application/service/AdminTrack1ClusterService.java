@@ -95,7 +95,9 @@ public class AdminTrack1ClusterService {
                 performance.getId(), sourceVersion, null, null, rows);
         return result.seats().stream().map(seat -> new Track1ClusterDto.Member(seat.auditId(),
                 new Track1ClusterDto.LedgerSeat(Track1ClusterDto.LedgerSeatStatus.valueOf(seat.status().name()),
-                        seat.zone(), seat.row(), seat.seat()))).toList();
+                        seat.zone(), seat.row(), seat.seat(), seat.seats().stream()
+                                .map(value -> new Track1ClusterDto.Seat(value.zone(), value.row(), value.seat()))
+                                .toList()))).toList();
     }
 
     private Track1ClusterDto.Event event(AdminActor actor) {

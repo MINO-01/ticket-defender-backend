@@ -29,12 +29,30 @@ class Track1CandidateLinkServiceTest {
         assertThat(result.status()).isEqualTo(Track1CandidateLinkDto.Status.LINKED);
         assertThat(result.items()).singleElement().satisfies(item -> {
             assertThat(item.status()).isEqualTo(Track1CandidateLinkDto.Status.LINKED);
+            assertThat(item.linkBasis()).isEqualTo(Track1CandidateLinkDto.LinkBasis.RESERVATION_REFERENCE);
             assertThat(item.ledgerSeats()).extracting(Track1CandidateLinkDto.LedgerSeat::status)
                     .containsExactly(Track1CandidateLinkDto.LedgerSeatStatus.FOUND);
             assertThat(item.ledgerSeats().getFirst().zone()).isEqualTo("A");
             assertThat(item.ledgerSeats().getFirst().row()).isEqualTo("1");
             assertThat(item.ledgerSeats().getFirst().seat()).isEqualTo("2");
         });
+    }
+
+    @Test
+    void linkedMeansReservationReferenceConvergenceEvenWhenTheLedgerMemberHasTwoSeats() {
+        Fixture fixture = fixture(true);
+        when(fixture.ledgerSeats.lookup(any(), any(), any(), any(), any(), any(), any())).thenReturn(
+                new Track1LedgerSeatLookupService.Result(true, true, List.of(new Track1LedgerSeatLookupService.LedgerSeat(17L,
+                        Track1LedgerSeatLookupService.Status.FOUND, null, null, null,
+                        List.of(new Track1LedgerSeatLookupService.Seat("A", "1", "2"),
+                                new Track1LedgerSeatLookupService.Seat("A", "1", "3"))))));
+
+        Track1CandidateLinkDto.View result = fixture.service.query(fixture.tenantId, fixture.eventId,
+                List.of(fixture.graph, fixture.source), id -> Optional.of(fixture.run));
+
+        assertThat(result.status()).isEqualTo(Track1CandidateLinkDto.Status.LINKED);
+        assertThat(result.items().getFirst().linkBasis()).isEqualTo(Track1CandidateLinkDto.LinkBasis.RESERVATION_REFERENCE);
+        assertThat(result.items().getFirst().ledgerSeats().getFirst().seats()).hasSize(2);
     }
 
     @Test

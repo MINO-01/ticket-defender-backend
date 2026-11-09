@@ -22,7 +22,8 @@ import java.util.UUID;
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Table(name = "reservation_candidates", uniqueConstraints =
-        @UniqueConstraint(name = "uk_reservation_candidate_reference", columnNames = {"batch_id", "reservation_ref_hmac"}),
+        {@UniqueConstraint(name = "uk_reservation_candidate_reference_seat", columnNames = {"batch_id", "reservation_ref_hmac", "zone", "row_num", "seat_num"}),
+         @UniqueConstraint(name = "uk_reservation_candidate_reference_ticket", columnNames = {"batch_id", "reservation_ref_hmac", "ticket_ref_hmac"})},
         indexes = @Index(name = "idx_reservation_candidate_seat", columnList = "batch_id,zone,row_num,seat_num"))
 public class ReservationCandidate {
     @Id
@@ -36,6 +37,8 @@ public class ReservationCandidate {
     private int sourceRowIndex;
     @Column(name = "reservation_ref_hmac", nullable = false, length = 64)
     private String reservationRefHmac;
+    @Column(name = "ticket_ref_hmac", length = 64)
+    private String ticketRefHmac;
     @Column(name = "reference_hmac_key_version", nullable = false, length = 32)
     private String referenceHmacKeyVersion;
     @Column(name = "zone", nullable = false, length = 128)
@@ -47,11 +50,16 @@ public class ReservationCandidate {
 
     public ReservationCandidate(UUID batchId, int sourceRowIndex, String reservationRefHmac,
             String referenceHmacKeyVersion, String zone, String rowNum, String seatNum) {
+        this(batchId, sourceRowIndex, reservationRefHmac, null, referenceHmacKeyVersion, zone, rowNum, seatNum);
+    }
+    public ReservationCandidate(UUID batchId, int sourceRowIndex, String reservationRefHmac, String ticketRefHmac,
+            String referenceHmacKeyVersion, String zone, String rowNum, String seatNum) {
         this.id = UUID.randomUUID();
         this.batchId = Objects.requireNonNull(batchId);
         if (sourceRowIndex < 0) throw new IllegalArgumentException("sourceRowIndex must be non-negative");
         this.sourceRowIndex = sourceRowIndex;
         this.reservationRefHmac = required(reservationRefHmac, 64);
+        this.ticketRefHmac = ticketRefHmac == null ? null : required(ticketRefHmac, 64);
         this.referenceHmacKeyVersion = required(referenceHmacKeyVersion, 32);
         this.zone = required(zone, 128);
         this.rowNum = required(rowNum, 128);

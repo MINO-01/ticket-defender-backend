@@ -25,7 +25,12 @@ public final class Track1ClusterDto {
     public enum LedgerSeatStatus { FOUND, NOT_IN_LEDGER, LEDGER_UNAVAILABLE }
 
     /** The raw account and reservation references remain in protected evidence and are never returned. */
-    public record LedgerSeat(LedgerSeatStatus status, String zone, String row, String seat) { }
+    public record Seat(String zone, String row, String seat) { }
+    public record LedgerSeat(LedgerSeatStatus status, String zone, String row, String seat, List<Seat> seats) {
+        public LedgerSeat(LedgerSeatStatus status, String zone, String row, String seat) {
+            this(status, zone, row, seat, zone == null ? List.of() : List.of(new Seat(zone, row, seat)));
+        }
+    }
 
     public record Member(Long auditId, LedgerSeat ledgerSeat) {
     }

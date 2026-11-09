@@ -46,15 +46,30 @@ components:
         zone: {type: [string, 'null']}
         row: {type: [string, 'null']}
         seat: {type: [string, 'null']}
+        seats:
+          type: array
+          description: All immutable ledger seats for this reservation reference. Legacy scalar zone/row/seat are populated only for a single-seat reservation.
+          items: {$ref: '#/components/schemas/Seat'}
+    Seat:
+      type: object
+      required: [zone, row, seat]
+      properties:
+        zone: {type: string}
+        row: {type: string}
+        seat: {type: string}
     EvidenceLink:
       type: object
-      required: [graphSourceId, candidateSourceId, candidateRunId, status, ledgerSeats]
+      required: [graphSourceId, candidateSourceId, candidateRunId, status, ledgerSeats, linkBasis]
       properties:
         graphSourceId: {type: string, format: uuid}
         candidateSourceId: {type: string, format: uuid}
         candidateRunId: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/EvidenceLinkStatus'}
         ledgerSeats: {type: array, items: {$ref: '#/components/schemas/LedgerSeat'}}
+        linkBasis:
+          type: string
+          const: RESERVATION_REFERENCE
+          description: LINKED means only that an opaque reservation reference converged. It is not ticket-unit identity, ownership, authenticity, fraud, or approval proof.
     EvidenceLinkView:
       type: object
       required: [status, items]

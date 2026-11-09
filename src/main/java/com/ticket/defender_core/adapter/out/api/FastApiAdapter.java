@@ -3,6 +3,8 @@ package com.ticket.defender_core.adapter.out.api;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisRequest;
+import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisResponse;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +38,7 @@ import java.util.regex.Pattern;
 public class FastApiAdapter {
 
     private static final String ANALYSIS_PATH = "/api/v1/clusters/analyze";
+    private static final String PURCHASE_LIMIT_ANALYSIS_PATH = "/api/v2/clusters/analyze";
     private static final String TRACK1_AUTH_HEADER = "X-TD-Track1-Key";
     private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
     private static final Set<String> PERMITTED_HTTP_LOOPBACK_LITERALS = Set.of("127.0.0.1", "::1");
@@ -93,6 +96,47 @@ public class FastApiAdapter {
     }
 
     /** 인증 헤더를 보낼 FastAPI 기준 URL이 HTTPS 또는 검증된 loopback HTTP인지 확인합니다. */
+    /** Calls the isolated Data #30 v2 contract only with a fully sourced ledger request. */
+    public Track1PurchaseLimitAnalysisResponse requestPurchaseLimitAnalysis(
+            Track1PurchaseLimitAnalysisRequest request
+    ) {
+        Track1PurchaseLimitContractValidator.request(request);
+        String baseUrl = requirePermittedFastApiBaseUrl();
+        String sharedSecret = requireTrack1SharedSecret();
+        Track1PurchaseLimitAnalysisResponse response;
+        try {
+            response = restClient.post()
+                    .uri(baseUrl + PURCHASE_LIMIT_ANALYSIS_PATH)
+                    .header(TRACK1_AUTH_HEADER, sharedSecret)
+                    .body(request)
+                    .retrieve()
+                    .onStatus(HttpStatusCode::is3xxRedirection,
+                            (clientRequest, clientResponse) -> { throw new FastApiAuthenticationConfigurationException(); })
+                    .body(Track1PurchaseLimitAnalysisResponse.class);
+        } catch (RestClientException cause) {
+            if (cause instanceof UnknownContentTypeException
+                    || cause.contains(HttpMessageNotReadableException.class)) {
+                throw new FastApiResponseContractException("FastAPI response body violates the contract", cause);
+            }
+            throw cause;
+        }
+        Track1PurchaseLimitContractValidator.response(request, response);
+        validateResponse(asV1Request(request), asV1Response(response));
+        return response;
+    }
+
+    private MacroAnalysisRequest asV1Request(Track1PurchaseLimitAnalysisRequest request) {
+        return new MacroAnalysisRequest(request.requestId(), request.tickets().stream()
+                .map(ticket -> new MacroAnalysisRequest.Ticket(ticket.accountId(), ticket.reservationNo(), ticket.eventId(),
+                        ticket.paymentHash(), ticket.addressHash(), ticket.deviceIdHash(), ticket.ipHash()))
+                .toList());
+    }
+
+    private MacroAnalysisResponse asV1Response(Track1PurchaseLimitAnalysisResponse response) {
+        return new MacroAnalysisResponse(response.requestId(), MacroAnalysisResponse.Status.COMPLETED,
+                response.algorithm(), response.algorithmVersion(), response.analyzedAt(), response.clusters());
+    }
+
     private String requirePermittedFastApiBaseUrl() {
         final URI endpoint;
         try {

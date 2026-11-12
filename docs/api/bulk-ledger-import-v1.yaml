@@ -1,0 +1,83 @@
+openapi: 3.1.0
+info:
+  title: Ticket Defender bulk ledger import registration API
+  version: 1.0.0
+  description: >-
+    BL-01 registers metadata for an isolated synthetic bulk-ledger import. It does not upload or read a file,
+    stage rows, call analysis, create a ledger version, or publish results.
+security: [{ adminBearer: [] }]
+paths:
+  /api/v1/admin/ledger-imports:
+    post:
+      summary: Register a bulk import job
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RegisterRequest' } } }
+      responses:
+        '201': { description: CREATED job, headers: { Cache-Control: { schema: { example: no-store } } } }
+        '400': { description: INVALID_IDEMPOTENCY_KEY or malformed JSON }
+        '401': { description: UNAUTHENTICATED }
+        '403': { description: caller lacks TENANT_ADMIN }
+        '404': { description: unknown or out-of-scope event/performance }
+        '409': { description: idempotency/sourceBatch/state/concurrency conflict }
+        '422': { description: metadata or scope-manifest validation failure }
+    get:
+      summary: List visible import jobs
+      responses: { '200': { description: no-store paged jobs }, '401': { description: UNAUTHENTICATED } }
+  /api/v1/admin/ledger-imports/{importId}:
+    parameters: [{ $ref: '#/components/parameters/ImportId' }]
+    get:
+      summary: Get one job
+      responses: { '200': { description: job metadata }, '404': { description: RESOURCE_NOT_FOUND for a foreign job } }
+  /api/v1/admin/ledger-imports/{importId}/errors:
+    parameters: [{ $ref: '#/components/parameters/ImportId' }]
+    get:
+      summary: List code-only validation errors
+      responses: { '200': { description: empty in BL-01 unless a future worker writes codes }, '404': { description: RESOURCE_NOT_FOUND } }
+  /api/v1/admin/ledger-imports/{importId}/cancel:
+    parameters: [{ $ref: '#/components/parameters/ImportId' }]
+    post:
+      summary: Cancel a CREATED job
+      responses: { '200': { description: CANCELLED job }, '403': { description: caller lacks TENANT_ADMIN }, '404': { description: RESOURCE_NOT_FOUND }, '409': { description: BULK_IMPORT_STATE_TRANSITION_INVALID } }
+components:
+  securitySchemes: { adminBearer: { type: http, scheme: bearer, bearerFormat: JWT } }
+  parameters: { ImportId: { name: importId, in: path, required: true, schema: { type: string, format: uuid } } }
+  schemas:
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256, declaredFileBytes, declaredRowCount, completeSnapshot, scopes]
+      properties:
+        schemaVersion: { type: string, enum: [v1] }
+        sourceSystem: { type: string, maxLength: 64 }
+        sourceBatchId: { type: string, maxLength: 128 }
+        mode: { type: string, enum: [FULL_SNAPSHOT, CHANGE_FEED] }
+        format: { type: string, enum: [CSV] }
+        declaredObjectSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        declaredFileBytes: { type: integer, minimum: 0 }
+        declaredRowCount: { type: integer, minimum: 0 }
+        completeSnapshot: { type: boolean, description: 'true only for FULL_SNAPSHOT' }
+        scopes: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Scope' } }
+    Scope:
+      type: object
+      required: [eventId, performanceId, declaredRowCount]
+      properties:
+        eventId: { type: string, format: uuid }
+        performanceId: { type: string, format: uuid }
+        declaredRowCount: { type: integer, minimum: 0 }
+        scopeAsOf: { type: string, format: date-time, description: 'required only for FULL_SNAPSHOT' }
+        cursorStart: { type: string, maxLength: 256, description: 'required only for CHANGE_FEED' }
+        cursorEnd: { type: string, maxLength: 256, description: 'required only for CHANGE_FEED' }
+    Job:
+      type: object
+      description: 'No raw row, reservation, account, payment, IP, object key, lease owner, or key digest is returned.'
+      properties:
+        importId: { type: string, format: uuid }
+        status: { type: string, enum: [CREATED, CANCELLED] }
+        mode: { type: string, enum: [FULL_SNAPSHOT, CHANGE_FEED] }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        processedRowCount: { type: integer, minimum: 0 }
+        acceptedRowCount: { type: integer, minimum: 0 }
+        rejectedRowCount: { type: integer, minimum: 0 }

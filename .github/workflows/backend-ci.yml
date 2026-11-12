@@ -128,6 +128,14 @@ jobs:
         run: bash ./gradlew test --tests '*Track1QuantityHttpMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm Track 1 quantity HTTP flow ran
         run: python3 .github/scripts/check_junit_results.py track1-quantity-http
+      - name: Apply BL-01 bulk ledger import migration
+        run: bash ./gradlew test --tests '*BulkLedgerImportMigrationMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm BL-01 bulk ledger import migration ran
+        run: python3 .github/scripts/check_junit_results.py bulk-ledger-import-migration
+      - name: Verify BL-01 bulk ledger registration over real HTTP and isolated MySQL
+        run: bash ./gradlew test --tests '*BulkLedgerImportHttpMySqlTest' --rerun-tasks --no-daemon
+      - name: Confirm BL-01 bulk ledger HTTP tests ran
+        run: python3 .github/scripts/check_junit_results.py bulk-ledger-import-http
       - name: Verify W05 snapshot and draft concurrency
         run: bash ./gradlew test --tests '*CaseW05ConcurrentMySqlTest' --rerun-tasks --no-daemon
       - name: Confirm W05 concurrency tests ran

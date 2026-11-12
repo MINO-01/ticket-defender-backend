@@ -27,6 +27,12 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.Track1QuantityHttpMySqlTest": (
         7, "Runs over real HTTP in the isolated MySQL CI job"
     ),
+    "com.ticket.defender_core.integration.BulkLedgerImportMigrationMySqlTest": (
+        1, "Runs after the Track 1 migration chain in the isolated MySQL CI job"
+    ),
+    "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest": (
+        3, "Runs over real HTTP in the isolated MySQL CI job"
+    ),
     "com.ticket.defender_core.integration.Track1LiveIntegrationTest": (
         2, "Requires a live FastAPI analysis service"
     ),
@@ -295,6 +301,12 @@ MYSQL_SUITES = {
     ),
     "track1-quantity-http": (
         "com.ticket.defender_core.integration.Track1QuantityHttpMySqlTest", 7
+    ),
+    "bulk-ledger-import-migration": (
+        "com.ticket.defender_core.integration.BulkLedgerImportMigrationMySqlTest", 1
+    ),
+    "bulk-ledger-import-http": (
+        "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest", 3
     ),
     "track2-candidate-http": (
         "com.ticket.defender_core.integration.Track2CandidatePipelineHttpMySqlTest", 1

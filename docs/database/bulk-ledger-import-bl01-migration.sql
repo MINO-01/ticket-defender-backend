@@ -1,8 +1,8 @@
 -- BL-01 only registers a metadata job. No object bytes, row payload, HMAC, staging, ledger head, or outbox data is stored here.
 CREATE TABLE td_bulk_import_jobs (
-    id CHAR(36) NOT NULL,
-    tenant_id CHAR(36) NOT NULL,
-    created_by_membership_id CHAR(36) NOT NULL,
+    id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    tenant_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    created_by_membership_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     idempotency_key_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     request_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     schema_version VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -47,11 +47,11 @@ CREATE TABLE td_bulk_import_jobs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE td_bulk_import_scopes (
-    id CHAR(36) NOT NULL,
-    job_id CHAR(36) NOT NULL,
-    tenant_id CHAR(36) NOT NULL,
-    event_id CHAR(36) NOT NULL,
-    performance_id CHAR(36) NOT NULL,
+    id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    job_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    tenant_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    event_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    performance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     scope_as_of DATETIME(6) NULL,
     declared_row_count BIGINT NOT NULL,
     cursor_start VARCHAR(256) NULL,
@@ -71,8 +71,8 @@ CREATE TABLE td_bulk_import_scopes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE td_bulk_import_errors (
-    id CHAR(36) NOT NULL,
-    job_id CHAR(36) NOT NULL,
+    id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    job_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     sequence_no BIGINT NOT NULL,
     code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     created_at DATETIME(6) NOT NULL,

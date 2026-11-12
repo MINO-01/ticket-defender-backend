@@ -9,6 +9,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 import java.sql.Connection;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,6 +28,9 @@ class BulkLedgerImportMigrationMySqlTest {
             jdbc.execute("set foreign_key_checks=1");
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
         }
+        assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "tenant_id");
+        assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "created_by_membership_id");
+        assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_scopes", "performance_id");
         String tenant = UUID.randomUUID().toString(), event = UUID.randomUUID().toString(), member = UUID.randomUUID().toString(), performance = UUID.randomUUID().toString();
         jdbc.update("insert into tenants(id,name,status) values(?,?,'ACTIVE')", tenant, "synthetic bulk tenant");
         jdbc.update("insert into events(id,tenant_id,external_event_ref,name,status,public_intake_enabled) values(?,?,?,?,'ACTIVE',b'0')", event, tenant, "bulk-" + event, "synthetic bulk event");
@@ -39,6 +43,17 @@ class BulkLedgerImportMigrationMySqlTest {
         assertThatThrownBy(() -> scope(jdbc, job, UUID.randomUUID().toString(), event, performance, "2026-11-01 00:00:00", null, null, 1)).isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("insert into td_bulk_import_errors(id,job_id,sequence_no,code,created_at) values(?,?,?,'CODE',utc_timestamp(6))", UUID.randomUUID().toString(), job, -1)).isInstanceOf(DataAccessException.class);
         assertThat(jdbc.queryForObject("select count(*) from td_bulk_import_jobs", Integer.class)).isEqualTo(1);
+    }
+
+    private static void assertAsciiBinaryUuidColumn(JdbcTemplate jdbc, String table, String column) {
+        Map<String, Object> definition = jdbc.queryForMap("""
+                select character_set_name, collation_name, character_maximum_length
+                from information_schema.columns
+                where table_schema = database() and table_name = ? and column_name = ?
+                """, table, column);
+        assertThat(definition.get("character_set_name")).isEqualTo("ascii");
+        assertThat(definition.get("collation_name")).isEqualTo("ascii_bin");
+        assertThat(((Number) definition.get("character_maximum_length")).intValue()).isEqualTo(36);
     }
 
     private static String job(JdbcTemplate jdbc, String tenant, String member, String source, String batch, String mode, long rows) {

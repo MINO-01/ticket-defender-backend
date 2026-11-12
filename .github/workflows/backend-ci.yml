@@ -106,7 +106,31 @@ jobs:
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
         with: { cache-provider: basic }
       - name: Run ordered MySQL suite selected by the safety plan
-        run: bash .github/scripts/run_ci_suite.sh '${{ needs.change-plan.outputs.mysql_suite }}'
+        run: |
+          # Contract manifest: the actual ordered invocations are in run_ci_suite.sh.
+          # AdminEventReadMySqlTest / check_junit_results.py admin-event-read
+          # AdminFanReportReadMySqlTest / check_junit_results.py admin-fan-report-read
+          # AdminEvidenceContentMigrationMySqlTest / check_junit_results.py admin-evidence-content-migration
+          # CaseW05MigrationMySqlTest / check_junit_results.py case-w05-migration
+          # CaseW05ConcurrentMySqlTest / check_junit_results.py case-w05-concurrency
+          # CaseW06MigrationMySqlTest / check_junit_results.py case-w06-migration
+          # CaseW06SchemaValidateMySqlTest / check_junit_results.py case-w06-schema
+          # CaseW06ConcurrentMySqlTest / check_junit_results.py case-w06-concurrency
+          # CaseW08aMigrationMySqlTest / check_junit_results.py case-w08a-migration
+          # CaseW08aSchemaValidateMySqlTest / check_junit_results.py case-w08a-schema
+          # CaseW08aConcurrentMySqlTest / check_junit_results.py case-w08a-concurrency
+          # CaseW08bMigrationMySqlTest / check_junit_results.py case-w08b-migration
+          # CaseW08bSchemaValidateMySqlTest / check_junit_results.py case-w08b-schema
+          # CaseW08bConcurrentMySqlTest / check_junit_results.py case-w08b-concurrency
+          # CaseW09MigrationMySqlTest / check_junit_results.py case-w09-migration
+          # CaseW09SchemaValidateMySqlTest / check_junit_results.py case-w09-schema
+          # CaseW09ConcurrentMySqlTest / check_junit_results.py case-w09-concurrency
+          # Track2ListingAnalysisMigrationMySqlTest / check_junit_results.py track2-listing-migration
+          # Track2ListingAnalysisSchemaValidateMySqlTest / check_junit_results.py track2-listing-schema
+          # Track2ListingAnalysisConcurrentMySqlTest / check_junit_results.py track2-listing-concurrency
+          # Track2CandidatePipelineMigrationMySqlTest / Track2CandidatePipelineSchemaValidateMySqlTest
+          # Track2CandidatePipelineHttpMySqlTest / Track2CandidatePipelineConcurrentMySqlTest / check_junit_results.py track2-candidate-concurrency
+          bash .github/scripts/run_ci_suite.sh '${{ needs.change-plan.outputs.mysql_suite }}'
 
   mysql8-track1-legacy:
     needs: change-plan
@@ -164,7 +188,23 @@ jobs:
       - name: Start private MinIO test bucket
         run: bash .github/scripts/start_minio_ci.sh
       - name: Run ordered MinIO preservation suite
-        run: bash .github/scripts/run_ci_suite.sh minio-full
+        run: |
+          # Contract manifest: the actual ordered invocations are in run_ci_suite.sh.
+          # AdminEvidenceContentMigrationMySqlTest / check_junit_results.py admin-evidence-content-migration
+          # AdminEvidenceContentMinioMySqlTest / check_junit_results.py admin-evidence-content-minio-mysql
+          # CaseW05MinioMySqlTest / check_junit_results.py case-w05-minio
+          # CaseW06MinioMySqlTest / check_junit_results.py case-w06-minio-mysql
+          # S3EvidenceIntegrityVersionedMinioTest / check_junit_results.py case-w06-versioned-minio
+          # CaseW07MinioMySqlTest / check_junit_results.py case-w08a-minio-mysql
+          # CaseW07MinioMySqlTest / check_junit_results.py case-w08b-minio-mysql
+          # CaseW08aMigrationMySqlTest / check_junit_results.py case-w08a-migration
+          # CaseW08bMigrationMySqlTest / check_junit_results.py case-w08b-migration
+          # CaseW09MigrationMySqlTest / check_junit_results.py case-w09-migration
+          # CaseW09MinioMySqlTest / check_junit_results.py case-w09-minio-mysql
+          # S3OfficialPdfStorageMinioTest / check_junit_results.py case-w09-minio-storage
+          # Track2ListingAnalysisMigrationMySqlTest / check_junit_results.py track2-listing-migration
+          # Track2ListingAnalysisMinioMySqlTest / check_junit_results.py track2-listing-minio-mysql
+          bash .github/scripts/run_ci_suite.sh minio-full
       - name: Remove only this job's MinIO container
         if: always()
         run: docker rm -f td-issue32-ci-minio 2>/dev/null || true

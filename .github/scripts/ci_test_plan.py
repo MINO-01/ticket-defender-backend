@@ -29,8 +29,13 @@ def select(files: list[str], force_full: bool = False) -> Plan:
         return Plan("full", True, True, "shared authentication, tenant, or security boundary change")
     if any(token in path for path in paths for token in ("evidence", "minio", "objectstorage", "/s3", "officialpdf", "approval")):
         return Plan("full", True, False, "evidence, Object Lock, approval, or PDF boundary change")
-    if all("bulkledger" in path or "bulk-ledger" in path or "bulkladger" in path for path in paths):
-        return Plan("bl01", False, False, "BL-01-only code, test, or schema change")
+    # BL-01, upload/staging (BL-02), and publication (BL-03) deliberately
+    # share names and existing files. A path cannot prove that a change has
+    # only the metadata-registration impact covered by the BL-01 prefix.
+    # Keep object-storage coverage because an upload/publication change can be
+    # introduced by editing a pre-existing BL-01 class or migration.
+    if any("bulkledger" in path or "bulk-ledger" in path or "bulkladger" in path for path in paths):
+        return Plan("full", True, False, "bulk ledger change is not safely distinguishable from BL-02/BL-03")
     if all("track1" in path or "purchaseledger" in path or "purchase-limit" in path for path in paths):
         return Plan("track1", False, True, "Track 1-only code, test, or schema change")
     if any(path.startswith("docs/database/") or "/repository/" in path or "/persistence/" in path for path in paths):

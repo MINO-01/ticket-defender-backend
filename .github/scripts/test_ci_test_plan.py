@@ -11,8 +11,17 @@ class CiTestPlanTest(unittest.TestCase):
         self.assertEqual(minio, plan.run_minio)
         self.assertEqual(legacy, plan.run_legacy)
 
-    def test_bl01_api_and_schema(self):
-        self.assertPlan(["src/main/java/a/BulkLedgerImportService.java", "docs/database/bulk-ledger-import-bl01-migration.sql"], "bl01", False)
+    def test_existing_bl01_files_are_fail_closed(self):
+        self.assertPlan(["src/main/java/a/BulkLedgerImportService.java", "docs/database/bulk-ledger-import-bl01-migration.sql"], "full", True)
+
+    def test_bulk_upload_is_fail_closed(self):
+        self.assertPlan(["src/main/java/a/BulkLedgerUploadService.java"], "full", True)
+
+    def test_bulk_staging_migration_is_fail_closed(self):
+        self.assertPlan(["docs/database/bulk-ledger-staging-migration.sql"], "full", True)
+
+    def test_bulk_publication_is_fail_closed(self):
+        self.assertPlan(["src/main/java/a/BulkLedgerPublicationService.java"], "full", True)
 
     def test_minio_storage(self):
         self.assertPlan(["src/main/java/a/S3EvidenceObjectStorage.java"], "full", True)

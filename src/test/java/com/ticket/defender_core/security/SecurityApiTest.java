@@ -264,6 +264,26 @@ class SecurityApiTest {
     }
 
     @Test
+    void bulkLedgerRegistrationRequiresAuthenticationAndDoesNotOpenFutureUploadRoutes() throws Exception {
+        mvc.perform(post("/api/v1/admin/ledger-imports")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized());
+        // A verified administrator reaches the implemented registration boundary; the missing mandatory
+        // idempotency header is rejected as a request error rather than silently accepted.
+        mvc.perform(post("/api/v1/admin/ledger-imports")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/admin/ledger-imports/future-import/upload-session")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void publicFanReportRoutesStayClosedByDefault() throws Exception {
         mvc.perform(post("/api/v1/fan-reports"))
                 .andExpect(status().isUnauthorized());

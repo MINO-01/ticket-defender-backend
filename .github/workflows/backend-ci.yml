@@ -4,434 +4,197 @@ on:
   pull_request:
   push:
     branches: [main, 'feat/#38-evidence-integrity-gate', 'feat/#40-evidence-preservation-gate', 'feat/#42-approval-request-binding', 'feat/#44-approval-review-decision', 'feat/#46-official-pdf-issuance']
+  schedule:
+    - cron: '23 3 * * 1'
   workflow_dispatch:
+    inputs:
+      full_regression:
+        description: Run the complete MySQL and MinIO regression suites
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
 
+# New commits cancel obsolete PR runs only. main, scheduled, and manual full
+# regressions are never cancelled by a later push.
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  change-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      mysql_suite: ${{ steps.plan.outputs.mysql_suite }}
+      run_mysql: ${{ steps.plan.outputs.run_mysql }}
+      run_minio: ${{ steps.plan.outputs.run_minio }}
+      run_legacy: ${{ steps.plan.outputs.run_legacy }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        name: Classify changed files conservatively
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FULL_REGRESSION: ${{ inputs.full_regression }}
+        run: |
+          set -euo pipefail
+          : > .ci-changed-files
+          force_full=false
+          if [[ "$EVENT_NAME" != "pull_request" || "$FULL_REGRESSION" == "true" ]]; then
+            force_full=true
+          elif [[ -n "$BASE_SHA" ]]; then
+            git diff --name-only "$BASE_SHA" "$GITHUB_SHA" > .ci-changed-files
+          else
+            force_full=true
+          fi
+          if [[ "$force_full" == true ]]; then
+            python3 .github/scripts/ci_test_plan.py --files .ci-changed-files --force-full --github-output "$GITHUB_OUTPUT"
+          else
+            python3 .github/scripts/ci_test_plan.py --files .ci-changed-files --github-output "$GITHUB_OUTPUT"
+          fi
+          python3 .github/scripts/test_ci_test_plan.py
+
   java21-build:
+    needs: change-plan
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
+        with: { persist-credentials: false }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
-        with:
-          distribution: temurin
-          java-version: '21'
+        with: { distribution: temurin, java-version: '21' }
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
-        with:
-          cache-provider: basic
+        with: { cache-provider: basic }
       - name: Build and run default regression tests
-        run: bash ./gradlew build --rerun-tasks --no-daemon
+        run: bash ./gradlew build --build-cache
       - name: Check skipped tests and reasons
         run: python3 .github/scripts/check_junit_results.py core
 
   mysql8-integration:
+    needs: change-plan
+    if: needs.change-plan.outputs.run_mysql == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     services:
       mysql:
         image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
-        env:
-          MYSQL_DATABASE: td_issue32_ci
-          MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
-        ports:
-          - 13307:3306
+        env: { MYSQL_DATABASE: td_issue32_ci, MYSQL_ROOT_PASSWORD: synthetic_ci_only_password }
+        ports: ['13307:3306']
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
+          --health-interval=10s --health-timeout=5s --health-retries=10
     env:
       TD_ISSUE32_MYSQL_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_ci?useSSL=false&allowPublicKeyRetrieval=true
       TD_ISSUE32_MYSQL_USER: root
       TD_ISSUE32_MYSQL_PASSWORD: synthetic_ci_only_password
+      TD_MYSQL_MIGRATION_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_ci?useSSL=false&allowPublicKeyRetrieval=true
+      TD_MYSQL_MIGRATION_USER: root
+      TD_MYSQL_MIGRATION_PASSWORD: synthetic_ci_only_password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
+        with: { persist-credentials: false }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
-        with:
-          distribution: temurin
-          java-version: '21'
+        with: { distribution: temurin, java-version: '21' }
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
-        with:
-          cache-provider: basic
-      - name: Apply migration to fresh MySQL 8 schema
-        run: bash ./gradlew test --tests '*FanReportMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm migration test ran
-        run: python3 .github/scripts/check_junit_results.py mysql-migration
-      - name: Apply W04 Case migration to existing MySQL data
-        run: bash ./gradlew test --tests '*CaseMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W04 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-migration
-      - name: Apply W05 snapshot and draft migration
-        run: bash ./gradlew test --tests '*CaseW05MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W05 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-migration
-      - name: Apply W06 evidence verification migration
-        run: bash ./gradlew test --tests '*CaseW06MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W06 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w06-migration
-      - name: Apply W07 preservation migration
-        run: bash ./gradlew test --tests '*CaseW07MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-migration
-      - name: Apply W08a approval request migration
-        run: bash ./gradlew test --tests '*CaseW08aMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08a migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08a-migration
-      - name: Apply W08b approval review and decision migration
-        run: bash ./gradlew test --tests '*CaseW08bMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08b migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08b-migration
-      - name: Apply W09 official PDF issuance migration
-        run: bash ./gradlew test --tests '*CaseW09MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W09 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-migration
-      - name: Apply Track 2 listing analysis migration
-        run: bash ./gradlew test --tests '*Track2ListingAnalysisMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 listing analysis migration test ran
-        run: python3 .github/scripts/check_junit_results.py track2-listing-migration
-      - name: Apply Track 2 candidate pipeline migration
-        run: bash ./gradlew test --tests '*Track2CandidatePipelineMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 candidate pipeline migration test ran
-        run: python3 .github/scripts/check_junit_results.py track2-candidate-migration
-      - name: Apply W10 Track 2 candidate Case-source migration
-        run: bash ./gradlew test --tests '*CaseW10Track2CandidateSourceMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W10 Track 2 candidate Case-source migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w10-candidate-source-migration
-      - name: Apply admin evidence content audit migration
-        run: bash ./gradlew test --tests '*AdminEvidenceContentMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm admin evidence content audit migration test ran
-        run: python3 .github/scripts/check_junit_results.py admin-evidence-content-migration
-      - name: Apply official PDF synthetic isolation migration
-        run: bash ./gradlew test --tests '*OfficialPdfSyntheticIsolationMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm official PDF synthetic isolation migration test ran
-        run: python3 .github/scripts/check_junit_results.py official-pdf-synthetic-migration
-      - name: Validate JPA schema and MySQL behavior
-        run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm schema tests ran
-        run: python3 .github/scripts/check_junit_results.py mysql-schema
-      - name: Validate W05 JPA mappings
-        run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W05 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-schema
-      - name: Apply Track 1 purchase ledger migration
-        run: bash ./gradlew test --tests '*Track1QuantityMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 1 purchase ledger migration ran
-        run: python3 .github/scripts/check_junit_results.py track1-quantity-migration
-      - name: Verify Track 1 quantity HTTP flow
-        run: bash ./gradlew test --tests '*Track1QuantityHttpMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 1 quantity HTTP flow ran
-        run: python3 .github/scripts/check_junit_results.py track1-quantity-http
-      - name: Apply BL-01 bulk ledger import migration
-        run: bash ./gradlew test --tests '*BulkLedgerImportMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm BL-01 bulk ledger import migration ran
-        run: python3 .github/scripts/check_junit_results.py bulk-ledger-import-migration
-      - name: Verify BL-01 bulk ledger registration over real HTTP and isolated MySQL
-        run: bash ./gradlew test --tests '*BulkLedgerImportHttpMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm BL-01 bulk ledger HTTP tests ran
-        run: python3 .github/scripts/check_junit_results.py bulk-ledger-import-http
-      - name: Verify W05 snapshot and draft concurrency
-        run: bash ./gradlew test --tests '*CaseW05ConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W05 concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-concurrency
-      - name: Validate W06 verification JPA mapping
-        run: bash ./gradlew test --tests '*CaseW06SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W06 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w06-schema
-      - name: Validate W07 preservation JPA mappings
-        run: bash ./gradlew test --tests '*CaseW07SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-schema
-      - name: Validate W08a approval request JPA mappings
-        run: bash ./gradlew test --tests '*CaseW08aSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08a schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08a-schema
-      - name: Validate W08b review receipt and decision JPA mappings
-        run: bash ./gradlew test --tests '*CaseW08bSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08b schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08b-schema
-      - name: Validate W09 official PDF JPA mappings
-        run: bash ./gradlew test --tests '*CaseW09SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W09 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-schema
-      - name: Validate Track 2 listing analysis JPA mappings
-        run: bash ./gradlew test --tests '*Track2ListingAnalysisSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 listing analysis schema test ran
-        run: python3 .github/scripts/check_junit_results.py track2-listing-schema
-      - name: Validate Track 2 candidate pipeline JPA mappings
-        run: bash ./gradlew test --tests '*Track2CandidatePipelineSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 candidate pipeline schema test ran
-        run: python3 .github/scripts/check_junit_results.py track2-candidate-schema
-      - name: Validate W10 Track 2 candidate Case-source JPA mappings
-        run: bash ./gradlew test --tests '*CaseW10Track2CandidateSourceSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W10 Track 2 candidate Case-source schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w10-candidate-source-schema
-      - name: Verify Track 2 candidate pipeline over real HTTP and isolated MySQL
-        run: bash ./gradlew test --tests '*Track2CandidatePipelineHttpMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 candidate pipeline HTTP test ran
-        run: python3 .github/scripts/check_junit_results.py track2-candidate-http
-      - name: Verify Track 2 candidate pipeline active slot and idempotency races
-        run: bash ./gradlew test --tests '*Track2CandidatePipelineConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 candidate pipeline concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py track2-candidate-concurrency
-      - name: Verify W06 idempotency and activity rollback on MySQL
-        run: bash ./gradlew test --tests '*CaseW06ConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W06 MySQL concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w06-concurrency
-      - name: Verify W07 idempotency policy race and rollback on MySQL
-        run: bash ./gradlew test --tests '*CaseW07ConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 MySQL concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-concurrency
-      - name: Verify W08a idempotency concurrency and rollback on MySQL
-        run: bash ./gradlew test --tests '*CaseW08aConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08a MySQL concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w08a-concurrency
-      - name: Verify W08b decision, receipt and withdrawal concurrency on MySQL
-        run: bash ./gradlew test --tests '*CaseW08bConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08b MySQL concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w08b-concurrency
-      - name: Verify W09 official PDF issuance concurrency on MySQL
-        run: bash ./gradlew test --tests '*CaseW09ConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W09 MySQL concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-concurrency
-      - name: Verify Track 2 listing analysis idempotency and active slot race on MySQL
-        run: bash ./gradlew test --tests '*Track2ListingAnalysisConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 listing analysis MySQL concurrency tests ran
-        run: python3 .github/scripts/check_junit_results.py track2-listing-concurrency
-      - name: Verify admin fan report read scope and paging on MySQL
-        run: bash ./gradlew test --tests '*AdminFanReportReadMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm admin fan report MySQL read tests ran
-        run: python3 .github/scripts/check_junit_results.py admin-fan-report-read
-      - name: Verify admin accessible event list scope on MySQL
-        run: bash ./gradlew test --tests '*AdminEventReadMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm admin accessible event MySQL tests ran
-        run: python3 .github/scripts/check_junit_results.py admin-event-read
-      - name: Validate W05 mappings after concurrency data
-        run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm order-independent W05 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-schema
-      - name: Verify W04 optimistic locking on MySQL
-        run: bash ./gradlew test --tests '*CaseConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W04 concurrency test ran
-        run: python3 .github/scripts/check_junit_results.py case-concurrency
-      - name: Verify Track 1 concurrent MySQL writes
-        env:
-          TD_MYSQL_MIGRATION_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_ci?useSSL=false&allowPublicKeyRetrieval=true
-          TD_MYSQL_MIGRATION_USER: root
-          TD_MYSQL_MIGRATION_PASSWORD: synthetic_ci_only_password
-        run: bash ./gradlew test --tests '*Track1ConcurrentMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 1 concurrency test ran
-        run: python3 .github/scripts/check_junit_results.py track1-concurrency
+        with: { cache-provider: basic }
+      - name: Run ordered MySQL suite selected by the safety plan
+        run: bash .github/scripts/run_ci_suite.sh '${{ needs.change-plan.outputs.mysql_suite }}'
 
   mysql8-track1-legacy:
+    needs: change-plan
+    if: needs.change-plan.outputs.run_legacy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
       mysql:
         image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
-        env:
-          MYSQL_DATABASE: td_track1_ci
-          MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
-        ports:
-          - 13307:3306
+        env: { MYSQL_DATABASE: td_track1_ci, MYSQL_ROOT_PASSWORD: synthetic_ci_only_password }
+        ports: ['13307:3306']
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
+          --health-interval=10s --health-timeout=5s --health-retries=10
     env:
       TD_MYSQL_MIGRATION_URL: jdbc:mysql://127.0.0.1:13307/td_track1_ci?useSSL=false&allowPublicKeyRetrieval=true
       TD_MYSQL_MIGRATION_USER: root
       TD_MYSQL_MIGRATION_PASSWORD: synthetic_ci_only_password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
+        with: { persist-credentials: false }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
-        with:
-          distribution: temurin
-          java-version: '21'
+        with: { distribution: temurin, java-version: '21' }
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
-        with:
-          cache-provider: basic
+        with: { cache-provider: basic }
       - name: Verify Track 1 legacy migration
-        run: bash ./gradlew test --tests '*Track1TenantMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 1 migration test ran
-        run: python3 .github/scripts/check_junit_results.py track1-migration
+        run: bash .github/scripts/run_ci_suite.sh legacy
 
   minio-integration:
+    needs: change-plan
+    if: needs.change-plan.outputs.run_minio == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     services:
       mysql:
         image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
-        env:
-          MYSQL_DATABASE: td_issue32_minio_ci
-          MYSQL_ROOT_PASSWORD: synthetic_ci_only_password
-        ports:
-          - 13307:3306
+        env: { MYSQL_DATABASE: td_issue32_minio_ci, MYSQL_ROOT_PASSWORD: synthetic_ci_only_password }
+        ports: ['13307:3306']
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
+          --health-interval=10s --health-timeout=5s --health-retries=10
     env:
       TD_ISSUE32_MYSQL_URL: jdbc:mysql://127.0.0.1:13307/td_issue32_minio_ci?useSSL=false&allowPublicKeyRetrieval=true
       TD_ISSUE32_MYSQL_USER: root
       TD_ISSUE32_MYSQL_PASSWORD: synthetic_ci_only_password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
+        with: { persist-credentials: false }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
-        with:
-          distribution: temurin
-          java-version: '21'
+        with: { distribution: temurin, java-version: '21' }
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
-        with:
-          cache-provider: basic
-      - name: Build pinned MinIO test image
+        with: { cache-provider: basic }
+      - name: Build pinned disposable MinIO test image
         run: docker build --file .github/docker/minio-ci.Dockerfile --tag td-issue32-minio-ci:local .
       - name: Start private MinIO test bucket
         run: bash .github/scripts/start_minio_ci.sh
-      - name: Apply migration to fresh MySQL 8 schema
-        run: bash ./gradlew test --tests '*FanReportMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm migration test ran
-        run: python3 .github/scripts/check_junit_results.py mysql-migration
-      - name: Apply W04 Case migration to existing MySQL data
-        run: bash ./gradlew test --tests '*CaseMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W04 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-migration
-      - name: Apply W05 snapshot and draft migration
-        run: bash ./gradlew test --tests '*CaseW05MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W05 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-migration
-      - name: Apply W06 evidence verification migration
-        run: bash ./gradlew test --tests '*CaseW06MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W06 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w06-migration
-      - name: Apply W07 preservation migration
-        run: bash ./gradlew test --tests '*CaseW07MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-migration
-      - name: Apply W08a approval request migration
-        run: bash ./gradlew test --tests '*CaseW08aMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08a migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08a-migration
-      - name: Apply W08b approval review and decision migration
-        run: bash ./gradlew test --tests '*CaseW08bMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08b migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08b-migration
-      - name: Apply W09 official PDF issuance migration
-        run: bash ./gradlew test --tests '*CaseW09MigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W09 migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-migration
-      - name: Apply Track 2 listing analysis migration
-        run: bash ./gradlew test --tests '*Track2ListingAnalysisMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 listing analysis migration test ran
-        run: python3 .github/scripts/check_junit_results.py track2-listing-migration
-      - name: Apply Track 2 candidate pipeline migration
-        run: bash ./gradlew test --tests '*Track2CandidatePipelineMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 candidate pipeline migration test ran
-        run: python3 .github/scripts/check_junit_results.py track2-candidate-migration
-      - name: Apply W10 Track 2 candidate Case-source migration
-        run: bash ./gradlew test --tests '*CaseW10Track2CandidateSourceMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W10 Track 2 candidate Case-source migration test ran
-        run: python3 .github/scripts/check_junit_results.py case-w10-candidate-source-migration
-      - name: Apply admin evidence content audit migration
-        run: bash ./gradlew test --tests '*AdminEvidenceContentMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm admin evidence content audit migration test ran
-        run: python3 .github/scripts/check_junit_results.py admin-evidence-content-migration
-      - name: Apply official PDF synthetic isolation migration
-        run: bash ./gradlew test --tests '*OfficialPdfSyntheticIsolationMigrationMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm official PDF synthetic isolation migration test ran
-        run: python3 .github/scripts/check_junit_results.py official-pdf-synthetic-migration
-      - name: Validate JPA schema
-        run: bash ./gradlew test --tests '*FanReportSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm schema tests ran
-        run: python3 .github/scripts/check_junit_results.py mysql-schema
-      - name: Validate W05 JPA mappings
-        run: bash ./gradlew test --tests '*CaseW05SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W05 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-schema
-      - name: Validate W07 preservation JPA mappings
-        run: bash ./gradlew test --tests '*CaseW07SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-schema
-      - name: Validate W08a approval request JPA mappings
-        run: bash ./gradlew test --tests '*CaseW08aSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08a schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08a-schema
-      - name: Validate W08b review receipt and decision JPA mappings
-        run: bash ./gradlew test --tests '*CaseW08bSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W08b schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w08b-schema
-      - name: Validate W09 official PDF JPA mappings
-        run: bash ./gradlew test --tests '*CaseW09SchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W09 schema test ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-schema
-      - name: Validate Track 2 listing analysis JPA mappings
-        run: bash ./gradlew test --tests '*Track2ListingAnalysisSchemaValidateMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 listing analysis schema test ran
-        run: python3 .github/scripts/check_junit_results.py track2-listing-schema
-      - name: Verify private MinIO object storage
-        run: bash ./gradlew test --tests '*S3EvidenceObjectStorageMinioTest' --rerun-tasks --no-daemon
-      - name: Confirm all object storage tests ran
-        run: python3 .github/scripts/check_junit_results.py minio-storage
-      - name: Verify versioned private official PDF storage
-        run: bash ./gradlew test --tests '*S3OfficialPdfStorageMinioTest' --rerun-tasks --no-daemon
-      - name: Confirm official PDF storage tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-minio-storage
-      - name: Verify MinIO and MySQL recovery
-        run: bash ./gradlew test --tests '*FanReportMinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm all recovery tests ran
-        run: python3 .github/scripts/check_junit_results.py minio-mysql
-      - name: Verify fan report retry error contract on MinIO and MySQL
-        run: bash ./gradlew test --tests '*FanReportRetryContractMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm fan report retry contract tests ran
-        run: python3 .github/scripts/check_junit_results.py fan-report-retry-minio-mysql
-      - name: Verify W05 private evidence capture on MinIO and MySQL
-        run: bash ./gradlew test --tests '*CaseW05MinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W05 private evidence tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w05-minio
-      - name: Verify W06 original bytes and replacement on MinIO and MySQL
-        run: bash ./gradlew test --tests '*CaseW06MinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W06 MinIO and MySQL test ran
-        run: python3 .github/scripts/check_junit_results.py case-w06-minio-mysql
-      - name: Verify W06 historical version access in isolated MinIO bucket
-        run: bash ./gradlew test --tests '*S3EvidenceIntegrityVersionedMinioTest' --rerun-tasks --no-daemon
-      - name: Confirm W06 versioned MinIO test ran
-        run: python3 .github/scripts/check_junit_results.py case-w06-versioned-minio
-      - name: Verify W07 Object Lock and version deletion controls
-        run: bash ./gradlew test --tests '*S3EvidencePreservationObjectLockMinioTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 Object Lock tests ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-object-lock-minio
-      - name: Verify W07 locked object proof on MinIO and MySQL
-        run: bash ./gradlew test --tests '*CaseW07MinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W07 MinIO and MySQL test ran
-        run: python3 .github/scripts/check_junit_results.py case-w07-minio-mysql
-      - name: Confirm W08a uses the real locked object proof
-        run: python3 .github/scripts/check_junit_results.py case-w08a-minio-mysql
-      - name: Confirm W08b uses the same real locked object proof before decision
-        run: python3 .github/scripts/check_junit_results.py case-w08b-minio-mysql
-      - name: Verify W09 official PDF issuance and download on MinIO and MySQL
-        run: bash ./gradlew test --tests '*CaseW09MinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm W09 MinIO and MySQL test ran
-        run: python3 .github/scripts/check_junit_results.py case-w09-minio-mysql
-      - name: Verify Track 2 listing analysis with private MinIO original and MySQL
-        run: bash ./gradlew test --tests '*Track2ListingAnalysisMinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm Track 2 listing analysis MinIO and MySQL test ran
-        run: python3 .github/scripts/check_junit_results.py track2-listing-minio-mysql
-      - name: Verify admin evidence original read over real HTTP with private MinIO and MySQL
-        run: bash ./gradlew test --tests '*AdminEvidenceContentMinioMySqlTest' --rerun-tasks --no-daemon
-      - name: Confirm admin evidence original read MinIO and MySQL tests ran
-        run: python3 .github/scripts/check_junit_results.py admin-evidence-content-minio-mysql
+      - name: Run ordered MinIO preservation suite
+        run: bash .github/scripts/run_ci_suite.sh minio-full
       - name: Remove only this job's MinIO container
         if: always()
         run: docker rm -f td-issue32-ci-minio 2>/dev/null || true
+
+  ci-required:
+    needs: [change-plan, java21-build, mysql8-integration, mysql8-track1-legacy, minio-integration]
+    if: always()
+    runs-on: ubuntu-latest
+    name: ci-required
+    steps:
+      - name: Fail when a required suite was skipped or failed
+        env:
+          JAVA_RESULT: ${{ needs.java21-build.result }}
+          MYSQL_RESULT: ${{ needs.mysql8-integration.result }}
+          LEGACY_RESULT: ${{ needs.mysql8-track1-legacy.result }}
+          MINIO_RESULT: ${{ needs.minio-integration.result }}
+          RUN_MYSQL: ${{ needs.change-plan.outputs.run_mysql }}
+          RUN_LEGACY: ${{ needs.change-plan.outputs.run_legacy }}
+          RUN_MINIO: ${{ needs.change-plan.outputs.run_minio }}
+          PLAN_REASON: ${{ needs.change-plan.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$JAVA_RESULT" == success ]] || { echo "java21-build=$JAVA_RESULT"; exit 1; }
+          require_result() {
+            local expected="$1" result="$2" name="$3"
+            if [[ "$expected" == true && "$result" != success ]]; then echo "required $name=$result"; exit 1; fi
+            if [[ "$expected" == false && "$result" != skipped ]]; then echo "unplanned $name=$result"; exit 1; fi
+          }
+          require_result "$RUN_MYSQL" "$MYSQL_RESULT" mysql8-integration
+          require_result "$RUN_LEGACY" "$LEGACY_RESULT" mysql8-track1-legacy
+          require_result "$RUN_MINIO" "$MINIO_RESULT" minio-integration
+          echo "CI plan accepted: $PLAN_REASON"

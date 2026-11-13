@@ -5,6 +5,16 @@ build/
 !**/src/main/**/build/
 !**/src/test/**/build/
 
+# Worktree별 Gradle 임시 캐시
+/.gradle-*/
+
+# Codex 임시 빌드 출력
+/.build-codex-*/
+
+# Python 생성 파일
+__pycache__/
+*.py[cod]
+
 ### STS ###
 .apt_generated
 .classpath

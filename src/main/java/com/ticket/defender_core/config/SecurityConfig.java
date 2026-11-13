@@ -82,6 +82,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/events").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/fan-reports",
                                 "/api/v1/admin/fan-reports/*").authenticated()
+                        .requestMatchers("/api/v1/admin/ledger-imports", "/api/v1/admin/ledger-imports/**").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/cases",
                                 "/api/v1/cases/*/transitions",
                                 "/api/v1/cases/*/evidence-snapshots",

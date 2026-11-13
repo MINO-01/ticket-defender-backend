@@ -35,7 +35,7 @@ public final class BulkLedgerCsvStagingParser {
 
     public record ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                             String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
-                            int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction) { }
+                            int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction, String rowDigest) { }
     public record Result(long rows) { }
     @FunctionalInterface public interface RowConsumer { void accept(ParsedRow row); }
 
@@ -80,9 +80,13 @@ public final class BulkLedgerCsvStagingParser {
                 long seen = scopeRows.merge(key(event, performance), 1L, Long::sum);
                 if (seen > scope.getDeclaredRowCount()) throw failure(rowNumber, "BULK_CSV_SCOPE_ROW_COUNT_EXCEEDED");
                 try { rows = Math.addExact(rows, 1); } catch (ArithmeticException overflow) { throw failure(rowNumber, "BULK_CSV_ROW_COUNT_OVERFLOW"); }
-                consumer.accept(new ParsedRow(rowNumber, event, performance, reservationHasher.hash(tenantId, reservation),
-                        ticketHasher.hash(tenantId, ticket), account == null ? null : accountHasher.hash(tenantId, account),
-                        reservationHasher.keyVersion(), purchasedAt, quantity, sourceEventId, sourceChangedAt, changeAction));
+                String reservationToken = reservationHasher.hash(tenantId, reservation), ticketToken = ticketHasher.hash(tenantId, ticket);
+                String accountToken = account == null ? null : accountHasher.hash(tenantId, account);
+                String digest = CandidatePipelineSupport.sha256(event.toString(), performance.toString(), reservationToken, ticketToken,
+                        String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
+                        String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(changeAction));
+                consumer.accept(new ParsedRow(rowNumber, event, performance, reservationToken, ticketToken, accountToken,
+                        reservationHasher.keyVersion(), purchasedAt, quantity, sourceEventId, sourceChangedAt, changeAction, digest));
             }
             for (BulkLedgerImportScope scope : scopes)
                 if (scopeRows.getOrDefault(key(scope.getEventId(), scope.getPerformanceId()), 0L) != scope.getDeclaredRowCount())

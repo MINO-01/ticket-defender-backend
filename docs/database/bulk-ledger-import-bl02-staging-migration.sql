@@ -36,6 +36,7 @@ CREATE TABLE td_bulk_import_staging_rows (
     source_event_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     source_changed_at DATETIME(6) NULL,
     change_action VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    row_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_td_bulk_staging_import_row (import_id, source_row_no),
     KEY idx_td_bulk_staging_scope (tenant_id, event_id, performance_id),

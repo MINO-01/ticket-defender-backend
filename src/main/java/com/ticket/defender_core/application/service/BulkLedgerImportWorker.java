@@ -51,7 +51,7 @@ public class BulkLedgerImportWorker {
             var reservation = gate.referenceHasher(); // intentionally preserves Track 2 reservation contract
             var ticket = gate.referenceHasher("BL02_TICKET_REFERENCE");
             var account = gate.referenceHasher("BL02_ACCOUNT_REFERENCE");
-            BulkLedgerStagingWriter.Session stagingSession = staging.open(importId, lease.tenantId());
+            BulkLedgerStagingWriter.Session stagingSession = staging.open(importId, lease.tenantId(), lease.fence());
             BulkLedgerCsvStagingParser.Result result;
             try (InputStream source = storage.openVersion(objectKey(importId), lease.objectVersion())) {
                 result = parser.parse(source, lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account, stagingSession::accept);

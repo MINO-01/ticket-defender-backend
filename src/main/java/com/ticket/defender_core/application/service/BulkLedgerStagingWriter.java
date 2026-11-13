@@ -20,9 +20,9 @@ public class BulkLedgerStagingWriter {
             INSERT INTO td_bulk_import_staging_rows
             (id, import_id, tenant_id, event_id, performance_id, source_row_no, reservation_reference_hmac,
              ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
-             source_event_id, source_changed_at, change_action)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON DUPLICATE KEY UPDATE id=id
+             source_event_id, source_changed_at, change_action, row_digest)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE id=IF(row_digest=VALUES(row_digest), id, NULL)
             """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -35,20 +35,24 @@ public class BulkLedgerStagingWriter {
         this.batchSize = batchSize;
     }
 
-    public Session open(UUID importId, UUID tenantId) { return new Session(importId, tenantId); }
+    public Session open(UUID importId, UUID tenantId, long fence) { return new Session(importId, tenantId, fence); }
     public int batchSize() { return batchSize; }
 
     public final class Session {
         private final UUID importId;
         private final UUID tenantId;
+        private final long fence;
         private final List<BulkLedgerCsvStagingParser.ParsedRow> pending = new ArrayList<>();
-        private Session(UUID importId, UUID tenantId) { this.importId = importId; this.tenantId = tenantId; }
+        private Session(UUID importId, UUID tenantId, long fence) { this.importId = importId; this.tenantId = tenantId; this.fence = fence; }
         public void accept(BulkLedgerCsvStagingParser.ParsedRow row) { pending.add(row); if (pending.size() >= batchSize) flush(); }
         public void finish() { flush(); }
         private void flush() {
             if (pending.isEmpty()) return;
             List<BulkLedgerCsvStagingParser.ParsedRow> batch = List.copyOf(pending); pending.clear();
-        transactions.executeWithoutResult(ignored -> jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
+        transactions.executeWithoutResult(ignored -> {
+            int claimed = jdbc.update("update td_bulk_import_jobs set updated_at=updated_at where id=? and tenant_id=? and status='STAGING' and fence_token=? and lease_until > utc_timestamp(6)", importId.toString(), tenantId.toString(), fence);
+            if (claimed != 1) throw new IllegalStateException("BULK_STAGING_FENCE_STALE");
+            jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
             @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
                 var row = batch.get(index);
                 statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, importId.toString());
@@ -60,9 +64,11 @@ public class BulkLedgerStagingWriter {
                 statement.setString(13, row.sourceEventId());
                 if (row.sourceChangedAt() == null) statement.setNull(14, java.sql.Types.TIMESTAMP); else statement.setTimestamp(14, Timestamp.valueOf(row.sourceChangedAt()));
                 statement.setString(15, row.changeAction());
+                statement.setString(16, row.rowDigest());
             }
             @Override public int getBatchSize() { return batch.size(); }
-        }));
+        });
+        });
         }
     }
 }

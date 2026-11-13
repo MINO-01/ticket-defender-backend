@@ -24,6 +24,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -56,6 +59,10 @@ public class BulkLedgerImportService {
     private final BulkLedgerImportJobRepository jobs;
     private final BulkLedgerImportScopeRepository scopes;
     private final BulkLedgerImportErrorRepository errors;
+    private final BulkLedgerUploadStorage uploadStorage;
+    private final BulkLedgerImportWorker worker;
+    @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long uploadMaximumBytes;
+    @Value("${ticket-defender.bulk-ledger-upload.upload-ttl:PT10M}") private java.time.Duration uploadTtl;
 
     /** Canonical scope item. Length-prefixed digest components prevent cursor-boundary ambiguity. */
     public record ScopeDigest(UUID eventId, UUID performanceId, String scopeAsOf, String cursorStart, String cursorEnd,
@@ -147,6 +154,59 @@ public class BulkLedgerImportService {
         catch (IllegalStateException invalid) { throw conflict("BULK_IMPORT_STATE_TRANSITION_INVALID"); }
         return view(jobs.saveAndFlush(job), jobScopes);
     }
+
+    @Transactional
+    public BulkLedgerImportDto.UploadSession uploadSession(UUID importId) {
+        TenantScope actor = tenantScope(WRITE_ROLES);
+        BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
+        List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
+        if (!allowed(actor, jobScopes)) throw notFound();
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        syntheticGate.requireSyntheticScope(actor.tenantId(), now);
+        if (job.getDeclaredFileBytes() > uploadMaximumBytes) throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_TOO_LARGE");
+        java.time.Instant expires = now.atOffset(ZoneOffset.UTC).toInstant().plus(uploadTtl);
+        String key = objectKey(job.getId());
+        try {
+            job.beginUpload(CandidatePipelineSupport.sha256(key), expires.atOffset(ZoneOffset.UTC).toLocalDateTime(), now);
+            BulkLedgerUploadStorage.UploadSession session = uploadStorage.createUploadSession(key, job.getDeclaredFileBytes(), expires);
+            jobs.saveAndFlush(job);
+            return new BulkLedgerImportDto.UploadSession(session.uploadUrl(), session.expiresAt().atOffset(ZoneOffset.UTC));
+        } catch (IllegalStateException invalid) {
+            throw conflict("BULK_IMPORT_STATE_TRANSITION_INVALID");
+        } catch (BulkLedgerUploadStorage.Unavailable unavailable) {
+            throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+        }
+    }
+
+    @Transactional
+    public BulkLedgerImportDto.View completeUpload(UUID importId) {
+        TenantScope actor = tenantScope(WRITE_ROLES);
+        BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
+        List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
+        if (!allowed(actor, jobScopes)) throw notFound();
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        syntheticGate.requireSyntheticScope(actor.tenantId(), now);
+        try {
+            BulkLedgerUploadStorage.VerifiedObject object = uploadStorage.verify(objectKey(job.getId()), null, uploadMaximumBytes);
+            if (object.byteSize() != job.getDeclaredFileBytes() || !job.getDeclaredObjectSha256().equals(object.sha256()))
+                throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_INTEGRITY_MISMATCH");
+            job.completeUpload(object.versionId(), now);
+            BulkLedgerImportJob saved = jobs.saveAndFlush(job);
+            // Upload confirmation is durable before any object read; worker transactions never extend this request transaction.
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { worker.process(saved.getId()); }
+            });
+            return view(saved, jobScopes);
+        } catch (BulkLedgerUploadStorage.ObjectChanged | BulkLedgerUploadStorage.InvalidObject failure) {
+            throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_OBJECT_INVALID");
+        } catch (IllegalStateException invalid) {
+            throw conflict("BULK_IMPORT_STATE_TRANSITION_INVALID");
+        } catch (BulkLedgerUploadStorage.Unavailable failure) {
+            throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
+        }
+    }
+
+    private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }
 
     private List<AuthorizedScope> authorizeScopes(List<NormalizedScope> input, Set<AdminRole> requiredRoles) {
         List<AuthorizedScope> result = new ArrayList<>();

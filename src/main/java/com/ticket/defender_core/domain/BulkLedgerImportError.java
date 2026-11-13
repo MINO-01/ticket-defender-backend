@@ -23,4 +23,9 @@ public class BulkLedgerImportError {
     @Column(name = "sequence_no", nullable = false) private long sequenceNo;
     @Column(nullable = false, length = 64) private String code;
     @Column(name = "created_at", nullable = false) private LocalDateTime createdAt;
+
+    public BulkLedgerImportError(UUID jobId, long sequenceNo, String code, LocalDateTime createdAt) {
+        this.id = UUID.randomUUID(); this.jobId = jobId; this.sequenceNo = sequenceNo;
+        this.code = code; this.createdAt = createdAt;
+    }
 }

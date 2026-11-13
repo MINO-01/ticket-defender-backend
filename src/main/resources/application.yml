@@ -37,6 +37,18 @@ spring:
       max-request-size: 101MB
 
 ticket-defender:
+  bulk-ledger-upload:
+    # BL-02 only permits a separately configured synthetic, versioned private bucket.
+    enabled: ${BULK_LEDGER_UPLOAD_ENABLED:false}
+    max-bytes: ${BULK_LEDGER_UPLOAD_MAX_BYTES:1073741824}
+    upload-ttl: ${BULK_LEDGER_UPLOAD_TTL:PT10M}
+    batch-size: ${BULK_LEDGER_UPLOAD_BATCH_SIZE:1000}
+    storage:
+      endpoint: ${BULK_LEDGER_UPLOAD_S3_ENDPOINT:}
+      region: ${BULK_LEDGER_UPLOAD_S3_REGION:us-east-1}
+      bucket: ${BULK_LEDGER_UPLOAD_S3_BUCKET:}
+      access-key: ${BULK_LEDGER_UPLOAD_S3_ACCESS_KEY:}
+      secret-key: ${BULK_LEDGER_UPLOAD_S3_SECRET_KEY:}
   track1-v2:
     enabled: ${TRACK1_V2_ENABLED:false}
   track1-internal-auth:

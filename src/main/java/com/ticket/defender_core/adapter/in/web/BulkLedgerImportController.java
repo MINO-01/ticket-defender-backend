@@ -50,4 +50,15 @@ public class BulkLedgerImportController {
     public ResponseEntity<BulkLedgerImportDto.View> cancel(@PathVariable UUID importId) {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.cancel(importId));
     }
+
+    @PostMapping("/{importId}/upload-session")
+    public ResponseEntity<BulkLedgerImportDto.UploadSession> uploadSession(@PathVariable UUID importId) {
+        return ResponseEntity.status(HttpStatus.CREATED).header("Cache-Control", "no-store").body(service.uploadSession(importId));
+    }
+
+    @PostMapping("/{importId}/complete-upload")
+    public ResponseEntity<BulkLedgerImportDto.View> completeUpload(@PathVariable UUID importId,
+            @RequestBody(required = false) BulkLedgerImportDto.CompleteUploadRequest ignored) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.completeUpload(importId));
+    }
 }

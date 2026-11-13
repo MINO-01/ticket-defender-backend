@@ -35,7 +35,7 @@ public final class BulkLedgerCsvStagingParser {
 
     public record ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                             String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
-                            int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt) { }
+                            int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction) { }
     public record Result(long rows) { }
     @FunctionalInterface public interface RowConsumer { void accept(ParsedRow row); }
 
@@ -70,19 +70,19 @@ public final class BulkLedgerCsvStagingParser {
                 String account = optional(record, indexes, "account_reference", rowNumber);
                 LocalDateTime purchasedAt = timestamp(required(record, indexes, "purchased_at", rowNumber), rowNumber, "BULK_CSV_PURCHASED_AT_INVALID");
                 int quantity = positive(required(record, indexes, "ticket_quantity", rowNumber), rowNumber);
-                String sourceEventId = null; LocalDateTime sourceChangedAt = null;
+                String sourceEventId = null; LocalDateTime sourceChangedAt = null; String changeAction = null;
                 if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED) {
                     sourceEventId = required(record, indexes, "source_event_id", rowNumber);
                     sourceChangedAt = timestamp(required(record, indexes, "source_changed_at", rowNumber), rowNumber, "BULK_CSV_CHANGED_AT_INVALID");
-                    String action = required(record, indexes, "change_action", rowNumber);
-                    if (!Set.of("UPSERT", "REMOVE", "CANCEL", "REFUND").contains(action)) throw failure(rowNumber, "BULK_CSV_CHANGE_ACTION_INVALID");
+                    changeAction = required(record, indexes, "change_action", rowNumber);
+                    if (!Set.of("UPSERT", "REMOVE", "CANCEL", "REFUND").contains(changeAction)) throw failure(rowNumber, "BULK_CSV_CHANGE_ACTION_INVALID");
                 }
                 long seen = scopeRows.merge(key(event, performance), 1L, Long::sum);
                 if (seen > scope.getDeclaredRowCount()) throw failure(rowNumber, "BULK_CSV_SCOPE_ROW_COUNT_EXCEEDED");
                 try { rows = Math.addExact(rows, 1); } catch (ArithmeticException overflow) { throw failure(rowNumber, "BULK_CSV_ROW_COUNT_OVERFLOW"); }
                 consumer.accept(new ParsedRow(rowNumber, event, performance, reservationHasher.hash(tenantId, reservation),
                         ticketHasher.hash(tenantId, ticket), account == null ? null : accountHasher.hash(tenantId, account),
-                        reservationHasher.keyVersion(), purchasedAt, quantity, sourceEventId, sourceChangedAt));
+                        reservationHasher.keyVersion(), purchasedAt, quantity, sourceEventId, sourceChangedAt, changeAction));
             }
             for (BulkLedgerImportScope scope : scopes)
                 if (scopeRows.getOrDefault(key(scope.getEventId(), scope.getPerformanceId()), 0L) != scope.getDeclaredRowCount())

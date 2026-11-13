@@ -25,8 +25,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -60,7 +58,6 @@ public class BulkLedgerImportService {
     private final BulkLedgerImportScopeRepository scopes;
     private final BulkLedgerImportErrorRepository errors;
     private final BulkLedgerUploadStorage uploadStorage;
-    private final BulkLedgerImportWorker worker;
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long uploadMaximumBytes;
     @Value("${ticket-defender.bulk-ledger-upload.upload-ttl:PT10M}") private java.time.Duration uploadTtl;
 
@@ -192,10 +189,7 @@ public class BulkLedgerImportService {
                 throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_INTEGRITY_MISMATCH");
             job.completeUpload(object.versionId(), now);
             BulkLedgerImportJob saved = jobs.saveAndFlush(job);
-            // Upload confirmation is durable before any object read; worker transactions never extend this request transaction.
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override public void afterCommit() { worker.process(saved.getId()); }
-            });
+            // A separately scheduled, DB-claimed worker processes this only after this HTTP transaction commits.
             return view(saved, jobScopes);
         } catch (BulkLedgerUploadStorage.ObjectChanged | BulkLedgerUploadStorage.InvalidObject failure) {
             throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_OBJECT_INVALID");

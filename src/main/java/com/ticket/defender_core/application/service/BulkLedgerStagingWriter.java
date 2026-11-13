@@ -20,8 +20,8 @@ public class BulkLedgerStagingWriter {
             INSERT INTO td_bulk_import_staging_rows
             (id, import_id, tenant_id, event_id, performance_id, source_row_no, reservation_reference_hmac,
              ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
-             source_event_id, source_changed_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             source_event_id, source_changed_at, change_action)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE id=id
             """;
     private final JdbcTemplate jdbc;
@@ -59,6 +59,7 @@ public class BulkLedgerStagingWriter {
                 statement.setTimestamp(11, Timestamp.valueOf(row.purchasedAt())); statement.setInt(12, row.ticketQuantity());
                 statement.setString(13, row.sourceEventId());
                 if (row.sourceChangedAt() == null) statement.setNull(14, java.sql.Types.TIMESTAMP); else statement.setTimestamp(14, Timestamp.valueOf(row.sourceChangedAt()));
+                statement.setString(15, row.changeAction());
             }
             @Override public int getBatchSize() { return batch.size(); }
         }));

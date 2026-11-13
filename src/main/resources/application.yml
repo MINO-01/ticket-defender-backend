@@ -40,6 +40,8 @@ ticket-defender:
   bulk-ledger-upload:
     # BL-02 only permits a separately configured synthetic, versioned private bucket.
     enabled: ${BULK_LEDGER_UPLOAD_ENABLED:false}
+    worker-enabled: ${BULK_LEDGER_UPLOAD_WORKER_ENABLED:false}
+    worker-delay: ${BULK_LEDGER_UPLOAD_WORKER_DELAY:PT30S}
     max-bytes: ${BULK_LEDGER_UPLOAD_MAX_BYTES:1073741824}
     upload-ttl: ${BULK_LEDGER_UPLOAD_TTL:PT10M}
     batch-size: ${BULK_LEDGER_UPLOAD_BATCH_SIZE:1000}

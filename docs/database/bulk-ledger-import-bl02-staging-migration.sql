@@ -35,10 +35,12 @@ CREATE TABLE td_bulk_import_staging_rows (
     ticket_quantity INT NOT NULL,
     source_event_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     source_changed_at DATETIME(6) NULL,
+    change_action VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_td_bulk_staging_import_row (import_id, source_row_no),
     KEY idx_td_bulk_staging_scope (tenant_id, event_id, performance_id),
     CONSTRAINT fk_td_bulk_staging_job FOREIGN KEY (import_id, tenant_id) REFERENCES td_bulk_import_jobs (id, tenant_id),
     CONSTRAINT fk_td_bulk_staging_performance FOREIGN KEY (tenant_id, event_id, performance_id) REFERENCES verified_performances (tenant_id, event_id, id),
-    CONSTRAINT chk_td_bulk_staging_values CHECK (source_row_no > 0 AND ticket_quantity > 0)
+    CONSTRAINT chk_td_bulk_staging_values CHECK (source_row_no > 0 AND ticket_quantity > 0
+        AND (change_action IS NULL OR change_action IN ('UPSERT','REMOVE','CANCEL','REFUND')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

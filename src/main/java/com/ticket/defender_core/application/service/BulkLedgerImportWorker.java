@@ -7,6 +7,8 @@ import com.ticket.defender_core.domain.BulkLedgerImportJob;
 import com.ticket.defender_core.domain.BulkLedgerImportError;
 import com.ticket.defender_core.domain.BulkLedgerImportScope;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.InputStream;
@@ -14,6 +16,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
+import java.util.EnumSet;
 
 /**
  * Single-import worker. Its DB state transitions use short transactions; object reads and CSV parsing are outside them.
@@ -29,6 +32,7 @@ public class BulkLedgerImportWorker {
     private final BulkLedgerCsvStagingParser parser = new BulkLedgerCsvStagingParser();
     private final BulkLedgerStagingWriter staging;
     private final TransactionTemplate transactions;
+    @Value("${ticket-defender.bulk-ledger-upload.worker-enabled:false}") private boolean enabled;
 
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
@@ -63,6 +67,15 @@ public class BulkLedgerImportWorker {
         } catch (RuntimeException | java.io.IOException unavailable) {
             transactions.executeWithoutResult(status -> retryable(importId, lease.fence()));
         }
+    }
+
+    /** Disabled by default; explicit synthetic environments can resume committed uploads after a restart. */
+    @Scheduled(fixedDelayString = "${ticket-defender.bulk-ledger-upload.worker-delay:PT30S}")
+    public void resumePending() {
+        if (!enabled) return;
+        jobs.findTop10ByStatusInOrderByUpdatedAtAsc(List.copyOf(EnumSet.of(BulkLedgerImportJob.Status.UPLOADED,
+                BulkLedgerImportJob.Status.FAILED_RETRYABLE, BulkLedgerImportJob.Status.VALIDATING,
+                BulkLedgerImportJob.Status.STAGING))).forEach(job -> process(job.getId()));
     }
 
     private Lease acquire(UUID importId) {

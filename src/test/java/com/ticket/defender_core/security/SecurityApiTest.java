@@ -264,7 +264,7 @@ class SecurityApiTest {
     }
 
     @Test
-    void bulkLedgerRegistrationRequiresAuthenticationAndDoesNotOpenFutureUploadRoutes() throws Exception {
+    void bulkLedgerRegistrationAndUploadRoutesRequireAuthenticationAndHideUnknownJobs() throws Exception {
         mvc.perform(post("/api/v1/admin/ledger-imports")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
@@ -276,11 +276,14 @@ class SecurityApiTest {
                         .content("{}")
                         .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
                 .andExpect(status().isBadRequest());
-        mvc.perform(post("/api/v1/admin/ledger-imports/future-import/upload-session")
+        mvc.perform(post("/api/v1/admin/ledger-imports/" + UUID.randomUUID() + "/upload-session")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}")
                         .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
                 .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/admin/ledger-imports/" + UUID.randomUUID() + "/upload-session")
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

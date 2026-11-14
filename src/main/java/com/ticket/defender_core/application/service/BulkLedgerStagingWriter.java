@@ -54,7 +54,7 @@ public class BulkLedgerStagingWriter {
             List<BulkLedgerCsvStagingParser.ParsedRow> inserts = new ArrayList<>();
             for (var row : batch) {
                 List<String> existing = jdbc.query("select row_digest from td_bulk_import_staging_rows where import_id=? and source_row_no=?",
-                        (rs, ignored) -> rs.getString(1), importId.toString(), row.rowNumber());
+                        (rs, rowIndex) -> rs.getString(1), importId.toString(), row.rowNumber());
                 if (existing.isEmpty()) inserts.add(row);
                 else if (!existing.getFirst().equals(row.rowDigest())) throw new BulkLedgerStagingConflictException(row.rowNumber());
             }

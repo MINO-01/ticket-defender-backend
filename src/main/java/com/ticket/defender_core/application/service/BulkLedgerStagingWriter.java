@@ -36,6 +36,10 @@ public class BulkLedgerStagingWriter {
 
     public Session open(UUID importId, UUID tenantId, long fence) { return new Session(importId, tenantId, fence); }
     public int batchSize() { return batchSize; }
+    public long countForImport(UUID importId) {
+        Long count = jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString());
+        return count == null ? 0 : count;
+    }
 
     public final class Session {
         private final UUID importId;
@@ -49,8 +53,11 @@ public class BulkLedgerStagingWriter {
             if (pending.isEmpty()) return;
             List<BulkLedgerCsvStagingParser.ParsedRow> batch = List.copyOf(pending); pending.clear();
         transactions.executeWithoutResult(ignored -> {
-            int claimed = jdbc.update("update td_bulk_import_jobs set updated_at=updated_at where id=? and tenant_id=? and status='STAGING' and fence_token=? and lease_until > utc_timestamp(6)", importId.toString(), tenantId.toString(), fence);
-            if (claimed != 1) throw new IllegalStateException("BULK_STAGING_FENCE_STALE");
+            // This locks and checks the job in the same transaction as the batch. It deliberately does not
+            // infer validity from MySQL's affected-row reporting, which differs with CLIENT_FOUND_ROWS.
+            List<Long> claimed = jdbc.query("select fence_token from td_bulk_import_jobs where id=? and tenant_id=? and status='STAGING' and fence_token=? and lease_until > utc_timestamp(6) for update",
+                    (rs, rowIndex) -> rs.getLong(1), importId.toString(), tenantId.toString(), fence);
+            if (claimed.size() != 1) throw new IllegalStateException("BULK_STAGING_FENCE_STALE");
             List<BulkLedgerCsvStagingParser.ParsedRow> inserts = new ArrayList<>();
             for (var row : batch) {
                 List<String> existing = jdbc.query("select row_digest from td_bulk_import_staging_rows where import_id=? and source_row_no=?",

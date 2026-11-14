@@ -58,6 +58,8 @@ public class BulkLedgerImportWorker {
             }
             stagingSession.finish();
             if (result.rows() != lease.declaredRows()) throw new BulkLedgerCsvValidationException(0, "BULK_CSV_DECLARED_ROW_COUNT_MISMATCH");
+            if (staging.countForImport(importId) != lease.declaredRows())
+                throw new BulkLedgerCsvValidationException(0, "BULK_STAGING_ROW_COUNT_MISMATCH");
             transactions.executeWithoutResult(status -> ready(importId, lease.fence(), result.rows()));
         } catch (BulkLedgerCsvValidationException rejected) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(), rejected));

@@ -1,0 +1,88 @@
+package com.ticket.defender_core.application.service;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+/** Executes bounded JDBC batches. No JPA persistence context holds parsed CSV records. */
+@Component
+public class BulkLedgerStagingWriter {
+    private static final String INSERT = """
+            INSERT INTO td_bulk_import_staging_rows
+            (id, import_id, tenant_id, event_id, performance_id, source_row_no, reservation_reference_hmac,
+             ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
+             source_event_id, source_changed_at, change_action, row_digest)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """;
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate transactions;
+    private final int batchSize;
+
+    public BulkLedgerStagingWriter(JdbcTemplate jdbc, TransactionTemplate transactions,
+            @Value("${ticket-defender.bulk-ledger-upload.batch-size:1000}") int batchSize) {
+        this.jdbc = jdbc; this.transactions = transactions;
+        if (batchSize < 1 || batchSize > 2_000) throw new IllegalArgumentException("BL-02 JDBC batch size must be 1..2000");
+        this.batchSize = batchSize;
+    }
+
+    public Session open(UUID importId, UUID tenantId, long fence) { return new Session(importId, tenantId, fence); }
+    public int batchSize() { return batchSize; }
+    public long countForImport(UUID importId) {
+        Long count = jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString());
+        return count == null ? 0 : count;
+    }
+
+    public final class Session {
+        private final UUID importId;
+        private final UUID tenantId;
+        private final long fence;
+        private final List<BulkLedgerCsvStagingParser.ParsedRow> pending = new ArrayList<>();
+        private Session(UUID importId, UUID tenantId, long fence) { this.importId = importId; this.tenantId = tenantId; this.fence = fence; }
+        public void accept(BulkLedgerCsvStagingParser.ParsedRow row) { pending.add(row); if (pending.size() >= batchSize) flush(); }
+        public void finish() { flush(); }
+        private void flush() {
+            if (pending.isEmpty()) return;
+            List<BulkLedgerCsvStagingParser.ParsedRow> batch = List.copyOf(pending); pending.clear();
+        transactions.executeWithoutResult(ignored -> {
+            // This locks and checks the job in the same transaction as the batch. It deliberately does not
+            // infer validity from MySQL's affected-row reporting, which differs with CLIENT_FOUND_ROWS.
+            List<Long> claimed = jdbc.query("select fence_token from td_bulk_import_jobs where id=? and tenant_id=? and status='STAGING' and fence_token=? and lease_until > utc_timestamp(6) for update",
+                    (rs, rowIndex) -> rs.getLong(1), importId.toString(), tenantId.toString(), fence);
+            if (claimed.size() != 1) throw new IllegalStateException("BULK_STAGING_FENCE_STALE");
+            List<BulkLedgerCsvStagingParser.ParsedRow> inserts = new ArrayList<>();
+            for (var row : batch) {
+                List<String> existing = jdbc.query("select row_digest from td_bulk_import_staging_rows where import_id=? and source_row_no=?",
+                        (rs, rowIndex) -> rs.getString(1), importId.toString(), row.rowNumber());
+                if (existing.isEmpty()) inserts.add(row);
+                else if (!existing.getFirst().equals(row.rowDigest())) throw new BulkLedgerStagingConflictException(row.rowNumber());
+            }
+            if (inserts.isEmpty()) return;
+            jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
+            @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
+                var row = inserts.get(index);
+                statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, importId.toString());
+                statement.setString(3, tenantId.toString()); statement.setString(4, row.eventId().toString());
+                statement.setString(5, row.performanceId().toString()); statement.setLong(6, row.rowNumber());
+                statement.setString(7, row.reservationToken()); statement.setString(8, row.ticketToken());
+                statement.setString(9, row.accountToken()); statement.setString(10, row.keyVersion());
+                statement.setTimestamp(11, Timestamp.valueOf(row.purchasedAt())); statement.setInt(12, row.ticketQuantity());
+                statement.setString(13, row.sourceEventId());
+                if (row.sourceChangedAt() == null) statement.setNull(14, java.sql.Types.TIMESTAMP); else statement.setTimestamp(14, Timestamp.valueOf(row.sourceChangedAt()));
+                statement.setString(15, row.changeAction());
+                statement.setString(16, row.rowDigest());
+            }
+            @Override public int getBatchSize() { return inserts.size(); }
+        });
+        });
+        }
+    }
+}

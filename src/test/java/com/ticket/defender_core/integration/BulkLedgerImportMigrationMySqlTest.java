@@ -24,9 +24,10 @@ class BulkLedgerImportMigrationMySqlTest {
         source.setDriverClassName("com.mysql.cj.jdbc.Driver"); JdbcTemplate jdbc = new JdbcTemplate(source);
         try (Connection connection = source.getConnection()) {
             jdbc.execute("set foreign_key_checks=0");
-            jdbc.execute("drop table if exists td_bulk_import_errors"); jdbc.execute("drop table if exists td_bulk_import_scopes"); jdbc.execute("drop table if exists td_bulk_import_jobs");
+            jdbc.execute("drop table if exists td_bulk_import_staging_rows"); jdbc.execute("drop table if exists td_bulk_import_errors"); jdbc.execute("drop table if exists td_bulk_import_scopes"); jdbc.execute("drop table if exists td_bulk_import_jobs");
             jdbc.execute("set foreign_key_checks=1");
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl02-staging-migration.sql"));
         }
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "tenant_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "created_by_membership_id");
@@ -43,6 +44,11 @@ class BulkLedgerImportMigrationMySqlTest {
         assertThatThrownBy(() -> scope(jdbc, job, UUID.randomUUID().toString(), event, performance, "2026-11-01 00:00:00", null, null, 1)).isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("insert into td_bulk_import_errors(id,job_id,sequence_no,code,created_at) values(?,?,?,'CODE',utc_timestamp(6))", UUID.randomUUID().toString(), job, -1)).isInstanceOf(DataAccessException.class);
         assertThat(jdbc.queryForObject("select count(*) from td_bulk_import_jobs", Integer.class)).isEqualTo(1);
+        jdbc.update("update td_bulk_import_jobs set upload_object_key_digest=?, upload_object_version=?, status='UPLOADED' where id=?", "b".repeat(64), "version-1", job);
+        jdbc.update("insert into td_bulk_import_staging_rows(id,import_id,tenant_id,event_id,performance_id,source_row_no,reservation_reference_hmac,ticket_reference_hmac,hmac_key_version,ticket_quantity,row_digest) values(?,?,?,?,?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), job, tenant, event, performance, 2, "a".repeat(64), "b".repeat(64), "v1", 1, "c".repeat(64));
+        assertThatThrownBy(() -> jdbc.update("insert into td_bulk_import_staging_rows(id,import_id,tenant_id,event_id,performance_id,source_row_no,reservation_reference_hmac,ticket_reference_hmac,hmac_key_version,ticket_quantity,row_digest) values(?,?,?,?,?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), job, tenant, event, performance, 2, "a".repeat(64), "b".repeat(64), "v1", 1, "d".repeat(64))).isInstanceOf(DataAccessException.class);
     }
 
     private static void assertAsciiBinaryUuidColumn(JdbcTemplate jdbc, String table, String column) {

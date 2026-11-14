@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -52,7 +53,7 @@ public class BulkLedgerStagingWriter {
         transactions.executeWithoutResult(ignored -> {
             int claimed = jdbc.update("update td_bulk_import_jobs set updated_at=updated_at where id=? and tenant_id=? and status='STAGING' and fence_token=? and lease_until > utc_timestamp(6)", importId.toString(), tenantId.toString(), fence);
             if (claimed != 1) throw new IllegalStateException("BULK_STAGING_FENCE_STALE");
-            jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
+            try { jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
             @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
                 var row = batch.get(index);
                 statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, importId.toString());
@@ -67,7 +68,7 @@ public class BulkLedgerStagingWriter {
                 statement.setString(16, row.rowDigest());
             }
             @Override public int getBatchSize() { return batch.size(); }
-        });
+        }); } catch (DuplicateKeyException conflictingReplay) { throw new BulkLedgerStagingConflictException(conflictingReplay); }
         });
         }
     }

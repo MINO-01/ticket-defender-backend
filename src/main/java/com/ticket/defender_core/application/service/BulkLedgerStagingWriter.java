@@ -3,7 +3,6 @@ package com.ticket.defender_core.application.service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -23,7 +22,6 @@ public class BulkLedgerStagingWriter {
              ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
              source_event_id, source_changed_at, change_action, row_digest)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON DUPLICATE KEY UPDATE id=IF(row_digest=VALUES(row_digest), id, NULL)
             """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -53,9 +51,17 @@ public class BulkLedgerStagingWriter {
         transactions.executeWithoutResult(ignored -> {
             int claimed = jdbc.update("update td_bulk_import_jobs set updated_at=updated_at where id=? and tenant_id=? and status='STAGING' and fence_token=? and lease_until > utc_timestamp(6)", importId.toString(), tenantId.toString(), fence);
             if (claimed != 1) throw new IllegalStateException("BULK_STAGING_FENCE_STALE");
-            try { jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
+            List<BulkLedgerCsvStagingParser.ParsedRow> inserts = new ArrayList<>();
+            for (var row : batch) {
+                List<String> existing = jdbc.query("select row_digest from td_bulk_import_staging_rows where import_id=? and source_row_no=?",
+                        (rs, ignored) -> rs.getString(1), importId.toString(), row.rowNumber());
+                if (existing.isEmpty()) inserts.add(row);
+                else if (!existing.getFirst().equals(row.rowDigest())) throw new BulkLedgerStagingConflictException(row.rowNumber());
+            }
+            if (inserts.isEmpty()) return;
+            jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
             @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
-                var row = batch.get(index);
+                var row = inserts.get(index);
                 statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, importId.toString());
                 statement.setString(3, tenantId.toString()); statement.setString(4, row.eventId().toString());
                 statement.setString(5, row.performanceId().toString()); statement.setLong(6, row.rowNumber());
@@ -67,8 +73,8 @@ public class BulkLedgerStagingWriter {
                 statement.setString(15, row.changeAction());
                 statement.setString(16, row.rowDigest());
             }
-            @Override public int getBatchSize() { return batch.size(); }
-        }); } catch (DuplicateKeyException conflictingReplay) { throw new BulkLedgerStagingConflictException(conflictingReplay); }
+            @Override public int getBatchSize() { return inserts.size(); }
+        });
         });
         }
     }

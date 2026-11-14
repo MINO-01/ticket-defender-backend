@@ -63,7 +63,7 @@ public class BulkLedgerImportWorker {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(), rejected));
         } catch (BulkLedgerStagingConflictException conflict) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
-                    new BulkLedgerCsvValidationException(0, "BULK_STAGING_ROW_CONFLICT")));
+                    new BulkLedgerCsvValidationException(conflict.rowNumber(), "BULK_STAGING_ROW_CONFLICT")));
         } catch (BulkLedgerUploadStorage.ObjectChanged | BulkLedgerUploadStorage.InvalidObject changed) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
                     new BulkLedgerCsvValidationException(0, "BULK_UPLOAD_OBJECT_VERSION_CHANGED")));

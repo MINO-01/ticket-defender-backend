@@ -35,6 +35,9 @@ public final class BulkLedgerImportDto {
             return new Error(value.getSequenceNo(), value.getCode(), offset(value.getCreatedAt()));
         }
     }
+    /** URL is returned only once to the authorized uploader and is never persisted or listed. */
+    public record UploadSession(java.net.URI uploadUrl, OffsetDateTime expiresAt) { }
+    public record CompleteUploadRequest() { }
     public record Page<T>(List<T> items, int page, int pageSize, boolean hasNext) { }
 
     private static OffsetDateTime offset(java.time.LocalDateTime value) {

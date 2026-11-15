@@ -1,12 +1,12 @@
 # BL-01 bulk-ledger registration boundary
 
-Status: **implemented only for registration, read, code-only error read, and cancellation of a `CREATED` job.**
+Status: **BL-01 registration contract; superseded operationally by BL-02 private upload and staging.** See [BL-02](bulk-ledger-import-bl02.md) for the active upload, worker, and staging boundary.
 
 BL-01 is separate from the existing JSON Track 1 quantity-ledger import. That endpoint retains its 1,000-row and 2 MiB limits, and its analysis algorithm and FastAPI contract are unchanged.
 
-## Active state transitions
+## BL-01 baseline state transition
 
-`CREATED -> CANCELLED` is the sole active transition. The persisted model reserves names for no worker state; it cannot create `UPLOADED`, `VALIDATING`, `STAGING`, `READY_TO_PUBLISH`, `PUBLISHING`, `PUBLISHED`, `FAILED_RETRYABLE`, or `REJECTED` jobs. No upload-session, complete-upload, retry, file-processing, analysis, or publication endpoint exists in BL-01.
+At BL-01 delivery, `CREATED -> CANCELLED` was the sole transition. BL-02 adds upload and private staging states but does not alter the registration digest, authorization, scope validation, or public-ledger boundary described here.
 
 ## Contract and isolation
 

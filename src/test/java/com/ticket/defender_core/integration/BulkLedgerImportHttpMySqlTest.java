@@ -104,7 +104,9 @@ class BulkLedgerImportHttpMySqlTest {
         assertThat(get("/" + job.get("importId").asText() + "/errors", fixture.subject()).body()).contains("\"items\":[]");
         assertThat(post("/" + job.get("importId").asText() + "/cancel", "{}", null, fixture.subject()).body()).contains("CANCELLED");
         assertThat(post("/" + job.get("importId").asText() + "/cancel", "{}", null, fixture.subject()).statusCode()).isEqualTo(409);
-        assertThat(post("/" + job.get("importId").asText() + "/upload-session", "{}", null, fixture.subject()).statusCode()).isEqualTo(404);
+        // BL-02 implements this route; a same-tenant cancelled job must be rejected by its state transition,
+        // not mistaken for an unknown resource and never receive another upload capability.
+        assertThat(post("/" + job.get("importId").asText() + "/upload-session", "{}", null, fixture.subject()).statusCode()).isEqualTo(409);
     }
 
     @Test

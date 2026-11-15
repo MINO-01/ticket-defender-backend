@@ -33,6 +33,12 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest": (
         3, "Runs over real HTTP in the isolated MySQL CI job"
     ),
+    "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest": (
+        1, "Runs duplicate and fencing checks in the isolated MySQL CI job"
+    ),
+    "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest": (
+        1, "Runs the 50,000-row upload and staging path in the isolated MinIO and MySQL CI job"
+    ),
     "com.ticket.defender_core.integration.BulkLedgerImportLocalMySqlBootstrapTest": (
         1, "Requires explicit local opt-in and the disposable td_issue32_bl01_http schema"
     ),
@@ -310,6 +316,12 @@ MYSQL_SUITES = {
     ),
     "bulk-ledger-import-http": (
         "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest", 3
+    ),
+    "bulk-ledger-staging-mysql": (
+        "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest", 1
+    ),
+    "bulk-ledger-staging-minio-mysql": (
+        "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest", 1
     ),
     "track2-candidate-http": (
         "com.ticket.defender_core.integration.Track2CandidatePipelineHttpMySqlTest", 1

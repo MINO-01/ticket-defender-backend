@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
-  title: Ticket Defender bulk ledger import registration API
-  version: 1.0.0
+  title: Ticket Defender bulk ledger import API
+  version: 1.1.0
   description: >-
-    BL-01 registers metadata for an isolated synthetic bulk-ledger import. It does not upload or read a file,
-    stage rows, call analysis, create a ledger version, or publish results.
+    BL-02 accepts only a synthetic-isolated, private, versioned CSV object. It stages HMAC-only rows and never
+    publishes a ledger, starts analysis, or makes a fraud decision.
 security: [{ adminBearer: [] }]
 paths:
   /api/v1/admin/ledger-imports:
@@ -39,8 +39,30 @@ paths:
   /api/v1/admin/ledger-imports/{importId}/cancel:
     parameters: [{ $ref: '#/components/parameters/ImportId' }]
     post:
-      summary: Cancel a CREATED job
+      summary: Cancel a non-terminal job
       responses: { '200': { description: CANCELLED job }, '403': { description: caller lacks TENANT_ADMIN }, '404': { description: RESOURCE_NOT_FOUND }, '409': { description: BULK_IMPORT_STATE_TRANSITION_INVALID } }
+  /api/v1/admin/ledger-imports/{importId}/upload-session:
+    parameters: [{ $ref: '#/components/parameters/ImportId' }]
+    post:
+      summary: Create one short-lived server-keyed private CSV upload session
+      description: The response is no-store and the URL is never returned by job, error, or audit reads.
+      responses:
+        '201': { description: one-time upload URL and expiry, headers: { Cache-Control: { schema: { example: no-store } } }, content: { application/json: { schema: { $ref: '#/components/schemas/UploadSession' } } } }
+        '404': { description: RESOURCE_NOT_FOUND for a foreign job }
+        '409': { description: disabled synthetic scope or invalid state }
+        '422': { description: declared file exceeds the configured private-upload limit }
+        '503': { description: private object storage unavailable or disabled }
+  /api/v1/admin/ledger-imports/{importId}/complete-upload:
+    parameters: [{ $ref: '#/components/parameters/ImportId' }]
+    post:
+      summary: Verify actual object version, bytes, and SHA-256 then start private staging
+      description: S3 ETag is never a digest. A verified object version is re-read by the worker; no client bucket or key is accepted.
+      responses:
+        '200': { description: UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, REJECTED, or FAILED_RETRYABLE job; response is no-store }
+        '404': { description: RESOURCE_NOT_FOUND for a foreign job }
+        '409': { description: duplicate completion, expired session, cancellation, or unavailable synthetic scope }
+        '422': { description: version, size, or SHA-256 mismatch }
+        '503': { description: private object storage unavailable }
 components:
   securitySchemes: { adminBearer: { type: http, scheme: bearer, bearerFormat: JWT } }
   parameters: { ImportId: { name: importId, in: path, required: true, schema: { type: string, format: uuid } } }
@@ -75,9 +97,15 @@ components:
       description: 'No raw row, reservation, account, payment, IP, object key, lease owner, or key digest is returned.'
       properties:
         importId: { type: string, format: uuid }
-        status: { type: string, enum: [CREATED, CANCELLED] }
+        status: { type: string, enum: [CREATED, UPLOAD_PENDING, UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, FAILED_RETRYABLE, REJECTED, CANCELLED] }
         mode: { type: string, enum: [FULL_SNAPSHOT, CHANGE_FEED] }
         scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
         processedRowCount: { type: integer, minimum: 0 }
         acceptedRowCount: { type: integer, minimum: 0 }
         rejectedRowCount: { type: integer, minimum: 0 }
+    UploadSession:
+      type: object
+      required: [uploadUrl, expiresAt]
+      properties:
+        uploadUrl: { type: string, format: uri, description: 'Short-lived private upload capability; do not log or persist client-side.' }
+        expiresAt: { type: string, format: date-time }

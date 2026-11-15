@@ -12,4 +12,5 @@ public interface BulkLedgerImportJobRepository extends JpaRepository<BulkLedgerI
     Optional<BulkLedgerImportJob> findByTenantIdAndSourceSystemAndSourceBatchId(UUID tenantId, String sourceSystem, String sourceBatchId);
     Optional<BulkLedgerImportJob> findByIdAndTenantId(UUID id, UUID tenantId);
     List<BulkLedgerImportJob> findByTenantIdOrderByCreatedAtDescIdDesc(UUID tenantId);
+    List<BulkLedgerImportJob> findTop10ByStatusInOrderByUpdatedAtAsc(List<BulkLedgerImportJob.Status> statuses);
 }

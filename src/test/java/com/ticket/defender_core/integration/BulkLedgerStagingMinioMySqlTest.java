@@ -33,9 +33,6 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.boot.test.system.CapturedOutput;
-import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.junit.jupiter.api.extension.ExtendWith;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -70,7 +67,6 @@ import static org.mockito.Mockito.when;
         "ticket-defender.bulk-ledger-upload.worker-enabled=false"
 })
 @EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MINIO_ENDPOINT", matches = "http://127\\.0\\.0\\.1:19000")
-@ExtendWith(OutputCaptureExtension.class)
 class BulkLedgerStagingMinioMySqlTest {
     static final String ISOLATION_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     private static final ObjectMapper JSON = JsonMapper.builder().build();
@@ -108,7 +104,7 @@ class BulkLedgerStagingMinioMySqlTest {
     }
 
     @Test
-    void presignedUploadPinsVersionAndStagesFiftyThousandRowsWithoutPublishing(CapturedOutput output) throws Exception {
+    void presignedUploadPinsVersionAndStagesFiftyThousandRowsWithoutPublishing() throws Exception {
         Fixture fixture = fixture();
         UUID performanceId = performance(fixture);
         byte[] csv = csv(fixture.event(), performanceId);
@@ -141,7 +137,7 @@ class BulkLedgerStagingMinioMySqlTest {
         BulkLedgerImportJob ready = jobs.findById(importId).orElseThrow();
         long stagedRows = jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString());
         long errorRows = jdbc.queryForObject("select count(*) from td_bulk_import_errors where job_id=?", Long.class, importId.toString());
-        assertThat(ready.getStatus()).as("stagedRows=%s, errorRows=%s, workerLog=%s", stagedRows, errorRows, tail(output.getOut()))
+        assertThat(ready.getStatus()).as("stagedRows=%s, errorRows=%s", stagedRows, errorRows)
                 .isEqualTo(BulkLedgerImportJob.Status.READY_TO_PUBLISH);
         assertThat(ready.getProcessedRowCount()).isEqualTo(50_000);
         assertThat(ready.getAcceptedRowCount()).isEqualTo(50_000);
@@ -195,6 +191,5 @@ class BulkLedgerStagingMinioMySqlTest {
         if (value == null || value.isBlank()) throw new IllegalStateException(name + " is required");
         return value;
     }
-    private static String tail(String value) { return value.substring(Math.max(0, value.length() - 4_000)); }
     private record Fixture(UUID tenant, UUID event, UUID membership, String subject) { }
 }

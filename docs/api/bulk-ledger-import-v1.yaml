@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: Ticket Defender bulk ledger import API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
-    BL-02 accepts only a synthetic-isolated, private, versioned CSV object. It stages HMAC-only rows and never
-    publishes a ledger, starts analysis, or makes a fraud decision.
+    BL-03 keeps v1 staging-only. v2 accepts explicit ticket facts and source ordering, then prepares private candidate
+    ledger versions; it never publishes a ledger, starts analysis, or makes a fraud decision.
 security: [{ adminBearer: [] }]
 paths:
   /api/v1/admin/ledger-imports:
@@ -72,7 +72,7 @@ components:
       additionalProperties: false
       required: [schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256, declaredFileBytes, declaredRowCount, completeSnapshot, scopes]
       properties:
-        schemaVersion: { type: string, enum: [v1] }
+        schemaVersion: { type: string, enum: [v1, v2], description: 'v1 remains staging-only. Candidate preparation requires v2.' }
         sourceSystem: { type: string, maxLength: 64 }
         sourceBatchId: { type: string, maxLength: 128 }
         mode: { type: string, enum: [FULL_SNAPSHOT, CHANGE_FEED] }
@@ -91,7 +91,9 @@ components:
         declaredRowCount: { type: integer, minimum: 0 }
         scopeAsOf: { type: string, format: date-time, description: 'required only for FULL_SNAPSHOT' }
         cursorStart: { type: string, maxLength: 256, description: 'required only for CHANGE_FEED' }
-        cursorEnd: { type: string, maxLength: 256, description: 'required only for CHANGE_FEED' }
+        cursorEnd: { type: string, maxLength: 256, description: 'v1 CHANGE_FEED and v2 source checkpoint end; v2 FULL_SNAPSHOT requires it.' }
+        sourceSequenceStart: { type: integer, minimum: 0, description: 'v2 CHANGE_FEED: first contiguous source sequence.' }
+        sourceSequenceEnd: { type: integer, minimum: 0, description: 'v2: snapshot checkpoint or CHANGE_FEED last contiguous source sequence.' }
     Job:
       type: object
       description: 'No raw row, reservation, account, payment, IP, object key, lease owner, or key digest is returned.'

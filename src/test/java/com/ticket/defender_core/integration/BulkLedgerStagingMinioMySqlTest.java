@@ -131,12 +131,14 @@ class BulkLedgerStagingMinioMySqlTest {
 
         worker.process(importId);
         BulkLedgerImportJob ready = jobs.findById(importId).orElseThrow();
-        assertThat(ready.getStatus()).isEqualTo(BulkLedgerImportJob.Status.READY_TO_PUBLISH);
+        long stagedRows = jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString());
+        long errorRows = jdbc.queryForObject("select count(*) from td_bulk_import_errors where job_id=?", Long.class, importId.toString());
+        assertThat(ready.getStatus()).as("stagedRows=%s, errorRows=%s", stagedRows, errorRows)
+                .isEqualTo(BulkLedgerImportJob.Status.READY_TO_PUBLISH);
         assertThat(ready.getProcessedRowCount()).isEqualTo(50_000);
         assertThat(ready.getAcceptedRowCount()).isEqualTo(50_000);
         assertThat(ready.getRejectedRowCount()).isZero();
-        assertThat(jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString()))
-                .isEqualTo(50_000L);
+        assertThat(stagedRows).isEqualTo(50_000L);
         assertThat(jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=? and event_id=? and performance_id=?",
                 Long.class, importId.toString(), fixture.event().toString(), performanceId.toString())).isEqualTo(50_000L);
         worker.process(importId);

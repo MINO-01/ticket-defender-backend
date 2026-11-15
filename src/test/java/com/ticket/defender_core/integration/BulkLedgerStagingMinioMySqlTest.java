@@ -38,6 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -128,6 +129,9 @@ class BulkLedgerStagingMinioMySqlTest {
                 uploadedJob.getUploadObjectVersion(), csv.length);
         assertThat(fixed.byteSize()).isEqualTo(csv.length);
         assertThat(fixed.sha256()).isEqualTo(digest);
+        try (InputStream source = storage.openVersion("bulk-ledger-private/" + importId + "/upload.csv", uploadedJob.getUploadObjectVersion())) {
+            assertThat(source.read()).isEqualTo(Byte.toUnsignedInt(csv[0]));
+        }
 
         worker.process(importId);
         BulkLedgerImportJob ready = jobs.findById(importId).orElseThrow();

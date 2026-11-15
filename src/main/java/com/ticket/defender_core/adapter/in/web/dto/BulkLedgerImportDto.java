@@ -16,12 +16,17 @@ public final class BulkLedgerImportDto {
                                   String format, String declaredObjectSha256, Long declaredFileBytes,
                                   Long declaredRowCount, Boolean completeSnapshot, List<ScopeRequest> scopes) { }
     public record ScopeRequest(UUID eventId, UUID performanceId, OffsetDateTime scopeAsOf, Long declaredRowCount,
-                               String cursorStart, String cursorEnd) { }
+                               String cursorStart, String cursorEnd, Long sourceSequenceStart, Long sourceSequenceEnd) {
+        public ScopeRequest(UUID eventId, UUID performanceId, OffsetDateTime scopeAsOf, Long declaredRowCount,
+                            String cursorStart, String cursorEnd) {
+            this(eventId, performanceId, scopeAsOf, declaredRowCount, cursorStart, cursorEnd, null, null);
+        }
+    }
     public record Scope(UUID eventId, UUID performanceId, OffsetDateTime scopeAsOf, long declaredRowCount,
-                        String cursorStart, String cursorEnd) {
+                        String cursorStart, String cursorEnd, Long sourceSequenceStart, Long sourceSequenceEnd) {
         public static Scope from(BulkLedgerImportScope value) {
             return new Scope(value.getEventId(), value.getPerformanceId(), offset(value.getScopeAsOf()),
-                    value.getDeclaredRowCount(), value.getCursorStart(), value.getCursorEnd());
+                    value.getDeclaredRowCount(), value.getCursorStart(), value.getCursorEnd(), value.getSourceSequenceStart(), value.getSourceSequenceEnd());
         }
     }
     public record View(UUID importId, String schemaVersion, String sourceSystem, String sourceBatchId,

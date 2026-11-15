@@ -32,13 +32,14 @@ public class BulkLedgerImportWorker {
     private final BulkLedgerUploadStorage storage;
     private final BulkLedgerCsvStagingParser parser = new BulkLedgerCsvStagingParser();
     private final BulkLedgerStagingWriter staging;
+    private final BulkLedgerCandidatePreparationService candidates;
     private final TransactionTemplate transactions;
     @Value("${ticket-defender.bulk-ledger-upload.worker-enabled:false}") private boolean enabled;
 
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
-            TransactionTemplate transactions) {
-        this.jobs = jobs; this.scopes = scopes; this.errors = errors; this.gate = gate; this.storage = storage; this.staging = staging; this.transactions = transactions;
+            BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions) {
+        this.jobs = jobs; this.scopes = scopes; this.errors = errors; this.gate = gate; this.storage = storage; this.staging = staging; this.candidates = candidates; this.transactions = transactions;
     }
 
     public void process(UUID importId) {
@@ -55,7 +56,7 @@ public class BulkLedgerImportWorker {
             BulkLedgerStagingWriter.Session stagingSession = staging.open(importId, lease.tenantId(), lease.fence());
             BulkLedgerCsvStagingParser.Result result;
             try (InputStream source = storage.openVersion(objectKey(importId), lease.objectVersion())) {
-                result = parser.parse(source, lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account, stagingSession::accept);
+                result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account, stagingSession::accept);
             }
             stagingSession.finish();
             if (result.rows() != lease.declaredRows()) throw new BulkLedgerCsvValidationException(0, "BULK_CSV_DECLARED_ROW_COUNT_MISMATCH");
@@ -68,6 +69,8 @@ public class BulkLedgerImportWorker {
                     throw new BulkLedgerCsvValidationException(0, "BULK_STAGING_SCOPE_ROW_COUNT_MISMATCH");
             }
             transactions.executeWithoutResult(status -> ready(importId, lease.fence(), result.rows()));
+            // Candidate readiness is separate from the existing staging readiness. v1 remains staging-only.
+            candidates.prepare(importId);
         } catch (BulkLedgerCsvValidationException rejected) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(), rejected));
         } catch (BulkLedgerStagingConflictException conflict) {
@@ -98,7 +101,7 @@ public class BulkLedgerImportWorker {
             job.beginStaging(job.getFenceToken(), now);
         } catch (IllegalStateException notRunnable) { return null; }
         jobs.saveAndFlush(job);
-        return new Lease(job.getTenantId(), job.getMode(), job.getUploadObjectVersion(), job.getDeclaredFileBytes(), job.getDeclaredRowCount(), job.getFenceToken());
+        return new Lease(job.getTenantId(), job.getSchemaVersion(), job.getMode(), job.getUploadObjectVersion(), job.getDeclaredFileBytes(), job.getDeclaredRowCount(), job.getFenceToken());
     }
     private void ready(UUID importId, long fence, long rows) {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow(); job.readyToPublish(fence, rows, rows, 0, LocalDateTime.now(ZoneOffset.UTC)); jobs.saveAndFlush(job);
@@ -114,5 +117,5 @@ public class BulkLedgerImportWorker {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow(); job.retryableFailure(fence, LocalDateTime.now(ZoneOffset.UTC)); jobs.saveAndFlush(job);
     }
     private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }
-    private record Lease(UUID tenantId, BulkLedgerImportJob.Mode mode, String objectVersion, long maximumBytes, long declaredRows, long fence) { }
+    private record Lease(UUID tenantId, String schemaVersion, BulkLedgerImportJob.Mode mode, String objectVersion, long maximumBytes, long declaredRows, long fence) { }
 }

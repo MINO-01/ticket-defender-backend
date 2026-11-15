@@ -36,6 +36,9 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest": (
         1, "Runs duplicate and fencing checks in the isolated MySQL CI job"
     ),
+    "com.ticket.defender_core.integration.BulkLedgerCandidatePreparationMySqlTest": (
+        4, "Runs candidate generation and change-feed checks in the isolated MySQL CI job"
+    ),
     "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest": (
         1, "Runs the 50,000-row upload and staging path in the isolated MinIO and MySQL CI job"
     ),
@@ -319,6 +322,9 @@ MYSQL_SUITES = {
     ),
     "bulk-ledger-staging-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest", 1
+    ),
+    "bulk-ledger-candidate-mysql": (
+        "com.ticket.defender_core.integration.BulkLedgerCandidatePreparationMySqlTest", 4
     ),
     "bulk-ledger-staging-minio-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest", 1

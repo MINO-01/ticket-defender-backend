@@ -47,6 +47,34 @@ class BulkLedgerCsvStagingParserTest {
     }
 
     @Test
+    void v2ChangeFeedRequiresExplicitFactsAndPreservesSourceSequence() {
+        UUID tenant = UUID.randomUUID(), event = UUID.randomUUID(), performance = UUID.randomUUID();
+        String csv = "event_id,performance_id,reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id,source_changed_at,source_sequence,change_action\n"
+                + event + "," + performance + ",r,t,a,2026-11-13T10:00:00Z,1,TICKET,ACTIVE,source-v1,evt-11,2026-11-13T10:01:00Z,11,UPSERT\n";
+        List<BulkLedgerCsvStagingParser.ParsedRow> rows = new ArrayList<>();
+        new BulkLedgerCsvStagingParser().parse(new ByteArrayInputStream(csv.getBytes(StandardCharsets.UTF_8)), "v2", BulkLedgerImportJob.Mode.CHANGE_FEED,
+                tenant, List.of(new BulkLedgerImportScope(UUID.randomUUID(), tenant, event, performance, null, 1, "cursor-10", "cursor-11", 11L, 11L)),
+                new TenantPurposeReferenceHasher("x".repeat(32), "v1"), new TenantPurposeReferenceHasher("x".repeat(32), "TICKET", "v1"),
+                new TenantPurposeReferenceHasher("x".repeat(32), "ACCOUNT", "v1"), rows::add);
+        assertThat(rows).singleElement().satisfies(row -> {
+            assertThat(row.quantityUnit()).isEqualTo("TICKET"); assertThat(row.ticketStatus()).isEqualTo("ACTIVE");
+            assertThat(row.sourceSequence()).isEqualTo(11L); assertThat(row.sourceEventId()).isEqualTo("evt-11");
+        });
+    }
+
+    @Test
+    void v2RejectsMissingTicketStatusRatherThanInventingIt() {
+        UUID tenant = UUID.randomUUID(), event = UUID.randomUUID(), performance = UUID.randomUUID();
+        String csv = "event_id,performance_id,reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,source_version\n"
+                + event + "," + performance + ",r,t,a,2026-11-13T10:00:00Z,1,TICKET,source-v1\n";
+        assertThatThrownBy(() -> new BulkLedgerCsvStagingParser().parse(new ByteArrayInputStream(csv.getBytes(StandardCharsets.UTF_8)), "v2", BulkLedgerImportJob.Mode.FULL_SNAPSHOT,
+                tenant, List.of(new BulkLedgerImportScope(UUID.randomUUID(), tenant, event, performance, LocalDateTime.now(), 1, null, "cursor-10", null, 10L)),
+                new TenantPurposeReferenceHasher("x".repeat(32), "v1"), new TenantPurposeReferenceHasher("x".repeat(32), "TICKET", "v1"),
+                new TenantPurposeReferenceHasher("x".repeat(32), "ACCOUNT", "v1"), row -> { }))
+                .isInstanceOf(BulkLedgerCsvValidationException.class).hasMessage("BULK_CSV_HEADER_REQUIRED");
+    }
+
+    @Test
     void handlesFiftyThousandSyntheticRowsFromBoundedPipe() throws Exception {
         UUID tenant = UUID.randomUUID(), event = UUID.randomUUID(), performance = UUID.randomUUID();
         try (PipedOutputStream writer = new PipedOutputStream(); PipedInputStream input = new PipedInputStream(writer, 8 * 1024)) {

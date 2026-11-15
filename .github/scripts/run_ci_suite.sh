@@ -45,6 +45,7 @@ bl01_suite() {
 mysql_full() {
   bl01_suite
   run_test bulk-ledger-staging-mysql '*BulkLedgerStagingMySqlTest'
+  run_test bulk-ledger-candidate-mysql '*BulkLedgerCandidatePreparationMySqlTest'
   run_test case-w05-concurrency '*CaseW05ConcurrentMySqlTest'
   run_test case-w06-schema '*CaseW06SchemaValidateMySqlTest'
   run_test case-w07-schema '*CaseW07SchemaValidateMySqlTest'

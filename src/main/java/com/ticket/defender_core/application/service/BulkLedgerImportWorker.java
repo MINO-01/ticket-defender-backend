@@ -10,6 +10,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
 import java.time.LocalDateTime;
@@ -25,6 +27,7 @@ import java.util.Map;
  */
 @Service
 public class BulkLedgerImportWorker {
+    private static final Logger log = LoggerFactory.getLogger(BulkLedgerImportWorker.class);
     private final BulkLedgerImportJobRepository jobs;
     private final BulkLedgerImportScopeRepository scopes;
     private final BulkLedgerImportErrorRepository errors;
@@ -77,6 +80,7 @@ public class BulkLedgerImportWorker {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
                     new BulkLedgerCsvValidationException(0, "BULK_UPLOAD_OBJECT_VERSION_CHANGED")));
         } catch (RuntimeException | java.io.IOException unavailable) {
+            log.warn("Bulk ledger import processing is retryable: importId={}", importId, unavailable);
             transactions.executeWithoutResult(status -> retryable(importId, lease.fence()));
         }
     }

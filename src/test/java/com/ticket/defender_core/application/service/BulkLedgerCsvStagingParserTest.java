@@ -52,9 +52,7 @@ class BulkLedgerCsvStagingParserTest {
         try (PipedOutputStream writer = new PipedOutputStream(); PipedInputStream input = new PipedInputStream(writer, 8 * 1024)) {
             Thread producer = new Thread(() -> {
                 try (writer) {
-                    writer.write("event_id,performance_id,reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity\n".getBytes(StandardCharsets.UTF_8));
-                    for (int index = 0; index < 50_000; index++)
-                        writer.write((event + "," + performance + ",r" + index + ",t" + index + ",a" + index + ",2026-11-13T10:00:00Z,1\n").getBytes(StandardCharsets.UTF_8));
+                    BulkLedgerCsvTestData.writeFullSnapshot(writer, event, performance, 50_000);
                 } catch (java.io.IOException failure) { throw new RuntimeException(failure); }
             });
             producer.start(); AtomicLong seen = new AtomicLong();

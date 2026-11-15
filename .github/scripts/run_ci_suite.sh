@@ -44,6 +44,7 @@ bl01_suite() {
 
 mysql_full() {
   bl01_suite
+  run_test bulk-ledger-staging-mysql '*BulkLedgerStagingMySqlTest'
   run_test case-w05-concurrency '*CaseW05ConcurrentMySqlTest'
   run_test case-w06-schema '*CaseW06SchemaValidateMySqlTest'
   run_test case-w07-schema '*CaseW07SchemaValidateMySqlTest'
@@ -70,6 +71,7 @@ mysql_full() {
 
 minio_full() {
   migration_prefix
+  run_test bulk-ledger-import-migration '*BulkLedgerImportMigrationMySqlTest'
   schema_prefix
   run_test case-w07-schema '*CaseW07SchemaValidateMySqlTest'
   run_test case-w08a-schema '*CaseW08aSchemaValidateMySqlTest'
@@ -90,6 +92,7 @@ minio_full() {
   run_test case-w09-minio-mysql '*CaseW09MinioMySqlTest'
   run_test track2-listing-minio-mysql '*Track2ListingAnalysisMinioMySqlTest'
   run_test admin-evidence-content-minio-mysql '*AdminEvidenceContentMinioMySqlTest'
+  run_test bulk-ledger-staging-minio-mysql '*BulkLedgerStagingMinioMySqlTest'
 }
 
 case "${1:?suite required}" in

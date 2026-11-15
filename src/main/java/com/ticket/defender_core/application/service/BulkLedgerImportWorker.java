@@ -17,6 +17,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import java.util.EnumSet;
+import java.util.Map;
 
 /**
  * Single-import worker. Its DB state transitions use short transactions; object reads and CSV parsing are outside them.
@@ -60,6 +61,12 @@ public class BulkLedgerImportWorker {
             if (result.rows() != lease.declaredRows()) throw new BulkLedgerCsvValidationException(0, "BULK_CSV_DECLARED_ROW_COUNT_MISMATCH");
             if (staging.countForImport(importId) != lease.declaredRows())
                 throw new BulkLedgerCsvValidationException(0, "BULK_STAGING_ROW_COUNT_MISMATCH");
+            Map<String, Long> stagedScopes = staging.scopeCountsForImport(importId);
+            for (BulkLedgerImportScope scope : jobScopes) {
+                String key = scope.getEventId() + ":" + scope.getPerformanceId();
+                if (stagedScopes.getOrDefault(key, 0L) != scope.getDeclaredRowCount())
+                    throw new BulkLedgerCsvValidationException(0, "BULK_STAGING_SCOPE_ROW_COUNT_MISMATCH");
+            }
             transactions.executeWithoutResult(status -> ready(importId, lease.fence(), result.rows()));
         } catch (BulkLedgerCsvValidationException rejected) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(), rejected));

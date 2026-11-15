@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -11,6 +12,8 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.UUID;
 
 /** Executes bounded JDBC batches. No JPA persistence context holds parsed CSV records. */
@@ -39,6 +42,12 @@ public class BulkLedgerStagingWriter {
     public long countForImport(UUID importId) {
         Long count = jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString());
         return count == null ? 0 : count;
+    }
+    public Map<String, Long> scopeCountsForImport(UUID importId) {
+        Map<String, Long> counts = new HashMap<>();
+        jdbc.query("select event_id, performance_id, count(*) from td_bulk_import_staging_rows where import_id=? group by event_id, performance_id",
+                (RowCallbackHandler) rs -> counts.put(rs.getString(1) + ":" + rs.getString(2), rs.getLong(3)), importId.toString());
+        return counts;
     }
 
     public final class Session {

@@ -168,7 +168,7 @@ class BulkLedgerImportHttpMySqlTest {
         job.beginUpload("d".repeat(64), now.plusMinutes(1), now); job.completeUpload("object-version", now);
         job.startValidation("http-test", now.plusMinutes(1), now); job.beginStaging(job.getFenceToken(), now); job.readyToPublish(job.getFenceToken(), 1, 1, 0, now);
         jobs.saveAndFlush(job);
-        scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), fixture.tenant(), fixture.event(), performance, now, 1, null, "cursor-10", null, 10L));
+        scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), fixture.tenant(), fixture.event(), performance, now, 1, null, null, null, null));
         jdbc.update("insert into td_bulk_import_staging_rows(id,import_id,tenant_id,event_id,performance_id,source_row_no,reservation_reference_hmac,ticket_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,row_digest) values(?,?,?,?,?,?,?,?,?,?,utc_timestamp(6),1,'TICKET','ACTIVE','v-source',?)",
                 UUID.randomUUID().toString(), job.getId().toString(), fixture.tenant().toString(), fixture.event().toString(), performance.toString(), 2,
                 "r".repeat(64), "t".repeat(64), "a".repeat(64), "v1", "e".repeat(64));

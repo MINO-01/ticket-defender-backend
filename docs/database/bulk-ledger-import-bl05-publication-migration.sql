@@ -4,11 +4,17 @@ ALTER TABLE td_bulk_import_jobs ADD CONSTRAINT chk_td_bulk_import_job_values CHE
     mode IN ('FULL_SNAPSHOT', 'CHANGE_FEED') AND format = 'CSV'
     AND status IN ('CREATED','UPLOAD_PENDING','UPLOADED','VALIDATING','STAGING','READY_TO_PUBLISH','PUBLISHED','FAILED_RETRYABLE','REJECTED','CANCELLED')
     AND declared_file_bytes >= 0 AND declared_row_count >= 0 AND processed_row_count >= 0 AND accepted_row_count >= 0 AND rejected_row_count >= 0
-    AND accepted_row_count + rejected_row_count <= processed_row_count
-    AND attempt_count >= 0 AND fence_token >= 0
-    AND ((status IN ('CREATED','FAILED_RETRYABLE')) OR upload_object_key_digest IS NOT NULL)
-    AND ((status NOT IN ('UPLOADED','VALIDATING','STAGING','READY_TO_PUBLISH','PUBLISHED','REJECTED'))
-         OR (upload_object_version IS NOT NULL AND upload_object_version <> ''))
+    AND processed_row_count = accepted_row_count + rejected_row_count
+    AND ((mode = 'FULL_SNAPSHOT' AND complete_snapshot = b'1') OR (mode = 'CHANGE_FEED' AND complete_snapshot = b'0'))
+    AND ((status = 'CREATED' AND upload_object_key_digest IS NULL AND upload_object_version IS NULL AND upload_expires_at IS NULL)
+      OR (status = 'UPLOAD_PENDING' AND upload_object_key_digest IS NOT NULL AND upload_object_version IS NULL AND upload_expires_at IS NOT NULL)
+      OR (status IN ('UPLOADED','VALIDATING','STAGING','READY_TO_PUBLISH','PUBLISHED','FAILED_RETRYABLE','REJECTED')
+          AND upload_object_key_digest IS NOT NULL AND upload_object_version IS NOT NULL)
+      OR status = 'CANCELLED')
+    AND ((status IN ('VALIDATING','STAGING') AND lease_owner IS NOT NULL AND lease_until IS NOT NULL)
+      OR (status NOT IN ('VALIDATING','STAGING') AND lease_owner IS NULL AND lease_until IS NULL))
+    AND ((status = 'CANCELLED' AND cancelled_at IS NOT NULL)
+      OR (status <> 'CANCELLED' AND cancelled_at IS NULL))
 );
 
 ALTER TABLE td_bulk_ledger_candidate_imports DROP CHECK chk_td_bulk_candidate_import_state;

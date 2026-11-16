@@ -105,7 +105,7 @@ public class BulkLedgerCandidatePreparationService {
             Long previous = jdbc.queryForObject("select coalesce(max(generation_no),-1) from td_bulk_ledger_versions where tenant_id=? and performance_id=?",
                     Long.class, job.getTenantId().toString(), scope.getPerformanceId().toString());
             UUID id = UUID.randomUUID();
-            jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,expected_head_known,expected_head_version_id,source_system,source_batch_id,source_as_of,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?,'PREPARING',utc_timestamp(6))",
+            jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,expected_head_known,expected_head_version_id,source_system,source_batch_id,source_as_of,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,'PREPARING',utc_timestamp(6))",
                     id.toString(), lease.candidateId().toString(), job.getId().toString(), job.getTenantId().toString(), scope.getEventId().toString(), scope.getPerformanceId().toString(),
                     previous + 1, expectedHead == null ? null : expectedHead.toString(), job.getSourceSystem(), job.getSourceBatchId(), Timestamp.valueOf(scope.getScopeAsOf()), scope.getCursorEnd(), scope.getSourceSequenceEnd());
             return new Version(id, "PREPARING");

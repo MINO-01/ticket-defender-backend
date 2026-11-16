@@ -3,7 +3,7 @@ name: Backend CI
 on:
   pull_request:
   push:
-    branches: [main, 'feat/#38-evidence-integrity-gate', 'feat/#40-evidence-preservation-gate', 'feat/#42-approval-request-binding', 'feat/#44-approval-review-decision', 'feat/#46-official-pdf-issuance', 'feat/#90-ledger-version-preparation']
+    branches: [main, 'feat/#38-evidence-integrity-gate', 'feat/#40-evidence-preservation-gate', 'feat/#42-approval-request-binding', 'feat/#44-approval-review-decision', 'feat/#46-official-pdf-issuance', 'feat/#90-ledger-version-preparation', 'feat/#92-ledger-atomic-publication']
   schedule:
     - cron: '23 3 * * 1'
   workflow_dispatch:

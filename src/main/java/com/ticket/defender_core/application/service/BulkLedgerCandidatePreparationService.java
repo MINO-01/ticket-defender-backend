@@ -56,8 +56,8 @@ public class BulkLedgerCandidatePreparationService {
         if (!existing.isEmpty()) return UUID.fromString(existing.getFirst());
         UUID id = UUID.randomUUID();
         try {
-            jdbc.update("insert into td_bulk_ledger_candidate_imports(id,import_id,tenant_id,status,preparation_attempt_count,created_at,updated_at) values(?,?,?,'PREPARING',0,utc_timestamp(6),utc_timestamp(6))",
-                    id.toString(), job.getId().toString(), job.getTenantId().toString());
+            jdbc.update("insert into td_bulk_ledger_candidate_imports(id,import_id,tenant_id,source_object_version,source_object_sha256,status,preparation_attempt_count,created_at,updated_at) values(?,?,?,?,?,'PREPARING',0,utc_timestamp(6),utc_timestamp(6))",
+                    id.toString(), job.getId().toString(), job.getTenantId().toString(), job.getUploadObjectVersion(), job.getDeclaredObjectSha256());
             return id;
         } catch (org.springframework.dao.DataIntegrityViolationException raced) {
             return UUID.fromString(jdbc.queryForObject("select id from td_bulk_ledger_candidate_imports where import_id=?", String.class, job.getId().toString()));
@@ -101,12 +101,13 @@ public class BulkLedgerCandidatePreparationService {
             Version existing = candidateVersion(lease.candidateId(), scope.getPerformanceId());
             if (existing != null) return existing;
             lockPerformance(job, scope);
+            UUID expectedHead = publicationHead(job.getTenantId(), scope.getPerformanceId());
             Long previous = jdbc.queryForObject("select coalesce(max(generation_no),-1) from td_bulk_ledger_versions where tenant_id=? and performance_id=?",
                     Long.class, job.getTenantId().toString(), scope.getPerformanceId().toString());
             UUID id = UUID.randomUUID();
-            jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,source_system,source_batch_id,source_as_of,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,0,?,?,?,?,?,'PREPARING',utc_timestamp(6))",
+            jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,expected_head_known,expected_head_version_id,source_system,source_batch_id,source_as_of,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?,'PREPARING',utc_timestamp(6))",
                     id.toString(), lease.candidateId().toString(), job.getId().toString(), job.getTenantId().toString(), scope.getEventId().toString(), scope.getPerformanceId().toString(),
-                    previous + 1, job.getSourceSystem(), job.getSourceBatchId(), Timestamp.valueOf(scope.getScopeAsOf()), scope.getCursorEnd(), scope.getSourceSequenceEnd());
+                    previous + 1, expectedHead == null ? null : expectedHead.toString(), job.getSourceSystem(), job.getSourceBatchId(), Timestamp.valueOf(scope.getScopeAsOf()), scope.getCursorEnd(), scope.getSourceSequenceEnd());
             return new Version(id, "PREPARING");
         });
     }
@@ -180,9 +181,9 @@ public class BulkLedgerCandidatePreparationService {
             Long nextRevision = jdbc.queryForObject("select coalesce(max(revision_no),?) + 1 from td_bulk_ledger_versions where tenant_id=? and performance_id=? and generation_no=?",
                     Long.class, base.revision(), job.getTenantId().toString(), scope.getPerformanceId().toString(), base.generation());
             UUID id = UUID.randomUUID();
-            jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,base_version_id,source_system,source_batch_id,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,'PREPARING',utc_timestamp(6))",
+            jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,base_version_id,expected_head_known,expected_head_version_id,source_system,source_batch_id,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?, 'PREPARING',utc_timestamp(6))",
                     id.toString(), lease.candidateId().toString(), job.getId().toString(), job.getTenantId().toString(), scope.getEventId().toString(), scope.getPerformanceId().toString(),
-                    base.generation(), nextRevision, base.id().toString(), job.getSourceSystem(), job.getSourceBatchId(), scope.getCursorEnd(), scope.getSourceSequenceEnd());
+                    base.generation(), nextRevision, base.id().toString(), base.id().toString(), job.getSourceSystem(), job.getSourceBatchId(), scope.getCursorEnd(), scope.getSourceSequenceEnd());
             return new Version(id, "PREPARING");
         });
     }
@@ -302,6 +303,16 @@ public class BulkLedgerCandidatePreparationService {
         List<Integer> locked = jdbc.query("select 1 from verified_performances where id=? and tenant_id=? and event_id=? for update", (rs, n) -> rs.getInt(1),
                 scope.getPerformanceId().toString(), job.getTenantId().toString(), scope.getEventId().toString());
         if (locked.size() != 1) throw new CandidateRejected("CANDIDATE_SCOPE_INVALID");
+    }
+
+    /** Called after the durable performance-row lock, so absence is an explicit expected initial head rather than an inference. */
+    private UUID publicationHead(UUID tenantId, UUID performanceId) {
+        List<String> heads = jdbc.query("""
+                select h.version_id from td_bulk_ledger_publication_heads h join td_bulk_ledger_versions v on v.id=h.version_id
+                where h.tenant_id=? and h.performance_id=? and v.status='PUBLISHED' for update
+                """, (rs, n) -> rs.getString(1), tenantId.toString(), performanceId.toString());
+        if (heads.size() > 1) throw new IllegalStateException("multiple publication heads");
+        return heads.isEmpty() ? null : UUID.fromString(heads.getFirst());
     }
 
     private void finishVersion(Lease lease, UUID versionId) {

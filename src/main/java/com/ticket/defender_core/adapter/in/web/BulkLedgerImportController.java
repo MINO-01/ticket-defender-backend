@@ -61,4 +61,15 @@ public class BulkLedgerImportController {
             @RequestBody(required = false) BulkLedgerImportDto.CompleteUploadRequest ignored) {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.completeUpload(importId));
     }
+
+    @PostMapping("/{importId}/publish")
+    public ResponseEntity<BulkLedgerImportDto.PublicationView> publish(@PathVariable UUID importId,
+            @RequestHeader("Idempotency-Key") String key) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.publish(importId, key));
+    }
+
+    @GetMapping("/{importId}/publication")
+    public ResponseEntity<BulkLedgerImportDto.PublicationView> publication(@PathVariable UUID importId) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.publication(importId));
+    }
 }

@@ -77,6 +77,8 @@ class BulkLedgerPublicationMySqlTest {
         });
 
         UUID base = versionFor(second, fixture.performances().get(0));
+        // CSV v2 snapshots intentionally carry as-of rather than a feed cursor. The published-feed baseline below is synthetic.
+        jdbc.update("update td_bulk_ledger_versions set source_cursor='cursor-20',source_sequence_end=20 where id=?", base.toString());
         Prepared change = prepared(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, List.of(
                 scope(fixture, 0, base, 1, 1, "cursor-21", "cursor-20", 21L, 21L)));
         BulkLedgerPublicationService.Publication revision = publish(change, fixture);

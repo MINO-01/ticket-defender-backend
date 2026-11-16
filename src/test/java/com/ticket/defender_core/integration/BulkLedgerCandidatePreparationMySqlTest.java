@@ -39,6 +39,7 @@ class BulkLedgerCandidatePreparationMySqlTest {
 
     @Test
     void fullSnapshotCreatesReadyGenerationZeroAndRetryDoesNotDuplicateCandidate() {
+        long existingTrack1Rows = count("select count(*) from track1_purchase_ledger_rows");
         Fixture fixture = fixture();
         BulkLedgerImportJob job = ready(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "snapshot", "cursor-10", null, 10L, 1);
         stage(job, fixture, "ticket-a", "event-a", null, "ACTIVE");
@@ -50,7 +51,7 @@ class BulkLedgerCandidatePreparationMySqlTest {
         assertThat(value("select revision_no from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo("0");
         assertThat(count("select count(*) from td_bulk_ledger_ticket_versions tv join td_bulk_ledger_versions v on v.id=tv.version_id where v.import_id=?", job.getId())).isEqualTo(1);
         assertThat(count("select count(*) from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo(1);
-        assertThat(count("select count(*) from track1_purchase_ledger_rows")).isZero();
+        assertThat(count("select count(*) from track1_purchase_ledger_rows")).isEqualTo(existingTrack1Rows);
     }
 
     @Test
@@ -58,10 +59,7 @@ class BulkLedgerCandidatePreparationMySqlTest {
         Fixture fixture = fixture();
         BulkLedgerImportJob snapshot = ready(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "base", "cursor-10", null, 10L, 1);
         stage(snapshot, fixture, "ticket-a", "base-event", null, "ACTIVE"); candidates.prepare(snapshot.getId());
-        String baseVersion = value("select id from td_bulk_ledger_versions where import_id=?", snapshot.getId());
-        jdbc.update("update td_bulk_ledger_versions set status='PUBLISHED' where id=?", baseVersion);
-        jdbc.update("insert into td_bulk_ledger_publication_heads(tenant_id,event_id,performance_id,version_id,published_at) values(?,?,?,?,utc_timestamp(6))",
-                fixture.tenant().toString(), fixture.event().toString(), fixture.performance().toString(), baseVersion);
+        publish(fixture, snapshot.getId(), "cursor-10", 10L);
 
         BulkLedgerImportJob change = ready(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, "change", "cursor-12", "cursor-10", 12L, 2);
         stage(change, fixture, "ticket-a", "change-11", 11L, "ACTIVE");
@@ -90,14 +88,14 @@ class BulkLedgerCandidatePreparationMySqlTest {
     void changeFeedRejectsSequenceGapAndConflictingReusedEvent() {
         Fixture fixture = fixture();
         BulkLedgerImportJob snapshot = ready(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "base", "cursor-10", null, 10L, 1);
-        stage(snapshot, fixture, "ticket-a", "base", null, "ACTIVE"); candidates.prepare(snapshot.getId()); publish(fixture, snapshot.getId());
+        stage(snapshot, fixture, "ticket-a", "base", null, "ACTIVE"); candidates.prepare(snapshot.getId()); publish(fixture, snapshot.getId(), "cursor-10", 10L);
 
         BulkLedgerImportJob gap = ready(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, "gap", "cursor-11", "cursor-10", 11L, 1);
         stage(gap, fixture, "ticket-a", "gap-event", 12L, "ACTIVE"); candidates.prepare(gap.getId());
         assertThat(value("select failure_code from td_bulk_ledger_candidate_imports where import_id=?", gap.getId())).isEqualTo("CHANGE_SEQUENCE_INVALID");
 
         BulkLedgerImportJob first = ready(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, "first", "cursor-11", "cursor-10", 11L, 1);
-        stage(first, fixture, "ticket-a", "same-event", 11L, "ACTIVE"); candidates.prepare(first.getId()); publish(fixture, first.getId());
+        stage(first, fixture, "ticket-a", "same-event", 11L, "ACTIVE"); candidates.prepare(first.getId()); publish(fixture, first.getId(), null, null);
         BulkLedgerImportJob conflict = ready(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, "conflict", "cursor-12", "cursor-11", 12L, 1);
         stage(conflict, fixture, "ticket-a", "same-event", 12L, "CANCELLED");
         jdbc.update("update td_bulk_import_staging_rows set row_digest=? where import_id=?", "f".repeat(64), conflict.getId().toString());
@@ -135,8 +133,9 @@ class BulkLedgerCandidatePreparationMySqlTest {
                 job.getMode() == BulkLedgerImportJob.Mode.CHANGE_FEED ? eventId : null, sequence,
                 job.getMode() == BulkLedgerImportJob.Mode.CHANGE_FEED ? "UPSERT" : null, (eventId + "d".repeat(64)).substring(0, 64));
     }
-    private void publish(Fixture fixture, UUID importId) {
+    private void publish(Fixture fixture, UUID importId, String cursor, Long sequenceEnd) {
         String version = value("select id from td_bulk_ledger_versions where import_id=?", importId);
+        if (cursor != null) jdbc.update("update td_bulk_ledger_versions set source_cursor=?, source_sequence_end=? where id=?", cursor, sequenceEnd, version);
         jdbc.update("update td_bulk_ledger_versions set status='PUBLISHED' where id=?", version);
         int updated = jdbc.update("update td_bulk_ledger_publication_heads set version_id=?, published_at=utc_timestamp(6) where tenant_id=? and performance_id=?",
                 version, fixture.tenant().toString(), fixture.performance().toString());

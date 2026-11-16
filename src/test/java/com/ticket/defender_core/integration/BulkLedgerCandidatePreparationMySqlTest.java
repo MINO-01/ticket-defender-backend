@@ -49,6 +49,7 @@ class BulkLedgerCandidatePreparationMySqlTest {
         assertThat(value("select status from td_bulk_ledger_candidate_imports where import_id=?", job.getId())).isEqualTo("READY");
         assertThat(value("select generation_no from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo("0");
         assertThat(value("select revision_no from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo("0");
+        assertThat(value("select expected_head_known from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo("1");
         assertThat(count("select count(*) from td_bulk_ledger_ticket_versions tv join td_bulk_ledger_versions v on v.id=tv.version_id where v.import_id=?", job.getId())).isEqualTo(1);
         assertThat(count("select count(*) from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo(1);
         assertThat(count("select count(*) from track1_purchase_ledger_rows")).isEqualTo(existingTrack1Rows);

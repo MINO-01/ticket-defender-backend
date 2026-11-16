@@ -58,6 +58,7 @@ public class BulkLedgerImportService {
     private final BulkLedgerImportScopeRepository scopes;
     private final BulkLedgerImportErrorRepository errors;
     private final BulkLedgerUploadStorage uploadStorage;
+    private final BulkLedgerPublicationService publications;
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long uploadMaximumBytes;
     @Value("${ticket-defender.bulk-ledger-upload.upload-ttl:PT10M}") private java.time.Duration uploadTtl;
 
@@ -207,6 +208,31 @@ public class BulkLedgerImportService {
         } catch (BulkLedgerUploadStorage.Unavailable failure) {
             throw new CaseApiException(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE");
         }
+    }
+
+    /** The client selects only an import. Server-owned scope rows determine every published performance. */
+    public BulkLedgerImportDto.PublicationView publish(UUID importId, String idempotencyKey) {
+        TenantScope actor = tenantScope(WRITE_ROLES);
+        BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
+        List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
+        if (!allowed(actor, jobScopes)) throw notFound();
+        var published = publications.publish(importId, actor.tenantId(), actor.membershipId(), CandidatePipelineSupport.idempotencyDigest(idempotencyKey));
+        return publicationView(published);
+    }
+
+    @Transactional(readOnly = true)
+    public BulkLedgerImportDto.PublicationView publication(UUID importId) {
+        TenantScope actor = tenantScope(VIEW_ROLES);
+        BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
+        List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
+        if (!allowed(actor, jobScopes)) throw notFound();
+        return publicationView(publications.find(importId, actor.tenantId()));
+    }
+
+    private static BulkLedgerImportDto.PublicationView publicationView(BulkLedgerPublicationService.Publication source) {
+        return new BulkLedgerImportDto.PublicationView(source.publicationId(), source.importId(), source.sourceSystem(), source.sourceBatchId(), source.publishedAt(), source.scopes().stream()
+                .map(scope -> new BulkLedgerImportDto.PublishedScope(scope.eventId(), scope.performanceId(), scope.previousVersionId(),
+                        scope.versionId(), scope.generation(), scope.revision(), scope.outboxPending())).toList());
     }
 
     private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }

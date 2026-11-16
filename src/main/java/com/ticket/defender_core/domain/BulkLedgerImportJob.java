@@ -23,7 +23,7 @@ import java.util.UUID;
 public class BulkLedgerImportJob {
     public enum Mode { FULL_SNAPSHOT, CHANGE_FEED }
     public enum Format { CSV }
-    public enum Status { CREATED, UPLOAD_PENDING, UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, FAILED_RETRYABLE, REJECTED, CANCELLED }
+    public enum Status { CREATED, UPLOAD_PENDING, UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, PUBLISHED, FAILED_RETRYABLE, REJECTED, CANCELLED }
 
     @Id @JdbcTypeCode(SqlTypes.CHAR) @Column(length = 36) private UUID id;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "tenant_id", nullable = false, length = 36) private UUID tenantId;
@@ -115,7 +115,7 @@ public class BulkLedgerImportJob {
     }
 
     public void cancel(LocalDateTime now) {
-        if (status == Status.READY_TO_PUBLISH || status == Status.REJECTED || status == Status.CANCELLED) throw new IllegalStateException("job is not cancellable");
+        if (status == Status.READY_TO_PUBLISH || status == Status.PUBLISHED || status == Status.REJECTED || status == Status.CANCELLED) throw new IllegalStateException("job is not cancellable");
         leaseOwner = null; leaseUntil = null;
         status = Status.CANCELLED; cancelledAt = Objects.requireNonNull(now); updatedAt = now;
     }

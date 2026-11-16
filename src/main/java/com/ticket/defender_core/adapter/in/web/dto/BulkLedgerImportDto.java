@@ -43,6 +43,11 @@ public final class BulkLedgerImportDto {
     /** URL is returned only once to the authorized uploader and is never persisted or listed. */
     public record UploadSession(java.net.URI uploadUrl, OffsetDateTime expiresAt) { }
     public record CompleteUploadRequest() { }
+    /** Publication metadata intentionally omits ticket rows, object keys, HMACs and outbox payloads. */
+    public record PublicationView(UUID publicationId, UUID importId, String sourceSystem, String sourceBatchId,
+                                  OffsetDateTime publishedAt, List<PublishedScope> scopes) { }
+    public record PublishedScope(UUID eventId, UUID performanceId, UUID previousVersionId, UUID versionId,
+                                 long generation, long revision, boolean outboxPending) { }
     public record Page<T>(List<T> items, int page, int pageSize, boolean hasNext) { }
 
     private static OffsetDateTime offset(java.time.LocalDateTime value) {

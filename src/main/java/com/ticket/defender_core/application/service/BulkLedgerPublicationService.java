@@ -140,8 +140,9 @@ public class BulkLedgerPublicationService {
 
     /** A change revision has no snapshot as-of of its own, so use the published revision-zero ancestor as its provenance. */
     private void validateSnapshotBaseline(Job job, Scope scope, Version version, Head current) {
-        // A published change revision must retain its source sequence checkpoint. Without it, its lineage is not verifiable.
-        if (current.revision() > 0 && current.sequenceEnd() == null) throw conflict("LEDGER_PUBLICATION_SNAPSHOT_BASELINE_UNKNOWN");
+        // Source ordering is meaningful only when both the published head and candidate retain an authoritative checkpoint.
+        if (current.sequenceEnd() == null || version.sequenceEnd() == null)
+            throw conflict("LEDGER_PUBLICATION_SNAPSHOT_BASELINE_UNKNOWN");
         List<SnapshotBaseline> found = jdbc.query("""
                 select source_system,source_as_of
                 from td_bulk_ledger_versions
@@ -153,7 +154,8 @@ public class BulkLedgerPublicationService {
         SnapshotBaseline baseline = found.getFirst();
         if (!current.sourceSystem().equals(baseline.sourceSystem()) || !job.sourceSystem().equals(baseline.sourceSystem()))
             throw conflict("LEDGER_PUBLICATION_SNAPSHOT_SOURCE_UNKNOWN");
-        if (version.sourceAsOf().isBefore(baseline.sourceAsOf())) throw conflict("LEDGER_PUBLICATION_SNAPSHOT_STALE");
+        if (version.sourceAsOf().isBefore(baseline.sourceAsOf()) || version.sequenceEnd() < current.sequenceEnd())
+            throw conflict("LEDGER_PUBLICATION_SNAPSHOT_STALE");
     }
 
     private Job lockJob(UUID importId, UUID tenantId) {

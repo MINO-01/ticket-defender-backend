@@ -79,8 +79,6 @@ class BulkLedgerPublicationMySqlTest {
         });
 
         UUID base = versionFor(second, fixture.performances().get(0));
-        // CSV v2 snapshots intentionally carry as-of rather than a feed cursor. The published-feed baseline below is synthetic.
-        jdbc.update("update td_bulk_ledger_versions set source_cursor='cursor-20',source_sequence_end=20 where id=?", base.toString());
         Prepared change = prepared(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, List.of(
                 scope(fixture, 0, base, 1, 1, "cursor-21", "cursor-20", 21L, 21L)));
         BulkLedgerPublicationService.Publication revision = publish(change, fixture);
@@ -146,35 +144,37 @@ class BulkLedgerPublicationMySqlTest {
                 scope(fixture, 0, null, 100, 0, "cursor-100", null, 100L, 100L)));
         BulkLedgerPublicationService.Publication initial = publish(latest, fixture);
         UUID base = versionFor(initial, fixture.performances().getFirst());
-        jdbc.update("update td_bulk_ledger_versions set source_cursor='cursor-100',source_sequence_end=100 where id=?", base.toString());
 
         Prepared change = prepared(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED, List.of(
-                scope(fixture, 0, base, 100, 1, "cursor-101", "cursor-100", 101L, 101L)));
+                scope(fixture, 0, base, 100, 1, "cursor-110", "cursor-100", 110L, 101L)));
         BulkLedgerPublicationService.Publication revision = publish(change, fixture);
         UUID currentHead = versionFor(revision, fixture.performances().getFirst());
 
         Prepared stale = prepared(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, List.of(
-                scope(fixture, 0, currentHead, 1, 0, "cursor-1", null, 1L, 1L)));
+                scope(fixture, 0, currentHead, 101, 0, "cursor-105", null, 105L, 105L)));
         assertThatThrownBy(() -> publish(stale, fixture)).hasMessageContaining("LEDGER_PUBLICATION_SNAPSHOT_STALE");
 
         assertThat(value("select version_id from td_bulk_ledger_publication_heads where tenant_id=? and performance_id=?",
                 fixture.tenant(), fixture.performances().getFirst())).isEqualTo(currentHead.toString());
         assertThat(count("select count(*) from td_bulk_ledger_publications where import_id=?", stale.job().getId())).isZero();
         assertThat(value("select status from td_bulk_import_jobs where id=?", stale.job().getId())).isEqualTo("READY_TO_PUBLISH");
+
+        Prepared latestSnapshot = prepared(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, List.of(
+                scope(fixture, 0, currentHead, 102, 0, "cursor-111", null, 111L, 111L)));
+        BulkLedgerPublicationService.Publication replacement = publish(latestSnapshot, fixture);
+        assertThat(versionFor(replacement, fixture.performances().getFirst())).isNotEqualTo(currentHead);
     }
 
     @Test
     void preparesCandidatesThenPublishesSnapshotAndChangeRevision() {
         Fixture fixture = fixture(1);
         BulkLedgerImportJob snapshot = readyForCandidate(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT,
-                null, null, null, null);
+                null, "cursor-10", null, 10L);
         stageForCandidate(snapshot, fixture, "snapshot-ticket", null, null, null);
         candidates.prepare(snapshot.getId());
         BulkLedgerPublicationService.Publication first = publications.publish(snapshot.getId(), fixture.tenant(), fixture.member(), "snapshot-publish-key");
         UUID baseline = versionFor(first, fixture.performances().getFirst());
 
-        // v2 FULL_SNAPSHOT has no feed checkpoint. This isolates only the authoritative provider checkpoint needed for CHANGE_FEED.
-        jdbc.update("update td_bulk_ledger_versions set source_cursor='cursor-10',source_sequence_end=10 where id=?", baseline.toString());
         BulkLedgerImportJob change = readyForCandidate(fixture, BulkLedgerImportJob.Mode.CHANGE_FEED,
                 "cursor-10", "cursor-11", 11L, 11L);
         stageForCandidate(change, fixture, "snapshot-ticket", "event-11", 11L, "UPSERT");
@@ -215,9 +215,9 @@ class BulkLedgerPublicationMySqlTest {
                 candidate.toString(), job.getId().toString(), fixture.tenant().toString(), job.getUploadObjectVersion(), job.getDeclaredObjectSha256());
         for (CandidateScope input : inputs) {
             String cursorStart = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.cursorStart();
-            String cursorEnd = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.cursorEnd();
+            String cursorEnd = input.cursorEnd();
             Long sequenceStart = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.sequenceStart();
-            Long sequenceEnd = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.sequenceEnd();
+            Long sequenceEnd = input.sequenceEnd();
             scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), fixture.tenant(), fixture.event(), fixture.performances().get(input.performanceIndex()),
                     mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? now.plusSeconds(input.generation()) : null, 1,
                     cursorStart, cursorEnd, sequenceStart, sequenceEnd));

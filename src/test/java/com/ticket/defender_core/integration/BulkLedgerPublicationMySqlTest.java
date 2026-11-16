@@ -159,14 +159,18 @@ class BulkLedgerPublicationMySqlTest {
         jdbc.update("insert into td_bulk_ledger_candidate_imports(id,import_id,tenant_id,source_object_version,source_object_sha256,status,preparation_attempt_count,preparation_fence_token,created_at,updated_at) values(?,?,?,?,?,'READY',0,0,utc_timestamp(6),utc_timestamp(6))",
                 candidate.toString(), job.getId().toString(), fixture.tenant().toString(), job.getUploadObjectVersion(), job.getDeclaredObjectSha256());
         for (CandidateScope input : inputs) {
+            String cursorStart = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.cursorStart();
+            String cursorEnd = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.cursorEnd();
+            Long sequenceStart = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.sequenceStart();
+            Long sequenceEnd = mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? null : input.sequenceEnd();
             scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), fixture.tenant(), fixture.event(), fixture.performances().get(input.performanceIndex()),
                     mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? now.plusSeconds(input.generation()) : null, 1,
-                    input.cursorStart(), input.cursorEnd(), input.sequenceStart(), input.sequenceEnd()));
+                    cursorStart, cursorEnd, sequenceStart, sequenceEnd));
             jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,base_version_id,expected_head_known,expected_head_version_id,source_system,source_batch_id,source_as_of,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?, 'READY',utc_timestamp(6))",
                     UUID.randomUUID().toString(), candidate.toString(), job.getId().toString(), fixture.tenant().toString(), fixture.event().toString(), fixture.performances().get(input.performanceIndex()).toString(),
                     input.generation(), input.revision(), input.expectedHead() == null ? null : input.expectedHead().toString(), input.expectedHead() == null ? null : input.expectedHead().toString(),
                     "SYNTHETIC", job.getSourceBatchId(), mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? java.sql.Timestamp.valueOf(now.plusSeconds(input.generation())) : null,
-                    input.cursorEnd(), input.sequenceEnd());
+                    cursorEnd, sequenceEnd);
         }
         return new Prepared(job, candidate);
     }

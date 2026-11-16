@@ -1,4 +1,19 @@
 -- BL-05 additive atomic publication. Candidate rows prepared before expected-head capture are intentionally not publishable.
+-- BL-01 predates v2 source checkpoints. Keep its v1 shapes while admitting the v2 FULL_SNAPSHOT checkpoint.
+ALTER TABLE td_bulk_import_scopes DROP CHECK chk_td_bulk_import_scope_values;
+ALTER TABLE td_bulk_import_scopes ADD CONSTRAINT chk_td_bulk_import_scope_values CHECK (
+    declared_row_count >= 0
+    AND (
+        (scope_as_of IS NOT NULL AND cursor_start IS NULL
+            AND ((cursor_end IS NULL AND source_sequence_start IS NULL AND source_sequence_end IS NULL)
+              OR (cursor_end IS NOT NULL AND source_sequence_start IS NULL AND source_sequence_end IS NOT NULL AND source_sequence_end >= 0)))
+        OR (scope_as_of IS NULL AND cursor_start IS NOT NULL AND cursor_end IS NOT NULL
+            AND ((source_sequence_start IS NULL AND source_sequence_end IS NULL)
+              OR (source_sequence_start IS NOT NULL AND source_sequence_end IS NOT NULL
+                  AND source_sequence_start >= 0 AND source_sequence_end >= source_sequence_start)))
+    )
+);
+
 ALTER TABLE td_bulk_import_jobs DROP CHECK chk_td_bulk_import_job_values;
 ALTER TABLE td_bulk_import_jobs ADD CONSTRAINT chk_td_bulk_import_job_values CHECK (
     mode IN ('FULL_SNAPSHOT', 'CHANGE_FEED') AND format = 'CSV'

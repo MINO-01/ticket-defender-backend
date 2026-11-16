@@ -170,7 +170,8 @@ class BulkLedgerPublicationMySqlTest {
                     cursorStart, cursorEnd, sequenceStart, sequenceEnd));
             jdbc.update("insert into td_bulk_ledger_versions(id,candidate_import_id,import_id,tenant_id,event_id,performance_id,generation_no,revision_no,base_version_id,expected_head_known,expected_head_version_id,source_system,source_batch_id,source_as_of,source_cursor,source_sequence_end,status,created_at) values(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?, 'READY',utc_timestamp(6))",
                     UUID.randomUUID().toString(), candidate.toString(), job.getId().toString(), fixture.tenant().toString(), fixture.event().toString(), fixture.performances().get(input.performanceIndex()).toString(),
-                    input.generation(), input.revision(), input.expectedHead() == null ? null : input.expectedHead().toString(), input.expectedHead() == null ? null : input.expectedHead().toString(),
+                    input.generation(), input.revision(), mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT || input.expectedHead() == null ? null : input.expectedHead().toString(),
+                    input.expectedHead() == null ? null : input.expectedHead().toString(),
                     "SYNTHETIC", job.getSourceBatchId(), mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? java.sql.Timestamp.valueOf(now.plusSeconds(input.generation())) : null,
                     cursorEnd, sequenceEnd);
         }

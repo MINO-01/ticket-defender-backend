@@ -63,7 +63,11 @@ public class BulkLedgerImportService {
 
     /** Canonical scope item. Length-prefixed digest components prevent cursor-boundary ambiguity. */
     public record ScopeDigest(UUID eventId, UUID performanceId, String scopeAsOf, String cursorStart, String cursorEnd,
-                              long declaredRows) { }
+                              Long sourceSequenceStart, Long sourceSequenceEnd, long declaredRows) {
+        public ScopeDigest(UUID eventId, UUID performanceId, String scopeAsOf, String cursorStart, String cursorEnd, long declaredRows) {
+            this(eventId, performanceId, scopeAsOf, cursorStart, cursorEnd, null, null, declaredRows);
+        }
+    }
 
     public static String requestDigest(String schemaVersion, String sourceSystem, String sourceBatchId, String mode,
             String format, String sha256, long bytes, long rows, boolean completeSnapshot, List<ScopeDigest> scopes) {
@@ -71,9 +75,13 @@ public class BulkLedgerImportService {
                 sha256, Long.toString(bytes), Long.toString(rows), Boolean.toString(completeSnapshot)));
         scopes.stream().sorted(Comparator.comparing((ScopeDigest scope) -> scope.eventId().toString())
                         .thenComparing(scope -> scope.performanceId().toString()))
-                .forEach(scope -> canonical.addAll(List.of(scope.eventId().toString(), scope.performanceId().toString(),
-                        String.valueOf(scope.scopeAsOf()), String.valueOf(scope.cursorStart()), String.valueOf(scope.cursorEnd()),
-                        Long.toString(scope.declaredRows()))));
+                .forEach(scope -> {
+                    canonical.addAll(List.of(scope.eventId().toString(), scope.performanceId().toString(),
+                            String.valueOf(scope.scopeAsOf()), String.valueOf(scope.cursorStart()), String.valueOf(scope.cursorEnd())));
+                    // BL-01/v1 digests are persisted idempotency keys. Do not append v2-only null fields to their canonical form.
+                    if ("v2".equals(schemaVersion)) canonical.addAll(List.of(String.valueOf(scope.sourceSequenceStart()), String.valueOf(scope.sourceSequenceEnd())));
+                    canonical.add(Long.toString(scope.declaredRows()));
+                });
         return CandidatePipelineSupport.sha256(canonical.toArray(String[]::new));
     }
 
@@ -99,7 +107,8 @@ public class BulkLedgerImportService {
         try {
             jobs.saveAndFlush(job);
             scopes.saveAll(request.scopes().stream().map(scope -> new BulkLedgerImportScope(job.getId(), actor.tenantId(),
-                    scope.eventId(), scope.performanceId(), scope.scopeAsOf(), scope.rows(), scope.cursorStart(), scope.cursorEnd())).toList());
+                    scope.eventId(), scope.performanceId(), scope.scopeAsOf(), scope.rows(), scope.cursorStart(), scope.cursorEnd(),
+                    scope.sourceSequenceStart(), scope.sourceSequenceEnd())).toList());
             scopes.flush();
         } catch (DataIntegrityViolationException concurrent) {
             // The two UNIQUE indexes are the final cross-node protection. Do not turn a collision into a clean job.
@@ -261,7 +270,7 @@ public class BulkLedgerImportService {
         if (request == null || request.declaredFileBytes() == null || request.declaredRowCount() == null || request.completeSnapshot() == null || request.scopes() == null || request.scopes().isEmpty())
             throw CandidatePipelineSupport.invalid();
         String schema = CandidatePipelineSupport.bounded(request.schemaVersion(), 32);
-        if (!"v1".equals(schema)) throw CandidatePipelineSupport.invalid();
+        if (!"v1".equals(schema) && !"v2".equals(schema)) throw CandidatePipelineSupport.invalid();
         String system = CandidatePipelineSupport.bounded(request.sourceSystem(), 64);
         String batch = CandidatePipelineSupport.bounded(request.sourceBatchId(), 128);
         BulkLedgerImportJob.Mode mode = enumValue(BulkLedgerImportJob.Mode.class, request.mode());
@@ -276,16 +285,25 @@ public class BulkLedgerImportService {
                 throw CandidatePipelineSupport.invalid();
             LocalDateTime asOf = scope.scopeAsOf() == null ? null : scope.scopeAsOf().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
             String start = optional(scope.cursorStart(), 256); String end = optional(scope.cursorEnd(), 256);
-            if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT && (asOf == null || start != null || end != null)) throw CandidatePipelineSupport.invalid();
-            if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED && (asOf != null || start == null || end == null)) throw CandidatePipelineSupport.invalid();
+            Long sequenceStart = scope.sourceSequenceStart(), sequenceEnd = scope.sourceSequenceEnd();
+            if ("v1".equals(schema)) {
+                if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT && (asOf == null || start != null || end != null || sequenceStart != null || sequenceEnd != null)) throw CandidatePipelineSupport.invalid();
+                if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED && (asOf != null || start == null || end == null || sequenceStart != null || sequenceEnd != null)) throw CandidatePipelineSupport.invalid();
+            } else if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT) {
+                if (asOf == null || start != null || end == null || sequenceStart != null || sequenceEnd == null || sequenceEnd < 0) throw CandidatePipelineSupport.invalid();
+            } else {
+                if (asOf != null || start == null || end == null || sequenceStart == null || sequenceEnd == null
+                        || sequenceStart < 0 || sequenceEnd < sequenceStart || scope.declaredRowCount() == 0
+                        || sequenceEnd - sequenceStart + 1 != scope.declaredRowCount()) throw CandidatePipelineSupport.invalid();
+            }
             if (!unique.add(scope.eventId() + ":" + scope.performanceId())) throw CandidatePipelineSupport.invalid();
             try { total = Math.addExact(total, scope.declaredRowCount()); } catch (ArithmeticException overflow) { throw CandidatePipelineSupport.invalid(); }
-            scopes.add(new NormalizedScope(scope.eventId(), scope.performanceId(), asOf, scope.declaredRowCount(), start, end));
+            scopes.add(new NormalizedScope(scope.eventId(), scope.performanceId(), asOf, scope.declaredRowCount(), start, end, sequenceStart, sequenceEnd));
         }
         if (total != request.declaredRowCount()) throw CandidatePipelineSupport.invalid();
         List<ScopeDigest> digestScopes = scopes.stream().map(scope -> new ScopeDigest(scope.eventId(), scope.performanceId(),
                 scope.scopeAsOf() == null ? null : scope.scopeAsOf().atOffset(ZoneOffset.UTC).toString(),
-                scope.cursorStart(), scope.cursorEnd(), scope.rows())).toList();
+                scope.cursorStart(), scope.cursorEnd(), scope.sourceSequenceStart(), scope.sourceSequenceEnd(), scope.rows())).toList();
         return new Normalized(schema, system, batch, mode, format, sha, request.declaredFileBytes(), request.declaredRowCount(), request.completeSnapshot(), scopes,
                 requestDigest(schema, system, batch, mode.name(), format.name(), sha, request.declaredFileBytes(), request.declaredRowCount(), request.completeSnapshot(), digestScopes));
     }
@@ -305,7 +323,8 @@ public class BulkLedgerImportService {
     private record Normalized(String schemaVersion, String sourceSystem, String sourceBatchId, BulkLedgerImportJob.Mode mode,
                               BulkLedgerImportJob.Format format, String sha256, long bytes, long rows, boolean completeSnapshot,
                               List<NormalizedScope> scopes, String requestDigest) { }
-    private record NormalizedScope(UUID eventId, UUID performanceId, LocalDateTime scopeAsOf, long rows, String cursorStart, String cursorEnd) { }
+    private record NormalizedScope(UUID eventId, UUID performanceId, LocalDateTime scopeAsOf, long rows, String cursorStart, String cursorEnd,
+                                   Long sourceSequenceStart, Long sourceSequenceEnd) { }
     private record AuthorizedScope(UUID tenantId, UUID membershipId) { }
     private record TenantScope(UUID tenantId, UUID membershipId, Set<UUID> eventIds) { }
 }

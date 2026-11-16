@@ -3,7 +3,7 @@ name: Backend CI
 on:
   pull_request:
   push:
-    branches: [main, 'feat/#38-evidence-integrity-gate', 'feat/#40-evidence-preservation-gate', 'feat/#42-approval-request-binding', 'feat/#44-approval-review-decision', 'feat/#46-official-pdf-issuance']
+    branches: [main, 'feat/#38-evidence-integrity-gate', 'feat/#40-evidence-preservation-gate', 'feat/#42-approval-request-binding', 'feat/#44-approval-review-decision', 'feat/#46-official-pdf-issuance', 'feat/#90-ledger-version-preparation']
   schedule:
     - cron: '23 3 * * 1'
   workflow_dispatch:
@@ -130,6 +130,7 @@ jobs:
           # Track2ListingAnalysisConcurrentMySqlTest / check_junit_results.py track2-listing-concurrency
           # Track2CandidatePipelineMigrationMySqlTest / Track2CandidatePipelineSchemaValidateMySqlTest
           # Track2CandidatePipelineHttpMySqlTest / Track2CandidatePipelineConcurrentMySqlTest / check_junit_results.py track2-candidate-concurrency
+          # BulkLedgerCandidatePreparationMySqlTest / check_junit_results.py bulk-ledger-candidate-mysql
           bash .github/scripts/run_ci_suite.sh '${{ needs.change-plan.outputs.mysql_suite }}'
 
   mysql8-track1-legacy:

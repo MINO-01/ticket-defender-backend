@@ -31,12 +31,22 @@ public class BulkLedgerImportScope {
     @Column(name = "declared_row_count", nullable = false) private long declaredRowCount;
     @Column(name = "cursor_start", length = 256) private String cursorStart;
     @Column(name = "cursor_end", length = 256) private String cursorEnd;
+    @Column(name = "source_sequence_start") private Long sourceSequenceStart;
+    @Column(name = "source_sequence_end") private Long sourceSequenceEnd;
 
     public BulkLedgerImportScope(UUID jobId, UUID tenantId, UUID eventId, UUID performanceId, LocalDateTime scopeAsOf,
             long declaredRowCount, String cursorStart, String cursorEnd) {
+        this(jobId, tenantId, eventId, performanceId, scopeAsOf, declaredRowCount, cursorStart, cursorEnd, null, null);
+    }
+    public BulkLedgerImportScope(UUID jobId, UUID tenantId, UUID eventId, UUID performanceId, LocalDateTime scopeAsOf,
+            long declaredRowCount, String cursorStart, String cursorEnd, Long sourceSequenceStart, Long sourceSequenceEnd) {
         id = UUID.randomUUID(); this.jobId = Objects.requireNonNull(jobId); this.tenantId = Objects.requireNonNull(tenantId);
         this.eventId = Objects.requireNonNull(eventId); this.performanceId = Objects.requireNonNull(performanceId);
         this.scopeAsOf = scopeAsOf; if (declaredRowCount < 0) throw new IllegalArgumentException("negative row count");
         this.declaredRowCount = declaredRowCount; this.cursorStart = cursorStart; this.cursorEnd = cursorEnd;
+        if ((sourceSequenceStart != null && sourceSequenceEnd == null) || (sourceSequenceEnd != null && sourceSequenceEnd < 0)
+                || (sourceSequenceStart != null && (sourceSequenceStart < 0 || sourceSequenceEnd < sourceSequenceStart)))
+            throw new IllegalArgumentException("invalid source sequence range");
+        this.sourceSequenceStart = sourceSequenceStart; this.sourceSequenceEnd = sourceSequenceEnd;
     }
 }

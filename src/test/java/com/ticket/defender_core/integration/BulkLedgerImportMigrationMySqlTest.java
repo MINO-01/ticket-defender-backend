@@ -24,14 +24,18 @@ class BulkLedgerImportMigrationMySqlTest {
         source.setDriverClassName("com.mysql.cj.jdbc.Driver"); JdbcTemplate jdbc = new JdbcTemplate(source);
         try (Connection connection = source.getConnection()) {
             jdbc.execute("set foreign_key_checks=0");
+            jdbc.execute("drop table if exists td_bulk_ledger_publication_heads"); jdbc.execute("drop table if exists td_bulk_ledger_change_events"); jdbc.execute("drop table if exists td_bulk_ledger_ticket_versions"); jdbc.execute("drop table if exists td_bulk_ledger_versions"); jdbc.execute("drop table if exists td_bulk_ledger_candidate_imports");
             jdbc.execute("drop table if exists td_bulk_import_staging_rows"); jdbc.execute("drop table if exists td_bulk_import_errors"); jdbc.execute("drop table if exists td_bulk_import_scopes"); jdbc.execute("drop table if exists td_bulk_import_jobs");
             jdbc.execute("set foreign_key_checks=1");
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl02-staging-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl03-candidate-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl04-candidate-recovery-migration.sql"));
         }
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "tenant_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "created_by_membership_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_scopes", "performance_id");
+        assertAsciiBinaryUuidColumn(jdbc, "td_bulk_ledger_versions", "performance_id");
         String tenant = UUID.randomUUID().toString(), event = UUID.randomUUID().toString(), member = UUID.randomUUID().toString(), performance = UUID.randomUUID().toString();
         jdbc.update("insert into tenants(id,name,status) values(?,?,'ACTIVE')", tenant, "synthetic bulk tenant");
         jdbc.update("insert into events(id,tenant_id,external_event_ref,name,status,public_intake_enabled) values(?,?,?,?,'ACTIVE',b'0')", event, tenant, "bulk-" + event, "synthetic bulk event");

@@ -31,11 +31,21 @@ public final class BulkLedgerCsvStagingParser {
     private static final int MAX_RECORD_CHARS = 8 * 1024;
     private static final Set<String> COMMON = Set.of("event_id", "performance_id", "reservation_reference",
             "ticket_reference", "account_reference", "purchased_at", "ticket_quantity");
+    private static final Set<String> V2 = Set.of("quantity_unit", "ticket_status", "source_version");
     private static final Set<String> CHANGE = Set.of("source_event_id", "source_changed_at", "change_action");
 
     public record ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                             String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
-                            int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction, String rowDigest) { }
+                            int ticketQuantity, String quantityUnit, String ticketStatus, String sourceVersion,
+                            String sourceEventId, LocalDateTime sourceChangedAt, Long sourceSequence,
+                            String changeAction, String rowDigest) {
+        public ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
+                         String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
+                         int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction, String rowDigest) {
+            this(rowNumber, eventId, performanceId, reservationToken, ticketToken, accountToken, keyVersion, purchasedAt,
+                    ticketQuantity, null, null, null, sourceEventId, sourceChangedAt, null, changeAction, rowDigest);
+        }
+    }
     public record Result(long rows) { }
     @FunctionalInterface public interface RowConsumer { void accept(ParsedRow row); }
 
@@ -43,6 +53,14 @@ public final class BulkLedgerCsvStagingParser {
                         List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
                         TenantPurposeReferenceHasher ticketHasher, TenantPurposeReferenceHasher accountHasher,
                         RowConsumer consumer) {
+        return parse(input, "v1", mode, tenantId, scopes, reservationHasher, ticketHasher, accountHasher, consumer);
+    }
+
+    public Result parse(InputStream input, String schemaVersion, BulkLedgerImportJob.Mode mode, UUID tenantId,
+                        List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
+                        TenantPurposeReferenceHasher ticketHasher, TenantPurposeReferenceHasher accountHasher,
+                        RowConsumer consumer) {
+        boolean v2 = "v2".equals(schemaVersion);
         Map<String, BulkLedgerImportScope> scopeByKey = new HashMap<>();
         for (BulkLedgerImportScope scope : scopes) scopeByKey.put(key(scope.getEventId(), scope.getPerformanceId()), scope);
         Map<String, Long> scopeRows = new HashMap<>();
@@ -53,7 +71,7 @@ public final class BulkLedgerCsvStagingParser {
             var iterator = parser.iterator();
             if (!iterator.hasNext()) throw failure(1, "BULK_CSV_HEADER_REQUIRED");
             CSVRecord header = iterator.next();
-            Map<String, Integer> indexes = headers(header, mode);
+            Map<String, Integer> indexes = headers(header, mode, v2);
             long rows = 0;
             while (iterator.hasNext()) {
                 // Commons CSV record numbers include the header record, which matches the source line convention
@@ -70,10 +88,21 @@ public final class BulkLedgerCsvStagingParser {
                 String account = optional(record, indexes, "account_reference", rowNumber);
                 LocalDateTime purchasedAt = timestamp(required(record, indexes, "purchased_at", rowNumber), rowNumber, "BULK_CSV_PURCHASED_AT_INVALID");
                 int quantity = positive(required(record, indexes, "ticket_quantity", rowNumber), rowNumber);
-                String sourceEventId = null; LocalDateTime sourceChangedAt = null; String changeAction = null;
+                String quantityUnit = null, ticketStatus = null, sourceVersion = null;
+                if (v2) {
+                    quantityUnit = required(record, indexes, "quantity_unit", rowNumber);
+                    ticketStatus = required(record, indexes, "ticket_status", rowNumber);
+                    sourceVersion = required(record, indexes, "source_version", rowNumber);
+                    if (!Set.of("TICKET", "ORDER_LINE").contains(quantityUnit)
+                            || !Set.of("ACTIVE", "CANCELLED", "REFUNDED").contains(ticketStatus)
+                            || ("TICKET".equals(quantityUnit) && quantity != 1))
+                        throw failure(rowNumber, "BULK_CSV_LEDGER_FACT_INVALID");
+                }
+                String sourceEventId = null; LocalDateTime sourceChangedAt = null; Long sourceSequence = null; String changeAction = null;
                 if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED) {
                     sourceEventId = required(record, indexes, "source_event_id", rowNumber);
                     sourceChangedAt = timestamp(required(record, indexes, "source_changed_at", rowNumber), rowNumber, "BULK_CSV_CHANGED_AT_INVALID");
+                    if (v2) sourceSequence = nonNegative(required(record, indexes, "source_sequence", rowNumber), rowNumber, "BULK_CSV_SOURCE_SEQUENCE_INVALID");
                     changeAction = required(record, indexes, "change_action", rowNumber);
                     if (!Set.of("UPSERT", "REMOVE", "CANCEL", "REFUND").contains(changeAction)) throw failure(rowNumber, "BULK_CSV_CHANGE_ACTION_INVALID");
                 }
@@ -82,11 +111,17 @@ public final class BulkLedgerCsvStagingParser {
                 try { rows = Math.addExact(rows, 1); } catch (ArithmeticException overflow) { throw failure(rowNumber, "BULK_CSV_ROW_COUNT_OVERFLOW"); }
                 String reservationToken = reservationHasher.hash(tenantId, reservation), ticketToken = ticketHasher.hash(tenantId, ticket);
                 String accountToken = account == null ? null : accountHasher.hash(tenantId, account);
-                String digest = CandidatePipelineSupport.sha256(event.toString(), performance.toString(), reservationToken, ticketToken,
-                        String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
-                        String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(changeAction));
+                String digest = v2
+                        ? CandidatePipelineSupport.sha256(event.toString(), performance.toString(), reservationToken, ticketToken,
+                                String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
+                                String.valueOf(quantityUnit), String.valueOf(ticketStatus), String.valueOf(sourceVersion),
+                                String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(sourceSequence), String.valueOf(changeAction))
+                        : CandidatePipelineSupport.sha256(event.toString(), performance.toString(), reservationToken, ticketToken,
+                                String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
+                                String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(changeAction));
                 consumer.accept(new ParsedRow(rowNumber, event, performance, reservationToken, ticketToken, accountToken,
-                        reservationHasher.keyVersion(), purchasedAt, quantity, sourceEventId, sourceChangedAt, changeAction, digest));
+                        reservationHasher.keyVersion(), purchasedAt, quantity, quantityUnit, ticketStatus, sourceVersion,
+                        sourceEventId, sourceChangedAt, sourceSequence, changeAction, digest));
             }
             for (BulkLedgerImportScope scope : scopes)
                 if (scopeRows.getOrDefault(key(scope.getEventId(), scope.getPerformanceId()), 0L) != scope.getDeclaredRowCount())
@@ -102,9 +137,13 @@ public final class BulkLedgerCsvStagingParser {
         if (!(a == 0xef && b == 0xbb && c == 0xbf)) buffered.reset();
         return buffered;
     }
-    private static Map<String, Integer> headers(CSVRecord header, BulkLedgerImportJob.Mode mode) {
+    private static Map<String, Integer> headers(CSVRecord header, BulkLedgerImportJob.Mode mode, boolean v2) {
         Map<String, Integer> result = new HashMap<>(); Set<String> required = new HashSet<>(COMMON);
-        if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED) required.addAll(CHANGE);
+        if (v2) required.addAll(V2);
+        if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED) {
+            required.addAll(CHANGE);
+            if (v2) required.add("source_sequence");
+        }
         for (int index = 0; index < header.size(); index++) {
             String value = header.get(index);
             if (!required.contains(value) || result.putIfAbsent(value, index) != null) throw failure(1, "BULK_CSV_HEADER_INVALID");
@@ -122,6 +161,7 @@ public final class BulkLedgerCsvStagingParser {
     private static UUID uuid(String value, long row, String code) { try { return UUID.fromString(value); } catch (IllegalArgumentException invalid) { throw failure(row, code); } }
     private static LocalDateTime timestamp(String value, long row, String code) { try { return OffsetDateTime.parse(value).withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(); } catch (RuntimeException invalid) { throw failure(row, code); } }
     private static int positive(String value, long row) { try { int result = Integer.parseInt(value); if (result > 0) return result; } catch (NumberFormatException ignored) { } throw failure(row, "BULK_CSV_QUANTITY_INVALID"); }
+    private static long nonNegative(String value, long row, String code) { try { long result = Long.parseLong(value); if (result >= 0) return result; } catch (NumberFormatException ignored) { } throw failure(row, code); }
     private static String key(UUID event, UUID performance) { return event + ":" + performance; }
     private static BulkLedgerCsvValidationException failure(long row, String code) { return new BulkLedgerCsvValidationException(row, code); }
 }

@@ -23,8 +23,8 @@ public class BulkLedgerStagingWriter {
             INSERT INTO td_bulk_import_staging_rows
             (id, import_id, tenant_id, event_id, performance_id, source_row_no, reservation_reference_hmac,
              ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
-             source_event_id, source_changed_at, change_action, row_digest)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             quantity_unit, ticket_status, source_version, source_event_id, source_changed_at, source_sequence, change_action, row_digest)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -84,10 +84,12 @@ public class BulkLedgerStagingWriter {
                 statement.setString(7, row.reservationToken()); statement.setString(8, row.ticketToken());
                 statement.setString(9, row.accountToken()); statement.setString(10, row.keyVersion());
                 statement.setTimestamp(11, Timestamp.valueOf(row.purchasedAt())); statement.setInt(12, row.ticketQuantity());
-                statement.setString(13, row.sourceEventId());
-                if (row.sourceChangedAt() == null) statement.setNull(14, java.sql.Types.TIMESTAMP); else statement.setTimestamp(14, Timestamp.valueOf(row.sourceChangedAt()));
-                statement.setString(15, row.changeAction());
-                statement.setString(16, row.rowDigest());
+                statement.setString(13, row.quantityUnit()); statement.setString(14, row.ticketStatus()); statement.setString(15, row.sourceVersion());
+                statement.setString(16, row.sourceEventId());
+                if (row.sourceChangedAt() == null) statement.setNull(17, java.sql.Types.TIMESTAMP); else statement.setTimestamp(17, Timestamp.valueOf(row.sourceChangedAt()));
+                if (row.sourceSequence() == null) statement.setNull(18, java.sql.Types.BIGINT); else statement.setLong(18, row.sourceSequence());
+                statement.setString(19, row.changeAction());
+                statement.setString(20, row.rowDigest());
             }
             @Override public int getBatchSize() { return inserts.size(); }
         });

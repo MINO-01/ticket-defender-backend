@@ -151,7 +151,7 @@ class BulkLedgerPublicationMySqlTest {
     }
 
     private Prepared prepared(Fixture fixture, BulkLedgerImportJob.Mode mode, List<CandidateScope> inputs) {
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC).withNano(0);
         BulkLedgerImportJob job = new BulkLedgerImportJob(fixture.tenant(), fixture.member(), UUID.randomUUID().toString().replace("-", "") + "a".repeat(32), "b".repeat(64), "v2", "SYNTHETIC", "batch-" + UUID.randomUUID(), mode,
                 BulkLedgerImportJob.Format.CSV, "c".repeat(64), 1, inputs.size(), mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT, now);
         job.beginUpload("d".repeat(64), now.plusMinutes(1), now); job.completeUpload("object-" + UUID.randomUUID(), now);

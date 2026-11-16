@@ -75,10 +75,13 @@ public class BulkLedgerImportService {
                 sha256, Long.toString(bytes), Long.toString(rows), Boolean.toString(completeSnapshot)));
         scopes.stream().sorted(Comparator.comparing((ScopeDigest scope) -> scope.eventId().toString())
                         .thenComparing(scope -> scope.performanceId().toString()))
-                .forEach(scope -> canonical.addAll(List.of(scope.eventId().toString(), scope.performanceId().toString(),
-                        String.valueOf(scope.scopeAsOf()), String.valueOf(scope.cursorStart()), String.valueOf(scope.cursorEnd()),
-                        String.valueOf(scope.sourceSequenceStart()), String.valueOf(scope.sourceSequenceEnd()),
-                        Long.toString(scope.declaredRows()))));
+                .forEach(scope -> {
+                    canonical.addAll(List.of(scope.eventId().toString(), scope.performanceId().toString(),
+                            String.valueOf(scope.scopeAsOf()), String.valueOf(scope.cursorStart()), String.valueOf(scope.cursorEnd())));
+                    // BL-01/v1 digests are persisted idempotency keys. Do not append v2-only null fields to their canonical form.
+                    if ("v2".equals(schemaVersion)) canonical.addAll(List.of(String.valueOf(scope.sourceSequenceStart()), String.valueOf(scope.sourceSequenceEnd())));
+                    canonical.add(Long.toString(scope.declaredRows()));
+                });
         return CandidatePipelineSupport.sha256(canonical.toArray(String[]::new));
     }
 

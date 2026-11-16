@@ -91,6 +91,9 @@ public class BulkLedgerImportWorker {
         jobs.findTop10ByStatusInOrderByUpdatedAtAsc(List.copyOf(EnumSet.of(BulkLedgerImportJob.Status.UPLOADED,
                 BulkLedgerImportJob.Status.FAILED_RETRYABLE, BulkLedgerImportJob.Status.VALIDATING,
                 BulkLedgerImportJob.Status.STAGING))).forEach(job -> process(job.getId()));
+        // Staging already released its fence at READY_TO_PUBLISH. Candidate preparation has its own DB lease and never reuses it.
+        jobs.findTop10CandidatePreparationPending()
+                .forEach(job -> candidates.prepare(job.getId()));
     }
 
     private Lease acquire(UUID importId) {

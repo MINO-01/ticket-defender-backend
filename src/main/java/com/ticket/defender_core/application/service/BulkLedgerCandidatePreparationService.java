@@ -169,7 +169,10 @@ public class BulkLedgerCandidatePreparationService {
                 });
     }
     private void reject(UUID candidateId, String code) {
-        transactions.executeWithoutResult(ignored -> jdbc.update("update td_bulk_ledger_candidate_imports set status='REJECTED', failure_code=?, updated_at=utc_timestamp(6) where id=? and status='PREPARING'", code, candidateId.toString()));
+        transactions.executeWithoutResult(ignored -> {
+            jdbc.update("update td_bulk_ledger_candidate_imports set status='REJECTED', failure_code=?, updated_at=utc_timestamp(6) where id=? and status='PREPARING'", code, candidateId.toString());
+            jdbc.update("update td_bulk_ledger_versions set status='REJECTED' where candidate_import_id=? and status in ('PREPARING','READY')", candidateId.toString());
+        });
     }
     private record Version(UUID id, long generation, long revision) { }
     private record Published(UUID id, long generation, long revision, String cursor, Long sequenceEnd, String sourceSystem) { }

@@ -120,8 +120,11 @@ class BulkLedgerCandidatePreparationMySqlTest {
         job.beginUpload("d".repeat(64), now.plusMinutes(1), now); job.completeUpload("version", now); job.startValidation("candidate-test", now.plusMinutes(1), now); job.beginStaging(job.getFenceToken(), now); job.readyToPublish(job.getFenceToken(), rows, rows, 0, now);
         jobs.saveAndFlush(job);
         scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), f.tenant(), f.event(), f.performance(),
-                mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? now : null, rows, cursorStart, cursorEnd,
-                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? sequenceEnd - rows + 1 : null, sequenceEnd));
+                mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? now : null, rows,
+                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? cursorStart : null,
+                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? cursorEnd : null,
+                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? sequenceEnd - rows + 1 : null,
+                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? sequenceEnd : null));
         return job;
     }
     private void stage(BulkLedgerImportJob job, Fixture f, String ticket, String eventId, Long sequence, String status) {

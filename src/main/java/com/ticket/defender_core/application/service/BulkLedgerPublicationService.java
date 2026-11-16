@@ -126,8 +126,9 @@ public class BulkLedgerPublicationService {
             throw conflict("LEDGER_PUBLICATION_SOURCE_MISMATCH");
         if ("FULL_SNAPSHOT".equals(job.mode())) {
             if (version.baseVersionId() != null || version.revision() != 0 || version.sourceAsOf() == null
-                    || !version.sourceAsOf().equals(scope.asOf()) || (current != null && current.sourceAsOf() != null && version.sourceAsOf().isBefore(current.sourceAsOf())))
+                    || !version.sourceAsOf().equals(scope.asOf()))
                 throw conflict("LEDGER_PUBLICATION_SNAPSHOT_STALE");
+            if (current != null) validateSnapshotBaseline(job, scope, version, current);
         } else {
             if (current == null || version.baseVersionId() == null || !current.id().equals(version.baseVersionId())
                     || version.generation() != current.generation() || version.revision() != current.revision() + 1
@@ -135,6 +136,24 @@ public class BulkLedgerPublicationService {
                     || current.sequenceEnd() == null || scope.sequenceStart() == null || scope.sequenceStart() != current.sequenceEnd() + 1)
                 throw conflict("LEDGER_PUBLICATION_CHANGE_BASELINE_STALE");
         }
+    }
+
+    /** A change revision has no snapshot as-of of its own, so use the published revision-zero ancestor as its provenance. */
+    private void validateSnapshotBaseline(Job job, Scope scope, Version version, Head current) {
+        // A published change revision must retain its source sequence checkpoint. Without it, its lineage is not verifiable.
+        if (current.revision() > 0 && current.sequenceEnd() == null) throw conflict("LEDGER_PUBLICATION_SNAPSHOT_BASELINE_UNKNOWN");
+        List<SnapshotBaseline> found = jdbc.query("""
+                select source_system,source_as_of
+                from td_bulk_ledger_versions
+                where tenant_id=? and performance_id=? and generation_no=? and revision_no=0 and status='PUBLISHED'
+                for update
+                """, (rs, n) -> new SnapshotBaseline(rs.getString(1), local(rs.getTimestamp(2))),
+                job.tenantId().toString(), scope.performanceId().toString(), current.generation());
+        if (found.size() != 1 || found.getFirst().sourceAsOf() == null) throw conflict("LEDGER_PUBLICATION_SNAPSHOT_BASELINE_UNKNOWN");
+        SnapshotBaseline baseline = found.getFirst();
+        if (!current.sourceSystem().equals(baseline.sourceSystem()) || !job.sourceSystem().equals(baseline.sourceSystem()))
+            throw conflict("LEDGER_PUBLICATION_SNAPSHOT_SOURCE_UNKNOWN");
+        if (version.sourceAsOf().isBefore(baseline.sourceAsOf())) throw conflict("LEDGER_PUBLICATION_SNAPSHOT_STALE");
     }
 
     private Job lockJob(UUID importId, UUID tenantId) {
@@ -219,6 +238,7 @@ public class BulkLedgerPublicationService {
     private record Scope(UUID eventId, UUID performanceId, LocalDateTime asOf, String cursorStart, String cursorEnd, Long sequenceStart, Long sequenceEnd) { }
     private record Version(UUID id, UUID importId, UUID tenantId, UUID eventId, UUID performanceId, long generation, long revision, UUID baseVersionId, boolean expectedHeadKnown, UUID expectedHeadVersionId, String sourceSystem, String sourceBatchId, LocalDateTime sourceAsOf, String cursor, Long sequenceEnd, String status) { }
     private record Head(UUID id, long generation, long revision, String sourceSystem, LocalDateTime sourceAsOf, String cursor, Long sequenceEnd) { }
+    private record SnapshotBaseline(String sourceSystem, LocalDateTime sourceAsOf) { }
     private record PublicationRow(UUID id, UUID importId, UUID tenantId, LocalDateTime publishedAt) { }
     private record Source(String system, String batch) { }
 }

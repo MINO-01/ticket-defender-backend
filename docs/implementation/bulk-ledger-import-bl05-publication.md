@@ -8,7 +8,7 @@
 
 - import는 v2 `READY_TO_PUBLISH`, candidate와 모든 version은 `READY`다.
 - candidate가 고정한 object version/SHA-256, scope, 출처 checkpoint, 기대 head가 import와 현재 DB에 일치한다.
-- FULL_SNAPSHOT은 revision 0 및 기준시각 역행이 없고, CHANGE_FEED는 현재 공개 base, generation/revision, cursor와 source sequence 연속성이 일치한다.
+- FULL_SNAPSHOT은 revision 0이며, 현재 head가 CHANGE_FEED여도 그 generation의 공개 revision 0 기준시각과 같은 출처를 잠가 역행을 검사한다. CHANGE_FEED checkpoint의 sequence 근거 또는 revision 0 기준시각/출처가 없으면 서로 다른 출처를 추측해 비교하지 않고 공개를 차단한다. CHANGE_FEED는 현재 공개 base, generation/revision, cursor와 source sequence 연속성이 일치한다.
 
 검증이 모두 끝난 뒤에만 head, version/import/candidate `PUBLISHED`, 불변 발행 이력 및 scope별 `LEDGER_PUBLISHED`/`PENDING` outbox를 같이 저장한다. outbox는 publication/version으로 계산한 불변 deduplication key와 delivery attempt 수를 가지며 분석 실행이 아니고 소비자도 이번 범위에 없다. 어느 INSERT/UPDATE든 실패하면 트랜잭션 전체가 롤백된다. 같은 import 또는 같은 requester·Idempotency-Key 재요청은 이미 확정된 발행 이력을 반환한다.
 

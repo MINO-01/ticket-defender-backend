@@ -7,6 +7,9 @@ import com.ticket.defender_core.adapter.out.persistence.SyntheticReservationImpo
 import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
 import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
 import com.ticket.defender_core.adapter.out.persistence.VerifiedPerformanceRepository;
+import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportJobRepository;
+import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportScopeRepository;
+import com.ticket.defender_core.application.service.BulkLedgerCandidatePreparationService;
 import com.ticket.defender_core.domain.AccessRecordStatus;
 import com.ticket.defender_core.domain.AdminMembershipEntity;
 import com.ticket.defender_core.domain.MembershipEventGrant;
@@ -15,6 +18,8 @@ import com.ticket.defender_core.domain.SyntheticReservationImportTenant;
 import com.ticket.defender_core.domain.Tenant;
 import com.ticket.defender_core.domain.TenantEvent;
 import com.ticket.defender_core.domain.VerifiedPerformance;
+import com.ticket.defender_core.domain.BulkLedgerImportJob;
+import com.ticket.defender_core.domain.BulkLedgerImportScope;
 import com.ticket.defender_core.security.AdminRole;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,6 +74,9 @@ class BulkLedgerImportHttpMySqlTest {
     @Autowired private MembershipEventGrantRepository grants;
     @Autowired private SyntheticReservationImportTenantRepository syntheticTenants;
     @Autowired private VerifiedPerformanceRepository performances;
+    @Autowired private BulkLedgerImportJobRepository jobs;
+    @Autowired private BulkLedgerImportScopeRepository scopes;
+    @Autowired private BulkLedgerCandidatePreparationService candidates;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
     private final HttpClient client = HttpClient.newHttpClient();
@@ -135,6 +143,38 @@ class BulkLedgerImportHttpMySqlTest {
         assertThat(one.get().statusCode()).isIn(201, 409); assertThat(two.get().statusCode()).isIn(201, 409);
         assertThat(jdbc.queryForObject("select count(*) from td_bulk_import_jobs where tenant_id=? and source_system='SYNTHETIC' and source_batch_id='race'", Integer.class, fixture.tenant().toString())).isEqualTo(1);
         pool.shutdown();
+    }
+
+    @Test
+    void publishRequiresTenantAdminAndNeverExposesAnotherTenantsPublication() throws Exception {
+        Fixture owner = fixture(List.of(AdminRole.TENANT_ADMIN));
+        UUID performance = UUID.fromString(performance(owner));
+        UUID importId = readyCandidate(owner, performance);
+        HttpResponse<String> published = post("/" + importId + "/publish", "{}", UUID.randomUUID().toString(), owner.subject());
+        assertThat(published.statusCode()).isEqualTo(200);
+        assertThat(published.headers().firstValue("Cache-Control")).contains("no-store");
+        assertThat(published.body()).contains(importId.toString(), "outboxPending").doesNotContain("object-", "synthetic-only-master-key");
+        Fixture foreign = fixture(List.of(AdminRole.TENANT_ADMIN));
+        assertThat(get("/" + importId + "/publication", foreign.subject()).statusCode()).isEqualTo(404);
+        Fixture analyst = fixtureInScope(owner, List.of(AdminRole.ANALYST));
+        assertThat(post("/" + importId + "/publish", "{}", UUID.randomUUID().toString(), analyst.subject()).statusCode()).isEqualTo(403);
+    }
+
+    private UUID readyCandidate(Fixture fixture, UUID performance) {
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        BulkLedgerImportJob job = new BulkLedgerImportJob(fixture.tenant(), fixture.membership(), UUID.randomUUID().toString().replace("-", "") + "a".repeat(32), "b".repeat(64),
+                "v2", "SYNTHETIC", "publish-" + UUID.randomUUID(), BulkLedgerImportJob.Mode.FULL_SNAPSHOT, BulkLedgerImportJob.Format.CSV,
+                "c".repeat(64), 1, 1, true, now);
+        job.beginUpload("d".repeat(64), now.plusMinutes(1), now); job.completeUpload("object-version", now);
+        job.startValidation("http-test", now.plusMinutes(1), now); job.beginStaging(job.getFenceToken(), now); job.readyToPublish(job.getFenceToken(), 1, 1, 0, now);
+        jobs.saveAndFlush(job);
+        scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), fixture.tenant(), fixture.event(), performance, now, 1, null, "cursor-10", null, 10L));
+        jdbc.update("insert into td_bulk_import_staging_rows(id,import_id,tenant_id,event_id,performance_id,source_row_no,reservation_reference_hmac,ticket_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,row_digest) values(?,?,?,?,?,?,?,?,?,?,utc_timestamp(6),1,'TICKET','ACTIVE','v-source',?)",
+                UUID.randomUUID().toString(), job.getId().toString(), fixture.tenant().toString(), fixture.event().toString(), performance.toString(), 2,
+                "r".repeat(64), "t".repeat(64), "a".repeat(64), "v1", "e".repeat(64));
+        candidates.prepare(job.getId());
+        assertThat(jdbc.queryForObject("select status from td_bulk_ledger_candidate_imports where import_id=?", String.class, job.getId().toString())).isEqualTo("READY");
+        return job.getId();
     }
 
     private Fixture fixture(List<AdminRole> assigned) {

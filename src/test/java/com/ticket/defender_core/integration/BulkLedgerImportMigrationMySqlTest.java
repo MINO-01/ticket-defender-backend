@@ -30,6 +30,7 @@ class BulkLedgerImportMigrationMySqlTest {
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl02-staging-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl03-candidate-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl04-candidate-recovery-migration.sql"));
         }
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "tenant_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "created_by_membership_id");

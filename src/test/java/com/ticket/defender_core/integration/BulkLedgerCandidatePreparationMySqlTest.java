@@ -55,6 +55,26 @@ class BulkLedgerCandidatePreparationMySqlTest {
     }
 
     @Test
+    void expiredPreparingCandidateResumesExistingVersionAndTicketsWithoutRestaging() {
+        Fixture fixture = fixture();
+        BulkLedgerImportJob job = ready(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "resume", "cursor-10", null, 10L, 1);
+        stage(job, fixture, "ticket-a", "event-a", null, "ACTIVE");
+        candidates.prepare(job.getId());
+
+        jdbc.update("update td_bulk_ledger_candidate_imports set status='PREPARING', preparation_owner='interrupted-worker', preparation_lease_until=date_add(utc_timestamp(6), interval 1 minute), last_retry_code='CANDIDATE_PREPARATION_RETRYABLE' where import_id=?", job.getId().toString());
+        jdbc.update("update td_bulk_ledger_versions set status='PREPARING' where import_id=?", job.getId().toString());
+        candidates.prepare(job.getId());
+        assertThat(value("select status from td_bulk_ledger_candidate_imports where import_id=?", job.getId())).isEqualTo("PREPARING");
+        jdbc.update("update td_bulk_ledger_candidate_imports set preparation_lease_until=date_sub(utc_timestamp(6), interval 1 second) where import_id=?", job.getId().toString());
+        candidates.prepare(job.getId());
+
+        assertThat(value("select status from td_bulk_ledger_candidate_imports where import_id=?", job.getId())).isEqualTo("READY");
+        assertThat(count("select count(*) from td_bulk_ledger_versions where import_id=?", job.getId())).isEqualTo(1);
+        assertThat(count("select count(*) from td_bulk_ledger_ticket_versions tv join td_bulk_ledger_versions v on v.id=tv.version_id where v.import_id=?", job.getId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select preparation_attempt_count from td_bulk_ledger_candidate_imports where import_id=?", Integer.class, job.getId().toString())).isEqualTo(2);
+    }
+
+    @Test
     void changeFeedRequiresPublicationFixtureThenCreatesRevisionAndKeepsOnlyChangedTicketRows() {
         Fixture fixture = fixture();
         BulkLedgerImportJob snapshot = ready(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "base", "cursor-10", null, 10L, 1);
@@ -103,6 +123,33 @@ class BulkLedgerCandidatePreparationMySqlTest {
         assertThat(value("select failure_code from td_bulk_ledger_candidate_imports where import_id=?", conflict.getId())).isEqualTo("CHANGE_EVENT_CONFLICT");
     }
 
+    @Test
+    void rejectedMultiScopeCandidateReleasesOnlyItsPrivateEventsForANewImport() {
+        Fixture first = fixture();
+        Fixture second = laterPerformance(first);
+        BulkLedgerImportJob baseA = ready(first, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "base-a", "cursor-10", null, 10L, 1);
+        stage(baseA, first, "ticket-a", "base-a", null, "ACTIVE"); candidates.prepare(baseA.getId()); publish(first, baseA.getId(), "cursor-10", 10L);
+        BulkLedgerImportJob baseB = ready(second, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, "base-b", "cursor-10", null, 10L, 1);
+        stage(baseB, second, "ticket-b", "base-b", null, "ACTIVE"); candidates.prepare(baseB.getId()); publish(second, baseB.getId(), "cursor-10", 10L);
+
+        BulkLedgerImportJob rejected = ready(first, BulkLedgerImportJob.Mode.CHANGE_FEED, "two-scopes", "cursor-11", "cursor-10", 11L, 2, 1);
+        scopes.saveAndFlush(new BulkLedgerImportScope(rejected.getId(), first.tenant(), first.event(), second.performance(), null, 1,
+                "cursor-10", "cursor-11", 11L, 11L));
+        stage(rejected, first, "ticket-a", "reusable-event", 11L, "ACTIVE");
+        stage(rejected, second, "ticket-b", "blocked-event", 11L, "ACTIVE");
+        jdbc.update("update td_bulk_import_staging_rows set change_action='REMOVE' where import_id=? and performance_id=?", rejected.getId().toString(), second.performance().toString());
+        candidates.prepare(rejected.getId());
+
+        assertThat(value("select status from td_bulk_ledger_candidate_imports where import_id=?", rejected.getId())).isEqualTo("REJECTED");
+        assertThat(count("select count(*) from td_bulk_ledger_change_events ce join td_bulk_ledger_versions v on v.id=ce.version_id where v.import_id=?", rejected.getId())).isZero();
+
+        BulkLedgerImportJob retry = ready(first, BulkLedgerImportJob.Mode.CHANGE_FEED, "retry-a", "cursor-11", "cursor-10", 11L, 1);
+        stage(retry, first, "ticket-a", "reusable-event", 11L, "ACTIVE");
+        candidates.prepare(retry.getId());
+        assertThat(value("select status from td_bulk_ledger_candidate_imports where import_id=?", retry.getId())).isEqualTo("READY");
+        assertThat(count("select count(*) from td_bulk_ledger_change_events ce join td_bulk_ledger_versions v on v.id=ce.version_id where v.import_id=?", retry.getId())).isEqualTo(1);
+    }
+
     private Fixture fixture() {
         UUID tenant = UUID.randomUUID(), event = UUID.randomUUID(), member = UUID.randomUUID(), performance = UUID.randomUUID();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -112,16 +159,26 @@ class BulkLedgerCandidatePreparationMySqlTest {
         performances.saveAndFlush(new VerifiedPerformance(performance, tenant, event, "candidate-" + performance, "basis", "v1", member, now));
         return new Fixture(tenant, event, member, performance);
     }
+    private Fixture laterPerformance(Fixture first) {
+        UUID performance;
+        do { performance = UUID.randomUUID(); } while (performance.toString().compareTo(first.performance().toString()) <= 0);
+        performances.saveAndFlush(new VerifiedPerformance(performance, first.tenant(), first.event(), "candidate-" + performance,
+                "basis", "v1", first.member(), LocalDateTime.now(ZoneOffset.UTC)));
+        return new Fixture(first.tenant(), first.event(), first.member(), performance);
+    }
     private BulkLedgerImportJob ready(Fixture f, BulkLedgerImportJob.Mode mode, String batch, String cursorEnd, String cursorStart, long sequenceEnd, int rows) {
+        return ready(f, mode, batch, cursorEnd, cursorStart, sequenceEnd, rows, rows);
+    }
+    private BulkLedgerImportJob ready(Fixture f, BulkLedgerImportJob.Mode mode, String batch, String cursorEnd, String cursorStart, long sequenceEnd, int jobRows, int scopeRows) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        BulkLedgerImportJob job = new BulkLedgerImportJob(f.tenant(), f.member(), UUID.randomUUID().toString().replace("-", "") + "a".repeat(32), "b".repeat(64), "v2", "SYNTHETIC", batch + UUID.randomUUID(), mode, BulkLedgerImportJob.Format.CSV, "c".repeat(64), 1, rows, mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT, now);
-        job.beginUpload("d".repeat(64), now.plusMinutes(1), now); job.completeUpload("version", now); job.startValidation("candidate-test", now.plusMinutes(1), now); job.beginStaging(job.getFenceToken(), now); job.readyToPublish(job.getFenceToken(), rows, rows, 0, now);
+        BulkLedgerImportJob job = new BulkLedgerImportJob(f.tenant(), f.member(), UUID.randomUUID().toString().replace("-", "") + "a".repeat(32), "b".repeat(64), "v2", "SYNTHETIC", batch + UUID.randomUUID(), mode, BulkLedgerImportJob.Format.CSV, "c".repeat(64), 1, jobRows, mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT, now);
+        job.beginUpload("d".repeat(64), now.plusMinutes(1), now); job.completeUpload("version", now); job.startValidation("candidate-test", now.plusMinutes(1), now); job.beginStaging(job.getFenceToken(), now); job.readyToPublish(job.getFenceToken(), jobRows, jobRows, 0, now);
         jobs.saveAndFlush(job);
         scopes.saveAndFlush(new BulkLedgerImportScope(job.getId(), f.tenant(), f.event(), f.performance(),
-                mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? now : null, rows,
+                mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT ? now : null, scopeRows,
                 mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? cursorStart : null,
                 mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? cursorEnd : null,
-                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? sequenceEnd - rows + 1 : null,
+                mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? sequenceEnd - scopeRows + 1 : null,
                 mode == BulkLedgerImportJob.Mode.CHANGE_FEED ? sequenceEnd : null));
         return job;
     }

@@ -45,6 +45,7 @@ public class BulkLedgerImportWorker {
     public void process(UUID importId) {
         Lease lease = transactions.execute(status -> acquire(importId));
         if (lease == null) return;
+        boolean stagingReady = false;
         try {
             // Re-read exact object version: a current-object replacement cannot alter the staged source.
             storage.verify(objectKey(importId), lease.objectVersion(), lease.maximumBytes());
@@ -69,8 +70,7 @@ public class BulkLedgerImportWorker {
                     throw new BulkLedgerCsvValidationException(0, "BULK_STAGING_SCOPE_ROW_COUNT_MISMATCH");
             }
             transactions.executeWithoutResult(status -> ready(importId, lease.fence(), result.rows()));
-            // Candidate readiness is separate from the existing staging readiness. v1 remains staging-only.
-            candidates.prepare(importId);
+            stagingReady = true;
         } catch (BulkLedgerCsvValidationException rejected) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(), rejected));
         } catch (BulkLedgerStagingConflictException conflict) {
@@ -81,6 +81,15 @@ public class BulkLedgerImportWorker {
                     new BulkLedgerCsvValidationException(0, "BULK_UPLOAD_OBJECT_VERSION_CHANGED")));
         } catch (RuntimeException | java.io.IOException unavailable) {
             transactions.executeWithoutResult(status -> retryable(importId, lease.fence()));
+        }
+
+        if (!stagingReady) return;
+        // readyToPublish releases the staging fence. Candidate preparation owns a separate lease, so a
+        // candidate database failure must not try to transition the already-complete staging job again.
+        try {
+            candidates.prepare(importId);
+        } catch (RuntimeException ignored) {
+            // The scheduler resumes READY_TO_PUBLISH v2 jobs through candidate preparation only.
         }
     }
 

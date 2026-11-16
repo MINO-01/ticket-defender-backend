@@ -31,13 +31,16 @@ CORE_SKIPS = {
         1, "Runs after the Track 1 migration chain in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest": (
-        3, "Runs over real HTTP in the isolated MySQL CI job"
+        4, "Runs over real HTTP in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest": (
         1, "Runs duplicate and fencing checks in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerCandidatePreparationMySqlTest": (
         6, "Runs candidate generation, recovery and change-feed checks in the isolated MySQL CI job"
+    ),
+    "com.ticket.defender_core.integration.BulkLedgerPublicationMySqlTest": (
+        4, "Runs atomic publication, rollback and concurrency checks in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest": (
         1, "Runs the 50,000-row upload and staging path in the isolated MinIO and MySQL CI job"
@@ -318,13 +321,16 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.BulkLedgerImportMigrationMySqlTest", 1
     ),
     "bulk-ledger-import-http": (
-        "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest", 3
+        "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest", 4
     ),
     "bulk-ledger-staging-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest", 1
     ),
     "bulk-ledger-candidate-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerCandidatePreparationMySqlTest", 6
+    ),
+    "bulk-ledger-publication-mysql": (
+        "com.ticket.defender_core.integration.BulkLedgerPublicationMySqlTest", 4
     ),
     "bulk-ledger-staging-minio-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest", 1

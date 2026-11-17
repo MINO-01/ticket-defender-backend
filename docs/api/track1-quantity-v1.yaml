@@ -6,6 +6,49 @@ info:
 security:
   - bearerAuth: []
 paths:
+  /api/v1/admin/events/{eventId}/ledger-track1/versions/{versionId}/signals:
+    post:
+      summary: Register explicit synthetic-only relationship tokens for a published bulk-ledger version
+      security: [{BearerAuth: []}]
+      parameters:
+        - {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required: [ticketReferenceHmac, hmacKeyVersion, sourceVersion]
+                properties:
+                  ticketReferenceHmac: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  hmacKeyVersion: {type: string, maxLength: 32}
+                  paymentHmac: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+                  addressHmac: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+                  deviceHmac: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+                  ipHmac: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+                  sourceVersion: {type: string, maxLength: 128}
+      responses: {'204': {description: Stored}, '400': {description: Invalid token contract}, '403': {description: Synthetic or tenant scope denied}, '409': {description: Immutable signal already recorded}}
+  /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/analysis-runs:
+    get:
+      summary: List published-ledger Track 1 analysis jobs and immutable source versions
+      security: [{BearerAuth: []}]
+      parameters:
+        - {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: performanceId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Job and run status; failures are not empty analyses}}
+  /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/analysis-runs/{jobId}:
+    get:
+      summary: Get one published-ledger Track 1 analysis job
+      security: [{BearerAuth: []}]
+      parameters:
+        - {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: performanceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: jobId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Job/run provenance, state, policy and algorithm versions}, '404': {description: Not found in authorized event scope}}
   /api/v1/admin/events/{eventId}/track1-quantity/ledger-imports:
     parameters:
       - $ref: '#/components/parameters/EventId'

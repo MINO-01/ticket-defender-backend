@@ -53,6 +53,10 @@ ticket-defender:
       secret-key: ${BULK_LEDGER_UPLOAD_S3_SECRET_KEY:}
   track1-v2:
     enabled: ${TRACK1_V2_ENABLED:false}
+  bulk-ledger-track1:
+    # Publication outbox consumption is disabled until a synthetic isolated worker is explicitly enabled.
+    enabled: ${BULK_LEDGER_TRACK1_ENABLED:false}
+    worker-delay: ${BULK_LEDGER_TRACK1_WORKER_DELAY:PT30S}
   track1-internal-auth:
     shared-secret: ${TRACK1_INTERNAL_SHARED_SECRET:}
     read-timeout: ${TRACK1_INTERNAL_READ_TIMEOUT:PT60S}

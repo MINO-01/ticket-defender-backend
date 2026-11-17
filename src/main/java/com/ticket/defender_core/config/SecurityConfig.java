@@ -76,7 +76,8 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/audits/*/report").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/track1/clusters",
-                                "/api/v1/admin/track1/clusters/detail").authenticated()
+                                "/api/v1/admin/track1/clusters/detail", "/api/v1/admin/events/*/ledger-track1/performances/*/analysis-runs",
+                                "/api/v1/admin/events/*/ledger-track1/performances/*/analysis-runs/*").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/analysis-runs",
                                 "/api/v1/admin/operations/settings").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/events").authenticated()
@@ -101,7 +102,8 @@ public class SecurityConfig {
                                  "/api/v1/admin/events/*/purchase-limit-policies/*/withdrawals",
                                  "/api/v1/admin/events/*/reservation-imports",
                                  "/api/v1/admin/events/*/track1-quantity/ledger-imports",
-                                 "/api/v1/admin/events/*/track1-quantity/analysis-runs").authenticated()
+                                 "/api/v1/admin/events/*/track1-quantity/analysis-runs",
+                                 "/api/v1/admin/events/*/ledger-track1/versions/*/signals").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/cases",
                                 "/api/v1/cases/*", "/api/v1/cases/*/sources",
                                 "/api/v1/cases/*/track1-candidate-links",

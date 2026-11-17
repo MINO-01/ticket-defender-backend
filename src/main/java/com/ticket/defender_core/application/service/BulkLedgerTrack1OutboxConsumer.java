@@ -65,7 +65,8 @@ public class BulkLedgerTrack1OutboxConsumer {
     private Claim claim() {
         List<Claim> rows = jdbc.query("""
                 select id,tenant_id,event_id,performance_id,version_id from td_bulk_ledger_publication_outbox
-                where event_type='LEDGER_PUBLISHED' and status in ('PENDING','RETRYABLE')
+                where event_type='LEDGER_PUBLISHED'
+                  and (status in ('PENDING','RETRYABLE') or (status='PROCESSING' and lease_until < utc_timestamp(6)))
                   and (lease_until is null or lease_until < utc_timestamp(6))
                 order by created_at,id limit 1 for update skip locked
                 """, (rs, n) -> new Claim(uuid(rs.getString(1)), uuid(rs.getString(2)), uuid(rs.getString(3)),
@@ -76,11 +77,17 @@ public class BulkLedgerTrack1OutboxConsumer {
                 update td_bulk_ledger_publication_outbox set status='PROCESSING',lease_owner=?,
                   lease_until=date_add(utc_timestamp(6),interval 5 minute),fence_token=fence_token+1,
                   delivery_attempt_count=delivery_attempt_count+1,last_error_code=null
-                where id=? and status in ('PENDING','RETRYABLE')
+                where id=? and (status in ('PENDING','RETRYABLE') or (status='PROCESSING' and lease_until < utc_timestamp(6)))
                 """, bare.owner(), bare.outboxId().toString());
         if (updated != 1) return null;
         Long fence = jdbc.queryForObject("select fence_token from td_bulk_ledger_publication_outbox where id=? and lease_owner=?",
                 Long.class, bare.outboxId().toString(), bare.owner());
+        // A previous worker may still receive an HTTP response, but its fenced completion can no longer write.
+        jdbc.update("""
+                update track1_purchase_limit_runs r join td_bulk_ledger_track1_analysis_jobs j on j.run_id=r.id
+                set r.execution_status='INTERRUPTED',r.error_code='ANALYSIS_INTERRUPTED',r.active_ledger_version_id=null,r.completed_at=utc_timestamp(6)
+                where j.outbox_id=? and r.execution_status='IN_PROGRESS'
+                """, bare.outboxId().toString());
         jdbc.update("""
                 insert into td_bulk_ledger_track1_analysis_jobs(id,outbox_id,tenant_id,event_id,performance_id,version_id,status,attempt_count,created_at,updated_at)
                 values(?,?,?,?,?,?,'PENDING',0,utc_timestamp(6),utc_timestamp(6))
@@ -103,7 +110,7 @@ public class BulkLedgerTrack1OutboxConsumer {
         if (tickets.size() >= MAX_TICKETS) return blockedInput(claim, "DATA_INPUT_TOO_LARGE");
         if (tickets.stream().anyMatch(t -> !"ACTIVE".equals(t.status()) || !"TICKET".equals(t.unit()) || t.account() == null || t.signalMissing()))
             return blockedInput(claim, "LEDGER_SIGNAL_OR_STATUS_INCOMPLETE");
-        String externalEvent = jdbc.queryForObject("select external_event_ref from tenant_events where id=? and tenant_id=?", String.class,
+        String externalEvent = jdbc.queryForObject("select external_event_ref from events where id=? and tenant_id=?", String.class,
                 claim.eventId().toString(), claim.tenantId().toString());
         UUID requestId = UUID.randomUUID();
         List<Track1PurchaseLimitAnalysisRequest.Ticket> payload = tickets.stream().map(t ->
@@ -170,14 +177,14 @@ public class BulkLedgerTrack1OutboxConsumer {
                 with ranked as (select tv.*,v.revision_no,row_number() over(partition by tv.ticket_reference_hmac order by v.revision_no desc) rn
                   from td_bulk_ledger_ticket_versions tv join td_bulk_ledger_versions v on v.id=tv.version_id where tv.version_id in (%s))
                 select r.ticket_reference_hmac,r.reservation_reference_hmac,r.account_reference_hmac,r.hmac_key_version,r.purchased_at,r.ticket_quantity,
-                       r.quantity_unit,r.ticket_status,r.source_version,s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.hmac_key_version
-                from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
+                       r.quantity_unit,r.ticket_status,r.source_version,s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.hmac_key_version,s.source_version
+                from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=r.version_id and s.ticket_reference_hmac=r.ticket_reference_hmac
                 where r.rn=1 and r.ticket_reference_hmac>? order by r.ticket_reference_hmac limit %d
                 """.formatted(marks, PAGE_SIZE);
-            List<Object> args = new ArrayList<>(); lineage.forEach(id -> args.add(id.toString())); args.add(currentVersion.toString()); args.add(after);
+            List<Object> args = new ArrayList<>(); lineage.forEach(id -> args.add(id.toString())); args.add(after);
             List<Ticket> page = jdbc.query(sql, (rs,n) -> new Ticket(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),
                     rs.getTimestamp(5).toLocalDateTime(),rs.getInt(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),
-                    rs.getString(11),rs.getString(12),rs.getString(13),rs.getString(14)), args.toArray());
+                    rs.getString(11),rs.getString(12),rs.getString(13),rs.getString(14),rs.getString(15)), args.toArray());
             if (page.isEmpty()) break; result.addAll(page); after=page.getLast().ticket(); if (page.size()<PAGE_SIZE) break;
         }
         return result;
@@ -226,7 +233,7 @@ public class BulkLedgerTrack1OutboxConsumer {
     private static UUID uuid(String s){return UUID.fromString(s);} private static UUID nullable(String s){return s==null?null:uuid(s);}
     private record Claim(UUID outboxId,UUID tenantId,UUID eventId,UUID performanceId,UUID versionId,String owner,long fence){}
     private record Version(UUID id,UUID base,long generation,long revision,LocalDateTime asOf){}
-    private record Ticket(String ticket,String reservation,String account,String keyVersion,LocalDateTime purchasedAt,int quantity,String unit,String status,String sourceVersion,String payment,String address,String device,String ip,String signalVersion){ boolean signalMissing(){return signalVersion==null||!signalVersion.equals(keyVersion)||(payment==null&&address==null&&device==null&&ip==null);} }
+    private record Ticket(String ticket,String reservation,String account,String keyVersion,LocalDateTime purchasedAt,int quantity,String unit,String status,String sourceVersion,String payment,String address,String device,String ip,String signalVersion,String signalSourceVersion){ boolean signalMissing(){return signalVersion==null||!signalVersion.equals(keyVersion)||!sourceVersion.equals(signalSourceVersion)||(payment==null&&address==null&&device==null&&ip==null);} }
     private record Input(UUID runId,Track1PurchaseLimitAnalysisRequest request){}
     private static final class Retryable extends RuntimeException { private final String code; private Retryable(String code){this.code=code;} String code(){return code;} }
 }

@@ -9,7 +9,7 @@ paths:
   /api/v1/admin/events/{eventId}/ledger-track1/versions/{versionId}/signals:
     post:
       summary: Register explicit synthetic-only relationship tokens for a published bulk-ledger version
-      security: [{BearerAuth: []}]
+      security: [{bearerAuth: []}]
       parameters:
         - {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: versionId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -35,7 +35,7 @@ paths:
   /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/analysis-runs:
     get:
       summary: List published-ledger Track 1 analysis jobs and immutable source versions
-      security: [{BearerAuth: []}]
+      security: [{bearerAuth: []}]
       parameters:
         - {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: performanceId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -43,7 +43,7 @@ paths:
   /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/analysis-runs/{jobId}:
     get:
       summary: Get one published-ledger Track 1 analysis job
-      security: [{BearerAuth: []}]
+      security: [{bearerAuth: []}]
       parameters:
         - {name: eventId, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: performanceId, in: path, required: true, schema: {type: string, format: uuid}}

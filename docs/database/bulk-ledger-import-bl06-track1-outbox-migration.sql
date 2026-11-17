@@ -33,8 +33,8 @@ CREATE TABLE td_bulk_ledger_track1_analysis_jobs (
     CONSTRAINT chk_td_bl06_analysis_state CHECK (
         status IN ('PENDING','PROCESSING','SUCCEEDED','RETRYABLE','BLOCKED') AND attempt_count >= 0
         AND ((status = 'SUCCEEDED' AND run_id IS NOT NULL AND failure_code IS NULL)
-          OR (status = 'BLOCKED' AND failure_code IS NOT NULL)
-          OR (status IN ('PENDING','PROCESSING','RETRYABLE') AND failure_code IS NULL))
+          OR (status IN ('RETRYABLE','BLOCKED') AND failure_code IS NOT NULL)
+          OR (status IN ('PENDING','PROCESSING') AND failure_code IS NULL))
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

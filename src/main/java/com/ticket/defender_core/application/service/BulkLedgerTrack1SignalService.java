@@ -22,9 +22,16 @@ public class BulkLedgerTrack1SignalService {
         for(Signal v:values) {
             if(v==null||!token(v.ticketReferenceHmac())||!token(v.paymentHmac())&&!token(v.addressHmac())&&!token(v.deviceHmac())&&!token(v.ipHmac())||blank(v.hmacKeyVersion())||blank(v.sourceVersion())) throw invalid();
             Integer ticket=jdbc.queryForObject("""
-                    select count(*) from td_bulk_ledger_ticket_versions tv join td_bulk_ledger_versions v on v.id=tv.version_id
-                    where tv.version_id=? and tv.ticket_reference_hmac=? and tv.hmac_key_version=? and v.tenant_id=? and v.event_id=? and v.status='PUBLISHED'
-                    """,Integer.class,versionId.toString(),v.ticketReferenceHmac(),v.hmacKeyVersion(),scope.tenantId().toString(),scope.eventId().toString());
+                    with recursive lineage as (
+                      select id,base_version_id,generation_no,revision_no from td_bulk_ledger_versions where id=? and tenant_id=? and event_id=? and status='PUBLISHED'
+                      union all select parent.id,parent.base_version_id,parent.generation_no,parent.revision_no
+                        from td_bulk_ledger_versions parent join lineage child on child.base_version_id=parent.id
+                        where parent.status='PUBLISHED' and parent.generation_no=child.generation_no and parent.revision_no=child.revision_no-1
+                    ), ranked as (
+                      select tv.ticket_reference_hmac,tv.hmac_key_version,tv.source_version,row_number() over(partition by tv.ticket_reference_hmac order by l.revision_no desc) rn
+                      from td_bulk_ledger_ticket_versions tv join lineage l on l.id=tv.version_id
+                    ) select count(*) from ranked where rn=1 and ticket_reference_hmac=? and hmac_key_version=? and source_version=?
+                    """,Integer.class,versionId.toString(),scope.tenantId().toString(),scope.eventId().toString(),v.ticketReferenceHmac(),v.hmacKeyVersion(),v.sourceVersion());
             if(ticket==null||ticket!=1) throw notFound();
             List<Signal> existing=jdbc.query("select ticket_reference_hmac,hmac_key_version,payment_hmac,address_hmac,device_hmac,ip_hmac,source_version from td_bulk_ledger_track1_ticket_signals where version_id=? and ticket_reference_hmac=?",
                     (rs,n)->new Signal(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),rs.getString(7)),versionId.toString(),v.ticketReferenceHmac());

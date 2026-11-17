@@ -124,6 +124,10 @@ public class BulkLedgerTrack1OutboxConsumer {
                 Track1PurchaseLimitAnalysisRequest.CancellationHandling.NOT_CONFIRMED,
                 Track1PurchaseLimitAnalysisRequest.DuplicateHandling.DEDUPLICATED, "PUBLIC_LEDGER_POLICY_NOT_CONFIRMED");
         UUID run = UUID.randomUUID();
+        Integer previousAttempts = jdbc.queryForObject("select attempt_count from td_bulk_ledger_track1_analysis_jobs where outbox_id=? for update",
+                Integer.class, claim.outboxId().toString());
+        if (previousAttempts == null) throw new Retryable("ANALYSIS_JOB_MISSING");
+        int attemptNo = previousAttempts + 1;
         jdbc.update("""
                 insert into track1_purchase_limit_runs(id,tenant_id,event_id,performance_id,ledger_batch_id,ledger_version_id,publication_outbox_id,
                  active_ledger_batch_id,active_ledger_version_id,created_by_membership_id,idempotency_key_digest,request_digest,analysis_request_id,
@@ -132,8 +136,8 @@ public class BulkLedgerTrack1OutboxConsumer {
                 from td_bulk_ledger_publications p where p.id=(select publication_id from td_bulk_ledger_publication_outbox where id=?)
                 """, run.toString(), claim.tenantId().toString(), claim.eventId().toString(), claim.performanceId().toString(), null,
                 claim.versionId().toString(), claim.outboxId().toString(), claim.versionId().toString(),
-                CandidatePipelineSupport.sha256("BL06", claim.outboxId().toString()),
-                CandidatePipelineSupport.sha256("BL06_REQUEST", claim.versionId().toString()), requestId.toString(), claim.versionId().toString(), claim.outboxId().toString());
+                attemptIdempotencyDigest(claim.outboxId(), attemptNo),
+                CandidatePipelineSupport.sha256("BL06_REQUEST", claim.versionId().toString(), Integer.toString(attemptNo)), requestId.toString(), claim.versionId().toString(), claim.outboxId().toString());
         jdbc.update("update td_bulk_ledger_track1_analysis_jobs set status='PROCESSING',attempt_count=attempt_count+1,run_id=?,updated_at=utc_timestamp(6) where outbox_id=?",
                 run.toString(), claim.outboxId().toString());
         return new Input(run, new Track1PurchaseLimitAnalysisRequest(requestId.toString(), List.of(scope), payload));
@@ -231,6 +235,10 @@ public class BulkLedgerTrack1OutboxConsumer {
     }
     private void requireLease(Claim c) { Integer ok=jdbc.queryForObject("select count(*) from td_bulk_ledger_publication_outbox where id=? and status='PROCESSING' and fence_token=? and lease_owner=?",Integer.class,c.outboxId().toString(),c.fence(),c.owner()); if(ok==null||ok!=1) throw new Retryable("OUTBOX_LEASE_LOST"); }
     private static UUID uuid(String s){return UUID.fromString(s);} private static UUID nullable(String s){return s==null?null:uuid(s);}
+    static String attemptIdempotencyDigest(UUID outboxId, int attemptNo) {
+        if (outboxId == null || attemptNo < 1) throw new IllegalArgumentException("invalid outbox attempt");
+        return CandidatePipelineSupport.sha256("BL06", outboxId.toString(), Integer.toString(attemptNo));
+    }
     private record Claim(UUID outboxId,UUID tenantId,UUID eventId,UUID performanceId,UUID versionId,String owner,long fence){}
     private record Version(UUID id,UUID base,long generation,long revision,LocalDateTime asOf){}
     private record Ticket(String ticket,String reservation,String account,String keyVersion,LocalDateTime purchasedAt,int quantity,String unit,String status,String sourceVersion,String payment,String address,String device,String ip,String signalVersion,String signalSourceVersion){ boolean signalMissing(){return signalVersion==null||!signalVersion.equals(keyVersion)||!sourceVersion.equals(signalSourceVersion)||(payment==null&&address==null&&device==null&&ip==null);} }

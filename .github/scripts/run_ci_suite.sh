@@ -39,6 +39,7 @@ bl01_suite() {
   run_test track1-quantity-migration '*Track1QuantityMigrationMySqlTest'
   run_test track1-quantity-http '*Track1QuantityHttpMySqlTest'
   run_test bulk-ledger-import-migration '*BulkLedgerImportMigrationMySqlTest'
+  run_test bulk-ledger-track1-outbox-migration '*BulkLedgerTrack1OutboxMigrationMySqlTest'
   run_test bulk-ledger-import-http '*BulkLedgerImportHttpMySqlTest'
 }
 

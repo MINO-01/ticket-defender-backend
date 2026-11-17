@@ -27,7 +27,7 @@ public class Track1PurchaseLimitRun {
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "tenant_id", nullable = false, length = 36) private UUID tenantId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "event_id", nullable = false, length = 36) private UUID eventId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "performance_id", nullable = false, length = 36) private UUID performanceId;
-    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "ledger_batch_id", nullable = false, length = 36) private UUID ledgerBatchId;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "ledger_batch_id", length = 36) private UUID ledgerBatchId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "active_ledger_batch_id", length = 36) private UUID activeLedgerBatchId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "created_by_membership_id", nullable = false, length = 36) private UUID createdByMembershipId;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "idempotency_key_digest", nullable = false, length = 64) private String idempotencyKeyDigest;

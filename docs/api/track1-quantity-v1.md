@@ -48,6 +48,14 @@
 - 정책이 `NETTED`이고 스냅샷이 완전하며 `UNKNOWN`이 없을 때만 `CANCELLED`, `REFUNDED` 행을 제외하고 평가합니다(`nettedExcludedRowCount`). `GROSS`는 Data 미지원으로 평가 불가입니다.
 - `ACCOUNT_LIMIT_SNAPSHOT`은 Data v2 미지원이라 `REJECTED`(`ACCOUNT_SNAPSHOT_NOT_SUPPORTED_BY_DATA_V2`)로 남습니다. PERSON 정책은 선택되지 않아 `POLICY_NOT_CONFIRMED`입니다.
 
+### 공개 원장 Outbox 소비 (BL-06)
+
+공개된 고정 ledger version만 소비하며, 실행 기록은 해당 `ledger_version_id`와 publication outbox를 계속 참조합니다. 소비자는 tenant/event/performance 범위의 ACTIVE·검증된 `ACCOUNT` 정책만 선택하고, SALES_PHASE 출처가 없거나 동순위 충돌이 있으면 `POLICY_NOT_CONFIRMED`로 전달합니다. EVENT 범위 정책은 회차 단위 Data v2 합산과 다르므로 평가하지 않습니다.
+
+`COMPLETE`/`NETTED`는 현재 공개 version 자체가 `FULL_SNAPSHOT`의 complete snapshot이고, 활성·취소·환불을 포함한 각 ticket의 사실값과 단일 provider `sourceVersion`이 확인된 경우에만 전송합니다. 이때만 `CANCELLED`/`REFUNDED` ticket을 제외하고 `nettedExcludedRowCount`를 기록합니다. change revision, 출처 버전 혼합, GROSS 규칙 또는 취소·환불 반영 근거가 불완전한 경우에는 티켓 사실값을 합성하지 않고 `QUANTITY_DATA_INCOMPLETE` 입력으로 유지합니다. 신호·계정·단위처럼 Data v2 요청 자체를 만들 수 없는 원장 결함은 outbox job을 `BLOCKED`로 끝냅니다.
+
+**BLOCKED 후속 계약:** CHANGE_FEED 공개 version을 `COMPLETE/NETTED`로 평가하려면, 원장 계약이 해당 revision까지의 취소·부분환불 반영 완전성과 단일 평가 기준 `sourceAsOf`를 명시적으로 보장해야 합니다. 현재 version 계보와 ACTIVE 행만으로는 이를 확정할 수 없으므로, 이 보장은 별도 원장 계약/스키마 작업으로 남깁니다.
+
 ## Frontend PROPOSED 문서와의 차이
 
 | 항목 | 변경 |

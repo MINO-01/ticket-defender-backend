@@ -84,6 +84,30 @@ class BulkLedgerTrack1OutboxConsumerTest {
         assertThat(result.reason()).isEqualTo("NO_CONFIRMED_ACCOUNT_POLICY");
     }
 
+    @Test
+    void leavesPolicyUnconfirmedWhenEveryPurchasePredatesItsEffectiveStart() {
+        var result = BulkLedgerTrack1OutboxConsumer.decide(snapshot(true), List.of(ticketAt("ACTIVE", AS_OF.minusHours(2))),
+                List.of(policy("future-policy", PERFORMANCE, PurchaseLimitPolicy.CancellationRefundRule.NETTED, AS_OF.minusHours(1), null)), PERFORMANCE);
+
+        assertThat(result.policy()).isNull();
+        assertThat(result.complete()).isFalse();
+        assertThat(result.reason()).isEqualTo("NO_CONFIRMED_ACCOUNT_POLICY");
+    }
+
+    @Test
+    void leavesPolicyUnconfirmedWhenPurchasesRequireDifferentPolicyPeriods() {
+        var result = BulkLedgerTrack1OutboxConsumer.decide(snapshot(true),
+                List.of(ticketAt("ACTIVE", AS_OF.minusHours(2)), ticketAt("REFUNDED", AS_OF.minusMinutes(15))),
+                List.of(policy("early-policy", PERFORMANCE, PurchaseLimitPolicy.CancellationRefundRule.NETTED,
+                                AS_OF.minusDays(1), AS_OF.minusHours(1)),
+                        policy("late-policy", PERFORMANCE, PurchaseLimitPolicy.CancellationRefundRule.NETTED,
+                                AS_OF.minusHours(1), null)), PERFORMANCE);
+
+        assertThat(result.policy()).isNull();
+        assertThat(result.complete()).isFalse();
+        assertThat(result.reason()).isEqualTo("NO_CONFIRMED_ACCOUNT_POLICY");
+    }
+
     private static BulkLedgerTrack1OutboxConsumer.Version snapshot(boolean complete) {
         return new BulkLedgerTrack1OutboxConsumer.Version(UUID.randomUUID(), null, 7, 0, AS_OF, complete);
     }
@@ -99,8 +123,13 @@ class BulkLedgerTrack1OutboxConsumerTest {
     }
 
     private static PurchaseLimitPolicy policy(String version, UUID performance, PurchaseLimitPolicy.CancellationRefundRule rule) {
+        return policy(version, performance, rule, AS_OF.minusDays(1), null);
+    }
+
+    private static PurchaseLimitPolicy policy(String version, UUID performance, PurchaseLimitPolicy.CancellationRefundRule rule,
+                                              LocalDateTime effectiveFrom, LocalDateTime effectiveUntil) {
         return new PurchaseLimitPolicy(UUID.randomUUID(), TENANT, EVENT, performance, 2, version,
-                AS_OF.minusDays(1), null, "customer", "verified", PurchaseLimitPolicy.LimitSubject.ACCOUNT,
+                effectiveFrom, effectiveUntil, "customer", "verified", PurchaseLimitPolicy.LimitSubject.ACCOUNT,
                 PurchaseLimitPolicy.ApplicationScope.PERFORMANCE, null, rule, true, UUID.randomUUID(), AS_OF);
     }
 }

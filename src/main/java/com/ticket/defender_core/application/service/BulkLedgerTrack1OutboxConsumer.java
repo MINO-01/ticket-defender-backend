@@ -17,7 +17,6 @@ import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -231,19 +230,16 @@ public class BulkLedgerTrack1OutboxConsumer {
     }
 
     private static PurchaseLimitPolicy selectPolicy(List<Ticket> ledger, List<PurchaseLimitPolicy> all, UUID performanceId) {
-        List<LocalDateTime> moments = new ArrayList<>();
-        ledger.stream().map(Ticket::purchasedAt).min(Comparator.naturalOrder()).ifPresent(moments::add);
-        ledger.stream().map(Ticket::purchasedAt).max(Comparator.naturalOrder()).ifPresent(moments::add);
-        (all == null ? List.<PurchaseLimitPolicy>of() : all).stream()
-                .filter(policy -> policy.getStatus() == PurchaseLimitPolicy.Status.ACTIVE)
-                .map(PurchaseLimitPolicy::getEffectiveFrom).sorted().forEach(moments::add);
-        for (LocalDateTime moment : moments) {
+        PurchaseLimitPolicy selected = null;
+        for (Ticket ticket : ledger) {
             PurchaseLimitPolicySelector.Result result = PurchaseLimitPolicySelector.select(all,
                     new PurchaseLimitPolicySelector.Context(performanceId, null,
-                            PurchaseLimitPolicy.LimitSubject.ACCOUNT, false, moment));
-            if (result.status() == PurchaseLimitPolicySelector.Status.SELECTED) return result.policy();
+                            PurchaseLimitPolicy.LimitSubject.ACCOUNT, false, ticket.purchasedAt()));
+            if (result.status() != PurchaseLimitPolicySelector.Status.SELECTED
+                    || selected != null && !selected.getId().equals(result.policy().getId())) return null;
+            selected = result.policy();
         }
-        return null;
+        return selected;
     }
 
     private static String singleSourceVersion(List<Ticket> tickets) {

@@ -18,6 +18,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.Timestamp;
+import java.sql.ResultSet;
+import java.sql.PreparedStatement;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
@@ -26,6 +28,8 @@ import java.util.*;
 @Service
 public class BulkLedgerTrack1BulkWorker {
     private static final int PAGE = 1_000;
+    /** Connector/J's forward-only streaming mode; do not replace with a positive fetch size without useCursorFetch. */
+    static final int MYSQL_STREAMING_FETCH_SIZE = Integer.MIN_VALUE;
     private final JdbcTemplate jdbc; private final TransactionTemplate tx; private final BulkLedgerUploadStorage storage;
     private final FastApiAdapter data; private final SyntheticReservationImportGate gate; private final ObjectMapper json = JsonMapper.builder().build();
     private final boolean enabled; private final boolean legacyEnabled; private final String policyBundle;
@@ -47,10 +51,10 @@ public class BulkLedgerTrack1BulkWorker {
                 case "RETRYABLE" -> retryData(c);
                 default -> fail(c,"INVALID_JOB_STATE",false);
             }
-        } catch (BulkLedgerUploadStorage.Unavailable | org.springframework.web.client.ResourceAccessException e) { retry(c,"DEPENDENCY_UNAVAILABLE"); }
-        catch (org.springframework.web.client.HttpServerErrorException e) { retry(c,"DATA_UNAVAILABLE"); }
+        } catch (BulkLedgerUploadStorage.Unavailable | org.springframework.web.client.ResourceAccessException e) { transientFailure(c,"DEPENDENCY_UNAVAILABLE"); }
+        catch (org.springframework.web.client.HttpServerErrorException e) { transientFailure(c,"DATA_UNAVAILABLE"); }
         catch (Blocked e) { fail(c,e.code,false); }
-        catch (RuntimeException e) { fail(c,"BULK_ANALYSIS_FAILED",true); }
+        catch (RuntimeException e) { transientFailure(c,"BULK_ANALYSIS_FAILED"); }
     }
     private Claim claim() {
         List<Claim> existing=jdbc.query("""
@@ -58,7 +62,7 @@ public class BulkLedgerTrack1BulkWorker {
             from td_bulk_ledger_track1_bulk_jobs where status in ('PREPARING','REGISTERING','QUEUED','RUNNING','COLLECTING','RETRYABLE')
               and (lease_until is null or lease_until < utc_timestamp(6)) order by created_at limit 1 for update skip locked
             """,(rs,n)->new Claim(uuid(rs.getString(1)),uuid(rs.getString(2)),uuid(rs.getString(3)),uuid(rs.getString(4)),uuid(rs.getString(5)),uuid(rs.getString(6)),rs.getString(7),nullable(rs.getString(8)),rs.getLong(9)+1));
-        if(!existing.isEmpty()) { Claim c=existing.getFirst(); jdbc.update("update td_bulk_ledger_track1_bulk_jobs set lease_owner=?,lease_until=date_add(utc_timestamp(6),interval 30 minute),fence_token=?,attempt_count=attempt_count+1,updated_at=utc_timestamp(6) where id=?",owner(c),c.fence(),c.id().toString()); return c; }
+        if(!existing.isEmpty()) { Claim c=existing.getFirst(); jdbc.update("update td_bulk_ledger_track1_bulk_jobs set lease_owner=?,lease_until=date_add(utc_timestamp(6),interval 30 minute),fence_token=?,updated_at=utc_timestamp(6) where id=?",owner(c),c.fence(),c.id().toString()); return c; }
         List<Claim> rows=jdbc.query("""
             select id,tenant_id,event_id,performance_id,version_id from td_bulk_ledger_publication_outbox
             where event_type='LEDGER_PUBLISHED' and status in ('PENDING','RETRYABLE') order by created_at limit 1 for update skip locked
@@ -98,7 +102,7 @@ public class BulkLedgerTrack1BulkWorker {
     private long writeNdjson(Claim c, Metadata m, Path path, MessageDigest digest) throws Exception {
         final long[] count={0}; final String[] source={null}, key={null};
         try(BufferedWriter w=Files.newBufferedWriter(path,StandardCharsets.UTF_8)) {
-            jdbc.query("""
+            String sql="""
               with recursive l as (select id,base_version_id,generation_no,revision_no from td_bulk_ledger_versions where id=?
                 union all select p.id,p.base_version_id,p.generation_no,p.revision_no from td_bulk_ledger_versions p join l on l.base_version_id=p.id where p.status='PUBLISHED' and p.generation_no=l.generation_no and p.revision_no=l.revision_no-1),
               ranked as (select tv.*,row_number() over(partition by tv.ticket_reference_hmac order by l.revision_no desc) rn from td_bulk_ledger_ticket_versions tv join l on l.id=tv.version_id)
@@ -106,7 +110,13 @@ public class BulkLedgerTrack1BulkWorker {
                      s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.hmac_key_version,s.source_version,s.hmac_purpose
               from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
               where r.rn=1 order by r.ticket_reference_hmac
-              """,rs->{
+              """;
+            jdbc.query(connection -> {
+                var statement=connection.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+                configureMySqlStreaming(statement);
+                statement.setString(1,c.versionId().toString()); statement.setString(2,c.versionId().toString());
+                return statement;
+              },rs->{
                 try {
                     String sourceVersion=rs.getString(8), ledgerKeyVersion=rs.getString(4), keyVersion=rs.getString(13);
                     String invalid=inputFailure(rs.getString(7), ledgerKeyVersion, keyVersion, rs.getString(15), sourceVersion, rs.getString(14), rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12));
@@ -117,7 +127,7 @@ public class BulkLedgerTrack1BulkWorker {
                     row.put("quantityInputType","INDIVIDUAL_TICKET"); row.put("ticketReference",rs.getString(1)); row.put("ticketStatus",rs.getString(7)); row.put("sourceVersion",sourceVersion); row.put("sourceAsOf",m.sourceAsOf().atOffset(ZoneOffset.UTC).toString());
                     byte[] bytes=(json.writeValueAsString(row)+"\n").getBytes(StandardCharsets.UTF_8); w.write(new String(bytes,StandardCharsets.UTF_8)); digest.update(bytes); count[0]++; if(count[0]%PAGE==0) heartbeat(c);
                 } catch(Blocked e){throw e;} catch(Exception e){throw new RuntimeException(e);}
-              },c.versionId().toString(),c.versionId().toString());
+              });
         }
         if(source[0]==null||key[0]==null) throw new Blocked("NO_EFFECTIVE_TICKETS");
         tx.executeWithoutResult(x->jdbc.update("update td_bulk_ledger_track1_bulk_jobs set source_version=?,hmac_key_version=? where id=? and fence_token=?",source[0],key[0],c.id().toString(),c.fence()));
@@ -135,7 +145,7 @@ public class BulkLedgerTrack1BulkWorker {
     private void pollOrCollect(Claim c) {
         if(c.dataJobId()==null) throw new Blocked("DATA_JOB_MISSING"); Track1BulkJobDto.Status status=data.bulkJobStatus(c.dataJobId());
         if("COMPLETED".equals(status.status())) { collect(c,status); return; }
-        if(Set.of("FAILED","INPUT_REJECTED","CANCELLED","INTERRUPTED").contains(status.status())) { retry(c,status.failureCode()==null?"DATA_"+status.status():status.failureCode()); return; }
+        if(Set.of("FAILED","INPUT_REJECTED","CANCELLED","INTERRUPTED").contains(status.status())) { dataFailure(c,status.failureCode()==null?"DATA_"+status.status():status.failureCode()); return; }
         tx.executeWithoutResult(x->{require(c);jdbc.update("update td_bulk_ledger_track1_bulk_jobs set data_status=?,status=?,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",status.status(),"RUNNING".equals(status.status())?"RUNNING":"QUEUED",c.id().toString(),c.fence());});
     }
     private void collect(Claim c,Track1BulkJobDto.Status status) {
@@ -154,13 +164,25 @@ public class BulkLedgerTrack1BulkWorker {
     }
     private void saveCluster(Claim c,String externalEvent,Track1BulkJobDto.Cluster cluster) { jdbc.update("insert into td_bulk_ledger_track1_bulk_clusters(job_id,cluster_id,risk_score,member_count,payment_hashes_json,address_hashes_json,device_hashes_json,ip_hashes_json) values(?,?,?,?,cast(? as json),cast(? as json),cast(? as json),cast(? as json)) on duplicate key update risk_score=values(risk_score),member_count=values(member_count)",c.id().toString(),cluster.clusterId(),cluster.riskScore(),cluster.memberCount(),asJson(cluster.paymentHashes()),asJson(cluster.addressHashes()),asJson(cluster.deviceIdHashes()),asJson(cluster.ipHashes())); cluster.members().forEach(m->saveMember(c,externalEvent,cluster.clusterId(),m)); }
     private void saveMember(Claim c,String externalEvent,String cluster,Track1BulkJobDto.Member member){ if(!externalEvent.equals(member.eventId())||!member.accountId().matches("[0-9a-f]{64}")||!member.reservationNo().matches("[0-9a-f]{64}")) throw new Blocked("DATA_MEMBER_SCOPE_INVALID"); jdbc.update("insert ignore into td_bulk_ledger_track1_bulk_members(job_id,cluster_id,account_reference_hmac,reservation_reference_hmac) values(?,?,?,?)",c.id().toString(),cluster,member.accountId(),member.reservationNo()); }
-    private void retryData(Claim c){ if(c.dataJobId()==null) throw new Blocked("DATA_JOB_MISSING"); Track1BulkJobDto.Accepted a=data.retryBulkJob(c.dataJobId()); tx.executeWithoutResult(x->{require(c);jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status='QUEUED',data_status=?,failure_code=null,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",a.status(),c.id().toString(),c.fence());}); }
-    private void retry(Claim c,String code){tx.executeWithoutResult(x->{require(c); Integer attempts=jdbc.queryForObject("select attempt_count from td_bulk_ledger_track1_bulk_jobs where id=?",Integer.class,c.id().toString()); jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status=?,failure_code=?,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",attempts!=null&&attempts>=3?"FAILED":"RETRYABLE",code,c.id().toString(),c.fence());});}
-    private void fail(Claim c,String code,boolean retryable){ if(retryable){retry(c,code);return;} tx.executeWithoutResult(x->{require(c);jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status='BLOCKED',failure_code=?,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",code,c.id().toString(),c.fence());}); }
+    private void retryData(Claim c){
+        if(c.dataJobId()==null) { Job j=job(c); resumeWithoutDataJob(c,j.artifactId()==null?"PREPARING":"REGISTERING","DATA_JOB_MISSING"); return; }
+        Track1BulkJobDto.Accepted a=data.retryBulkJob(c.dataJobId()); tx.executeWithoutResult(x->{require(c);jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status='QUEUED',data_status=?,failure_code=null,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",a.status(),c.id().toString(),c.fence());});
+    }
+    private void transientFailure(Claim c,String code){ retryAt(c,recoveryStage(c.status(),c.dataJobId()!=null),code); }
+    private void dataFailure(Claim c,String code){ retryAt(c,"RETRYABLE",code); }
+    private void resumeWithoutDataJob(Claim c,String stage,String code){tx.executeWithoutResult(x->{require(c);jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status=?,failure_code=?,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",stage,code,c.id().toString(),c.fence());});}
+    private void retryAt(Claim c,String stage,String code){tx.executeWithoutResult(x->{require(c); Integer attempts=jdbc.queryForObject("select attempt_count from td_bulk_ledger_track1_bulk_jobs where id=?",Integer.class,c.id().toString()); int before=attempts==null?0:attempts; jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status=?,failure_code=?,attempt_count=?,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",failureState(before,stage),code,before+1,c.id().toString(),c.fence());});}
+    private void fail(Claim c,String code,boolean retryable){ if(retryable){transientFailure(c,code);return;} tx.executeWithoutResult(x->{require(c);jdbc.update("update td_bulk_ledger_track1_bulk_jobs set status='BLOCKED',failure_code=?,lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",code,c.id().toString(),c.fence());}); }
     private Job job(Claim c){ return jdbc.queryForObject("select j.artifact_id,j.object_key,j.object_version,j.artifact_sha256,j.record_count,j.source_version,j.source_as_of,j.hmac_key_version,j.policy_version,v.generation_no,v.revision_no,e.external_event_ref,j.result_cursor from td_bulk_ledger_track1_bulk_jobs j join td_bulk_ledger_versions v on v.id=j.ledger_version_id join events e on e.id=j.event_id where j.id=?",(rs,n)->new Job(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getLong(5),rs.getString(6),local(rs.getTimestamp(7)),rs.getString(8),rs.getString(9),rs.getLong(10),rs.getLong(11),rs.getString(12),rs.getString(13)),c.id().toString()); }
     private void require(Claim c){Integer ok=jdbc.queryForObject("select count(*) from td_bulk_ledger_track1_bulk_jobs where id=? and fence_token=? and lease_owner=?",Integer.class,c.id().toString(),c.fence(),owner(c));if(ok==null||ok!=1)throw new Blocked("WORKER_FENCE_LOST");}
     private void heartbeat(Claim c){if(!fenceUpdateAccepted(jdbc.update("update td_bulk_ledger_track1_bulk_jobs set lease_until=date_add(utc_timestamp(6),interval 30 minute),updated_at=utc_timestamp(6) where id=? and fence_token=? and lease_owner=?",c.id().toString(),c.fence(),owner(c))))throw new Blocked("WORKER_FENCE_LOST");}
     static boolean fenceUpdateAccepted(int updatedRows) { return updatedRows == 1; }
+    static void configureMySqlStreaming(PreparedStatement statement) throws java.sql.SQLException { statement.setFetchSize(MYSQL_STREAMING_FETCH_SIZE); }
+    static String recoveryStage(String currentStatus, boolean hasDataJob) {
+        if ("PREPARING".equals(currentStatus) || "REGISTERING".equals(currentStatus)) return currentStatus;
+        return hasDataJob ? currentStatus : "PREPARING";
+    }
+    static String failureState(int failuresBefore, String retryStage) { return failuresBefore >= 2 ? "FAILED" : retryStage; }
     static boolean manifestObjectVersionCompatible(String value) { return value != null && value.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}"); }
     static String inputFailure(String ticketStatus,String ledgerKeyVersion,String signalKeyVersion,String purpose,String ticketSourceVersion,String signalSourceVersion,String payment,String address,String device,String ip) {
         if(!"ACTIVE".equals(ticketStatus)) return "LEDGER_TICKET_STATUS_NOT_SUPPORTED";

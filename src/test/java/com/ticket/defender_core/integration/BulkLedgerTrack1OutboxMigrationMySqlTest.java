@@ -20,8 +20,11 @@ class BulkLedgerTrack1OutboxMigrationMySqlTest {
         source.setDriverClassName("com.mysql.cj.jdbc.Driver"); JdbcTemplate jdbc = new JdbcTemplate(source);
         try (Connection connection = source.getConnection()) {
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl06-track1-outbox-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-track1-bulk-job-migration.sql"));
         }
         assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_analysis_jobs' and constraint_name='uk_td_bl06_analysis_outbox'", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_ticket_signals' and constraint_name='uk_td_bl06_signal_ticket'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_bulk_jobs' and constraint_name='uk_bl07_job_outbox'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_bulk_members' and constraint_name='PRIMARY'", Integer.class)).isEqualTo(1);
     }
 }

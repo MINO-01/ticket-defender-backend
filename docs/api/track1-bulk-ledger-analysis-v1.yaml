@@ -1,0 +1,9 @@
+openapi: 3.1.0
+info: {title: Track 1 bulk ledger analysis, version: v1}
+paths:
+  /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/bulk-analysis-jobs:
+    get: {summary: List durable bulk Data jobs, responses: {'200': {description: Tenant/event-scoped job provenance and status}}}
+  /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/bulk-analysis-jobs/{jobId}/clusters:
+    get: {summary: Page stored cluster priorities and shared-signal evidence counts (not fraud probabilities), responses: {'200': {description: Cluster page; raw HMAC values are never returned}}}
+  /api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/bulk-analysis-jobs/{jobId}/clusters/{clusterId}/members:
+    get: {summary: Page opaque cluster-member identifiers, responses: {'200': {description: Member page}}}

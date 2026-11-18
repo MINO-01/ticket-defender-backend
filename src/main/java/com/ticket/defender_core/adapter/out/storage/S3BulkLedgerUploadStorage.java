@@ -7,11 +7,13 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.FilterInputStream;
 import java.io.UncheckedIOException;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -23,9 +25,10 @@ public final class S3BulkLedgerUploadStorage implements BulkLedgerUploadStorage 
     private final S3Client reader;
     private final S3Presigner presigner;
     private final String bucket;
+    private final String bulkArtifactPrefix;
 
-    public S3BulkLedgerUploadStorage(S3Client reader, S3Presigner presigner, String bucket) {
-        this.reader = reader; this.presigner = presigner; this.bucket = bucket;
+    public S3BulkLedgerUploadStorage(S3Client reader, S3Presigner presigner, String bucket, String bulkArtifactPrefix) {
+        this.reader = reader; this.presigner = presigner; this.bucket = bucket; this.bulkArtifactPrefix = bulkArtifactPrefix;
     }
 
     @Override public UploadSession createUploadSession(String key, long bytes, Instant expiresAt) {
@@ -62,6 +65,34 @@ public final class S3BulkLedgerUploadStorage implements BulkLedgerUploadStorage 
     @Override public InputStream openVersion(String key, String versionId) {
         try { return reader.getObject(GetObjectRequest.builder().bucket(bucket).key(key).versionId(versionId).build()); }
         catch (Exception failure) { throw new Unavailable(failure); }
+    }
+    @Override public VerifiedObject putImmutable(String artifactName, InputStream content, long bytes, String sha256, Runnable progress) {
+        try {
+            String key = bulkObjectKey(bulkArtifactPrefix, artifactName);
+            var response = reader.putObject(PutObjectRequest.builder().bucket(bucket).key(key)
+                    .contentType("application/x-ndjson; charset=utf-8").contentLength(bytes).build(),
+                    RequestBody.fromInputStream(new ProgressInputStream(content, progress), bytes));
+            String version = version(response.versionId());
+            if (version == null) throw new InvalidObject();
+            VerifiedObject verified = verify(key, version, bytes);
+            if (!sha256.equals(verified.sha256())) throw new ObjectChanged();
+            return verified;
+        } catch (ObjectChanged | InvalidObject failure) { throw failure;
+        } catch (RuntimeException failure) { throw failure;
+        } catch (Exception failure) { throw new Unavailable(failure); }
+    }
+    /** Data adds its configured prefix to this opaque manifest name; backend must upload to the identical S3 key. */
+    static String bulkObjectKey(String prefix, String artifactName) {
+        if (prefix == null || prefix.isBlank() || artifactName == null || !artifactName.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}"))
+            throw new InvalidObject();
+        return prefix.replaceAll("/+$", "") + "/" + artifactName;
+    }
+    private static final class ProgressInputStream extends FilterInputStream {
+        private final Runnable progress; private long sinceProgress;
+        private ProgressInputStream(InputStream input, Runnable progress) { super(input); this.progress=progress; progress.run(); }
+        @Override public int read() throws IOException { int result=super.read(); if(result>=0) progressed(1); return result; }
+        @Override public int read(byte[] bytes, int offset, int length) throws IOException { int result=super.read(bytes,offset,length); if(result>0) progressed(result); return result; }
+        private void progressed(int count) { sinceProgress+=count; if(sinceProgress>=1_048_576) { progress.run(); sinceProgress=0; } }
     }
     private static String version(String value) { return value == null || value.isBlank() || "null".equals(value) ? null : value; }
 }

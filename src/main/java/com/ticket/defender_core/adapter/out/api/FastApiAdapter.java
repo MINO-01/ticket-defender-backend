@@ -5,6 +5,7 @@ import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisResponse;
+import com.ticket.defender_core.adapter.out.api.dto.Track1BulkJobDto;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 @Slf4j
@@ -39,6 +41,7 @@ public class FastApiAdapter {
 
     private static final String ANALYSIS_PATH = "/api/v1/clusters/analyze";
     private static final String PURCHASE_LIMIT_ANALYSIS_PATH = "/api/v2/clusters/analyze";
+    private static final String BULK_JOB_PATH = "/api/v2/clusters/jobs";
     private static final String TRACK1_AUTH_HEADER = "X-TD-Track1-Key";
     private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
     private static final Set<String> PERMITTED_HTTP_LOOPBACK_LITERALS = Set.of("127.0.0.1", "::1");
@@ -129,6 +132,35 @@ public class FastApiAdapter {
         Track1PurchaseLimitContractValidator.response(request, response);
         validateResponse(asV1Request(request), asV1Response(response));
         return response;
+    }
+
+    /** Bulk API calls are intentionally short; durable progress belongs to Spring's job table. */
+    public Track1BulkJobDto.Accepted createBulkJob(Track1BulkJobDto.Create request, String idempotencyKey) {
+        return bulkPost(BULK_JOB_PATH, request, idempotencyKey, Track1BulkJobDto.Accepted.class);
+    }
+    public Track1BulkJobDto.Status bulkJobStatus(UUID jobId) {
+        return bulkGet(BULK_JOB_PATH + "/" + jobId, Track1BulkJobDto.Status.class);
+    }
+    public Track1BulkJobDto.Results bulkResults(UUID jobId, String cursor) {
+        String path = BULK_JOB_PATH + "/" + jobId + "/results?limit=100&memberLimit=100" + (cursor == null ? "" : "&cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        return bulkGet(path, Track1BulkJobDto.Results.class);
+    }
+    public Track1BulkJobDto.Members bulkMembers(UUID jobId, String clusterId, String cursor) {
+        String path = BULK_JOB_PATH + "/" + jobId + "/results/" + java.net.URLEncoder.encode(clusterId, StandardCharsets.UTF_8) + "/members?limit=500" + (cursor == null ? "" : "&cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        return bulkGet(path, Track1BulkJobDto.Members.class);
+    }
+    public Track1BulkJobDto.Accepted retryBulkJob(UUID jobId) { return bulkPost(BULK_JOB_PATH + "/" + jobId + "/retry", null, null, Track1BulkJobDto.Accepted.class); }
+    private <T> T bulkGet(String path, Class<T> type) { return bulkRequest(restClient.get().uri(requirePermittedFastApiBaseUrl() + path), type); }
+    private <T> T bulkPost(String path, Object body, String idempotencyKey, Class<T> type) {
+        var request = restClient.post().uri(requirePermittedFastApiBaseUrl() + path).header(TRACK1_AUTH_HEADER, requireTrack1SharedSecret());
+        if (idempotencyKey != null) request.header("Idempotency-Key", idempotencyKey);
+        if (body == null) return request.retrieve().onStatus(HttpStatusCode::is3xxRedirection, (a,b)-> { throw new FastApiAuthenticationConfigurationException(); }).body(type);
+        return request.body(body).retrieve().onStatus(HttpStatusCode::is3xxRedirection, (a,b)-> { throw new FastApiAuthenticationConfigurationException(); }).body(type);
+    }
+    private <T> T bulkRequest(RestClient.RequestHeadersSpec<?> request, Class<T> type) {
+        try { return request.header(TRACK1_AUTH_HEADER, requireTrack1SharedSecret()).retrieve()
+                .onStatus(HttpStatusCode::is3xxRedirection, (a,b)-> { throw new FastApiAuthenticationConfigurationException(); }).body(type); }
+        catch (RestClientException cause) { throw cause; }
     }
 
     private MacroAnalysisRequest asV1Request(Track1PurchaseLimitAnalysisRequest request) {

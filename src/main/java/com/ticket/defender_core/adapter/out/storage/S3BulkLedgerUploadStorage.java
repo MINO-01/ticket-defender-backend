@@ -7,6 +7,7 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 
@@ -62,6 +63,19 @@ public final class S3BulkLedgerUploadStorage implements BulkLedgerUploadStorage 
     @Override public InputStream openVersion(String key, String versionId) {
         try { return reader.getObject(GetObjectRequest.builder().bucket(bucket).key(key).versionId(versionId).build()); }
         catch (Exception failure) { throw new Unavailable(failure); }
+    }
+    @Override public VerifiedObject putImmutable(String key, InputStream content, long bytes, String sha256) {
+        try {
+            var response = reader.putObject(PutObjectRequest.builder().bucket(bucket).key(key)
+                    .contentType("application/x-ndjson; charset=utf-8").contentLength(bytes).build(),
+                    RequestBody.fromInputStream(content, bytes));
+            String version = version(response.versionId());
+            if (version == null) throw new InvalidObject();
+            VerifiedObject verified = verify(key, version, bytes);
+            if (!sha256.equals(verified.sha256())) throw new ObjectChanged();
+            return verified;
+        } catch (ObjectChanged | InvalidObject failure) { throw failure;
+        } catch (Exception failure) { throw new Unavailable(failure); }
     }
     private static String version(String value) { return value == null || value.isBlank() || "null".equals(value) ? null : value; }
 }

@@ -29,6 +29,7 @@ public class BulkLedgerUploadConfig {
             @Override public UploadSession createUploadSession(String objectKey, long bytes, java.time.Instant expiresAt) { throw new Unavailable("Bulk ledger upload is disabled"); }
             @Override public VerifiedObject verify(String objectKey, String versionId, long maximumBytes) { throw new Unavailable("Bulk ledger upload is disabled"); }
             @Override public java.io.InputStream openVersion(String objectKey, String versionId) { throw new Unavailable("Bulk ledger upload is disabled"); }
+            @Override public VerifiedObject putImmutable(String objectKey, java.io.InputStream content, long bytes, String sha256) { throw new Unavailable("Bulk ledger upload is disabled"); }
         };
         if (endpoint.isBlank() || bucket.isBlank() || key.isBlank() || secret.isBlank())
             throw new IllegalStateException("Bulk ledger upload storage configuration is incomplete");

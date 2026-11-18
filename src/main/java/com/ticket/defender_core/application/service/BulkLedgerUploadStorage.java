@@ -9,6 +9,8 @@ public interface BulkLedgerUploadStorage {
     UploadSession createUploadSession(String serverObjectKey, long declaredBytes, Instant expiresAt);
     VerifiedObject verify(String serverObjectKey, String expectedVersionId, long maximumBytes);
     InputStream openVersion(String serverObjectKey, String versionId);
+    /** Stores an immutable, server-generated private artifact and returns the real S3 VersionId. */
+    VerifiedObject putImmutable(String serverObjectKey, InputStream content, long byteSize, String sha256);
 
     record UploadSession(URI uploadUrl, Instant expiresAt) { }
     record VerifiedObject(String versionId, long byteSize, String sha256) { }

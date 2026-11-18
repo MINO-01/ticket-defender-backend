@@ -24,12 +24,13 @@ public class BulkLedgerUploadConfig {
             @Value("${ticket-defender.bulk-ledger-upload.storage.region:us-east-1}") String region,
             @Value("${ticket-defender.bulk-ledger-upload.storage.bucket:}") String bucket,
             @Value("${ticket-defender.bulk-ledger-upload.storage.access-key:}") String key,
-            @Value("${ticket-defender.bulk-ledger-upload.storage.secret-key:}") String secret) {
+            @Value("${ticket-defender.bulk-ledger-upload.storage.secret-key:}") String secret,
+            @Value("${ticket-defender.bulk-ledger-track1.bulk.storage-prefix:}") String bulkArtifactPrefix) {
         if (!enabled) return new BulkLedgerUploadStorage() {
             @Override public UploadSession createUploadSession(String objectKey, long bytes, java.time.Instant expiresAt) { throw new Unavailable("Bulk ledger upload is disabled"); }
             @Override public VerifiedObject verify(String objectKey, String versionId, long maximumBytes) { throw new Unavailable("Bulk ledger upload is disabled"); }
             @Override public java.io.InputStream openVersion(String objectKey, String versionId) { throw new Unavailable("Bulk ledger upload is disabled"); }
-            @Override public VerifiedObject putImmutable(String objectKey, java.io.InputStream content, long bytes, String sha256) { throw new Unavailable("Bulk ledger upload is disabled"); }
+            @Override public VerifiedObject putImmutable(String objectKey, java.io.InputStream content, long bytes, String sha256, Runnable progress) { throw new Unavailable("Bulk ledger upload is disabled"); }
         };
         if (endpoint.isBlank() || bucket.isBlank() || key.isBlank() || secret.isBlank())
             throw new IllegalStateException("Bulk ledger upload storage configuration is incomplete");
@@ -40,6 +41,6 @@ public class BulkLedgerUploadConfig {
         S3Client client = S3Client.builder().endpointOverride(uri).region(Region.of(region)).forcePathStyle(true).credentialsProvider(credentials).build();
         S3Presigner presigner = S3Presigner.builder().endpointOverride(uri).region(Region.of(region)).credentialsProvider(credentials)
                 .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build()).build();
-        return new S3BulkLedgerUploadStorage(client, presigner, bucket);
+        return new S3BulkLedgerUploadStorage(client, presigner, bucket, bulkArtifactPrefix);
     }
 }

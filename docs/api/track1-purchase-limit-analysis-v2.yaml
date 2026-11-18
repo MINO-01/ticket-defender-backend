@@ -17,10 +17,10 @@ info:
     NETTED, duplicate handling is DEDUPLICATED, and every relevant ticket timestamp is inside that policy interval.
     Sales-phase-specific policy selection is intentionally out of scope until an authoritative sales-phase source and
     ticket-level phase reference are agreed; Spring must report that scope as not confirmed rather than guess.
-  x-contract-status: DATA31_INDIVIDUAL_TICKET_IMPLEMENTED_BACKEND_INGEST_BLOCKED
+  x-contract-status: DATA31_INDIVIDUAL_TICKET_IMPLEMENTED_PUBLIC_LEDGER_CONSUMER_GUARDED
   x-data-issue: https://github.com/MINO-01/ticket-defender-data/issues/30
   x-backend-input-contract:
-    status: DATA31_INDIVIDUAL_TICKET_COMPATIBLE_BACKEND_INGEST_BLOCKED
+    status: DATA31_INDIVIDUAL_TICKET_COMPATIBLE_PUBLIC_LEDGER_CONSUMER_GUARDED
     current-data-v2: "Data #31 accepts INDIVIDUAL_TICKET, ticketReference, ticketStatus, sourceVersion, and sourceAsOf. Spring sends them only when authoritative ledger facts exist."
     aggregate-snapshot: "ACCOUNT_LIMIT_SNAPSHOT is retained separately by the Spring contract and is never converted to the current Data #30 request."
     quantity-meaning: "purchaseLimitCalculationQuantity is distinct from currentEffectiveTicketQuantity; neither may be inferred by Spring."
@@ -33,6 +33,8 @@ info:
       - Missing policy semantics returns POLICY_NOT_CONFIRMED.
       - Missing factual quantity/time/status returns QUANTITY_DATA_INCOMPLETE.
       - An unsupported account snapshot is not a completed no-violation result.
+      - A public-ledger change revision, mixed ticket sourceVersion, or unverified cancellation/refund reflection is never sent as COMPLETE/NETTED.
+      - The immutable public ledger version (including generation/revision lineage) is retained by Spring's run record; only a complete snapshot with one provider sourceVersion is sent as quantity provenance.
 servers:
   - url: http://localhost:8000/api/v2
     description: Isolated FastAPI Track 1 internal endpoint

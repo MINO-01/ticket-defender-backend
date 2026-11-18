@@ -3,6 +3,8 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.out.api.dto.FastApiClusterResponse;
 import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisResponse;
+import com.ticket.defender_core.adapter.out.persistence.PurchaseLimitPolicyRepository;
+import com.ticket.defender_core.domain.PurchaseLimitPolicy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -31,12 +33,13 @@ public class BulkLedgerTrack1OutboxConsumer {
     private final TransactionTemplate tx;
     private final SyntheticReservationImportGate gate;
     private final Track1PurchaseLimitAnalysisService analysis;
+    private final PurchaseLimitPolicyRepository policies;
     private final boolean enabled;
 
     public BulkLedgerTrack1OutboxConsumer(JdbcTemplate jdbc, TransactionTemplate tx, SyntheticReservationImportGate gate,
-                                          Track1PurchaseLimitAnalysisService analysis,
+                                          Track1PurchaseLimitAnalysisService analysis, PurchaseLimitPolicyRepository policies,
                                           @Value("${ticket-defender.bulk-ledger-track1.enabled:false}") boolean enabled) {
-        this.jdbc = jdbc; this.tx = tx; this.gate = gate; this.analysis = analysis; this.enabled = enabled;
+        this.jdbc = jdbc; this.tx = tx; this.gate = gate; this.analysis = analysis; this.policies = policies; this.enabled = enabled;
     }
 
     @Scheduled(fixedDelayString = "${ticket-defender.bulk-ledger-track1.worker-delay:PT30S}")
@@ -103,26 +106,32 @@ public class BulkLedgerTrack1OutboxConsumer {
         if (version == null) return blockedInput(claim, "LEDGER_VERSION_NOT_PUBLISHED");
         List<UUID> lineage = lineage(version);
         if (lineage == null) return blockedInput(claim, "LEDGER_LINEAGE_INVALID");
-        LocalDateTime snapshotAsOf = baselineAsOf(lineage.getFirst());
-        if (snapshotAsOf == null) return blockedInput(claim, "LEDGER_BASELINE_UNKNOWN");
         List<Ticket> tickets = tickets(lineage, claim.versionId());
         if (tickets.isEmpty()) return blockedInput(claim, "NO_EFFECTIVE_TICKETS");
         if (tickets.size() >= MAX_TICKETS) return blockedInput(claim, "DATA_INPUT_TOO_LARGE");
-        if (tickets.stream().anyMatch(t -> !"ACTIVE".equals(t.status()) || !"TICKET".equals(t.unit()) || t.account() == null || t.signalMissing()))
+        if (tickets.stream().anyMatch(t -> !validQuantityUnit(t.unit()) || t.account() == null || t.signalMissing()))
             return blockedInput(claim, "LEDGER_SIGNAL_OR_STATUS_INCOMPLETE");
         String externalEvent = jdbc.queryForObject("select external_event_ref from events where id=? and tenant_id=?", String.class,
                 claim.eventId().toString(), claim.tenantId().toString());
         UUID requestId = UUID.randomUUID();
-        List<Track1PurchaseLimitAnalysisRequest.Ticket> payload = tickets.stream().map(t ->
+        Decision decision = decide(version, tickets, policies.findByTenantIdAndEventIdOrderByPerformanceIdAsc(claim.tenantId(), claim.eventId()), claim.performanceId());
+        if (decision.payload().isEmpty()) return blockedInput(claim, "NO_EFFECTIVE_TICKETS_AFTER_NETTING");
+        List<Track1PurchaseLimitAnalysisRequest.Ticket> payload = decision.payload().stream().map(t ->
                 new Track1PurchaseLimitAnalysisRequest.Ticket(t.account(), t.reservation(), externalEvent, claim.performanceId(),
                         t.purchasedAt().atOffset(ZoneOffset.UTC), t.quantity(), t.payment(), t.address(), t.device(), t.ip(),
                         Track1PurchaseLimitAnalysisRequest.QuantityInputType.INDIVIDUAL_TICKET, t.ticket(),
-                        Track1PurchaseLimitAnalysisRequest.TicketStatus.ACTIVE, t.sourceVersion(), snapshotAsOf.atOffset(ZoneOffset.UTC))).toList();
+                        Track1PurchaseLimitAnalysisRequest.TicketStatus.valueOf(t.status()), t.sourceVersion(),
+                        version.asOf() == null ? null : version.asOf().atOffset(ZoneOffset.UTC))).toList();
+        boolean policyConfirmed = decision.policy() != null;
         var scope = new Track1PurchaseLimitAnalysisRequest.PerformanceScope(claim.eventId(), externalEvent, claim.performanceId(),
-                Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.POLICY_NOT_CONFIRMED, null,
-                Track1PurchaseLimitAnalysisRequest.QuantityDataStatus.INCOMPLETE, version.id().toString(), snapshotAsOf.atOffset(ZoneOffset.UTC),
-                Track1PurchaseLimitAnalysisRequest.CancellationHandling.NOT_CONFIRMED,
-                Track1PurchaseLimitAnalysisRequest.DuplicateHandling.DEDUPLICATED, "PUBLIC_LEDGER_POLICY_NOT_CONFIRMED");
+                policyConfirmed ? Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.CONFIRMED : Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.POLICY_NOT_CONFIRMED,
+                policyConfirmed ? confirmedPolicy(decision.policy()) : null,
+                decision.complete() ? Track1PurchaseLimitAnalysisRequest.QuantityDataStatus.COMPLETE
+                        : policyConfirmed ? Track1PurchaseLimitAnalysisRequest.QuantityDataStatus.INCOMPLETE : Track1PurchaseLimitAnalysisRequest.QuantityDataStatus.UNKNOWN,
+                decision.complete() ? decision.quantitySourceVersion() : null,
+                decision.complete() ? version.asOf().atOffset(ZoneOffset.UTC) : null,
+                decision.complete() ? Track1PurchaseLimitAnalysisRequest.CancellationHandling.NETTED : Track1PurchaseLimitAnalysisRequest.CancellationHandling.NOT_CONFIRMED,
+                Track1PurchaseLimitAnalysisRequest.DuplicateHandling.DEDUPLICATED, decision.reason());
         UUID run = UUID.randomUUID();
         Integer previousAttempts = jdbc.queryForObject("select attempt_count from td_bulk_ledger_track1_analysis_jobs where outbox_id=? for update",
                 Integer.class, claim.outboxId().toString());
@@ -131,13 +140,15 @@ public class BulkLedgerTrack1OutboxConsumer {
         jdbc.update("""
                 insert into track1_purchase_limit_runs(id,tenant_id,event_id,performance_id,ledger_batch_id,ledger_version_id,publication_outbox_id,
                  active_ledger_batch_id,active_ledger_version_id,created_by_membership_id,idempotency_key_digest,request_digest,analysis_request_id,
-                 ledger_source_version,execution_status,netted_excluded_row_count,created_at,row_version)
-                select ?,?,?,?,?,?,?,null,?,p.requester_membership_id,?,?,?,?,'IN_PROGRESS',0,utc_timestamp(6),0
+                 ledger_source_version,policy_id,policy_version,evaluation_reason,execution_status,netted_excluded_row_count,created_at,row_version)
+                select ?,?,?,?,?,?,?,null,?,p.requester_membership_id,?,?,?,?,?,?,?,'IN_PROGRESS',?,utc_timestamp(6),0
                 from td_bulk_ledger_publications p where p.id=(select publication_id from td_bulk_ledger_publication_outbox where id=?)
                 """, run.toString(), claim.tenantId().toString(), claim.eventId().toString(), claim.performanceId().toString(), null,
                 claim.versionId().toString(), claim.outboxId().toString(), claim.versionId().toString(),
                 attemptIdempotencyDigest(claim.outboxId(), attemptNo),
-                CandidatePipelineSupport.sha256("BL06_REQUEST", claim.versionId().toString(), Integer.toString(attemptNo)), requestId.toString(), claim.versionId().toString(), claim.outboxId().toString());
+                CandidatePipelineSupport.sha256("BL06_REQUEST", claim.versionId().toString(), Integer.toString(attemptNo)), requestId.toString(), claim.versionId().toString(),
+                policyConfirmed ? decision.policy().getId().toString() : null,
+                policyConfirmed ? decision.policy().getPolicyVersion() : null, decision.reason(), decision.excludedRows(), claim.outboxId().toString());
         jdbc.update("update td_bulk_ledger_track1_analysis_jobs set status='PROCESSING',attempt_count=attempt_count+1,run_id=?,updated_at=utc_timestamp(6) where outbox_id=?",
                 run.toString(), claim.outboxId().toString());
         return new Input(run, new Track1PurchaseLimitAnalysisRequest(requestId.toString(), List.of(scope), payload));
@@ -145,11 +156,13 @@ public class BulkLedgerTrack1OutboxConsumer {
 
     private Version publishedVersion(Claim claim) {
         List<Version> found = jdbc.query("""
-                select v.id,v.base_version_id,v.generation_no,v.revision_no,v.source_as_of
+                select v.id,v.base_version_id,v.generation_no,v.revision_no,v.source_as_of,j.mode,j.complete_snapshot
                 from td_bulk_ledger_versions v join td_bulk_ledger_publication_history h on h.version_id=v.id
+                  join td_bulk_import_jobs j on j.id=v.import_id and j.tenant_id=v.tenant_id
                 where v.id=? and v.tenant_id=? and v.event_id=? and v.performance_id=? and v.status='PUBLISHED'
                 """, (rs,n) -> new Version(uuid(rs.getString(1)), nullable(rs.getString(2)), rs.getLong(3), rs.getLong(4),
-                rs.getTimestamp(5) == null ? null : rs.getTimestamp(5).toLocalDateTime()), claim.versionId().toString(), claim.tenantId().toString(),
+                rs.getTimestamp(5) == null ? null : rs.getTimestamp(5).toLocalDateTime(),
+                "FULL_SNAPSHOT".equals(rs.getString(6)) && rs.getBoolean(7)), claim.versionId().toString(), claim.tenantId().toString(),
                 claim.eventId().toString(), claim.performanceId().toString());
         return found.size() == 1 ? found.getFirst() : null;
     }
@@ -160,19 +173,13 @@ public class BulkLedgerTrack1OutboxConsumer {
             ids.add(cursor.id());
             if (cursor.revision() == 0) return cursor.base() == null ? ids.reversed() : null;
             if (cursor.base() == null || cursor.revision() < 1) return null;
-            List<Version> parent = jdbc.query("select id,base_version_id,generation_no,revision_no,source_as_of from td_bulk_ledger_versions where id=? and status='PUBLISHED'",
+            List<Version> parent = jdbc.query("select id,base_version_id,generation_no,revision_no,source_as_of,false from td_bulk_ledger_versions where id=? and status='PUBLISHED'",
                     (rs,n) -> new Version(uuid(rs.getString(1)), nullable(rs.getString(2)), rs.getLong(3),rs.getLong(4),
-                            rs.getTimestamp(5) == null ? null : rs.getTimestamp(5).toLocalDateTime()), cursor.base().toString());
+                            rs.getTimestamp(5) == null ? null : rs.getTimestamp(5).toLocalDateTime(), rs.getBoolean(6)), cursor.base().toString());
             if (parent.size()!=1 || parent.getFirst().generation()!=cursor.generation() || parent.getFirst().revision()!=cursor.revision()-1) return null;
             cursor = parent.getFirst();
         }
     }
-    private LocalDateTime baselineAsOf(UUID baseline) {
-        List<LocalDateTime> found = jdbc.query("select source_as_of from td_bulk_ledger_versions where id=? and revision_no=0 and status='PUBLISHED'",
-                (rs,n) -> rs.getTimestamp(1) == null ? null : rs.getTimestamp(1).toLocalDateTime(), baseline.toString());
-        return found.size() == 1 ? found.getFirst() : null;
-    }
-
     private List<Ticket> tickets(List<UUID> lineage, UUID currentVersion) {
         String marks = String.join(",", java.util.Collections.nCopies(lineage.size(), "?"));
         ArrayList<Ticket> result = new ArrayList<>(); String after = "";
@@ -193,6 +200,69 @@ public class BulkLedgerTrack1OutboxConsumer {
         }
         return result;
     }
+
+    /**
+     * A public version is usable for a limit evaluation only when it is itself a complete snapshot.
+     * A historical baseline plus later change events proves lineage, but does not by itself prove that
+     * all cancellation/refund outcomes have been reflected in the current source.  It therefore remains
+     * an explicitly incomplete Data v2 input rather than being silently netted.
+     */
+    static Decision decide(Version version, List<Ticket> ledger, List<PurchaseLimitPolicy> all, UUID performanceId) {
+        PurchaseLimitPolicy policy = selectPolicy(ledger, all, performanceId);
+        if (policy == null) return Decision.unconfirmed(ledger, "NO_CONFIRMED_ACCOUNT_POLICY");
+        if (policy.getApplicationScope() == PurchaseLimitPolicy.ApplicationScope.EVENT)
+            return Decision.unconfirmed(ledger, "EVENT_SCOPE_AGGREGATION_NOT_SUPPORTED");
+        if (policy.getCancellationRefundRule() != PurchaseLimitPolicy.CancellationRefundRule.NETTED)
+            return Decision.incomplete(policy, ledger, "GROSS_RULE_NOT_SUPPORTED");
+        if (!version.completeSnapshot() || version.asOf() == null)
+            return Decision.incomplete(policy, ledger, "PUBLIC_LEDGER_SNAPSHOT_INCOMPLETE");
+        if (ledger.stream().anyMatch(ticket -> ticket.purchasedAt().isAfter(version.asOf())))
+            return Decision.incomplete(policy, ledger, "PUBLIC_LEDGER_SOURCE_AS_OF_INVALID");
+        String sourceVersion = singleSourceVersion(ledger);
+        if (sourceVersion == null)
+            return Decision.incomplete(policy, ledger, "PUBLIC_LEDGER_SOURCE_VERSION_MIXED");
+        boolean ready = ledger.stream().allMatch(ticket -> PurchaseLimitQuantityInputContract.assess(policy,
+                individual(ticket, version.asOf())).status()
+                == PurchaseLimitQuantityInputContract.AssessmentStatus.READY_FOR_INDIVIDUAL_TICKET_V2);
+        if (!ready) return Decision.incomplete(policy, ledger, "PUBLIC_LEDGER_QUANTITY_INCOMPLETE");
+        List<Ticket> active = ledger.stream().filter(ticket -> "ACTIVE".equals(ticket.status())).toList();
+        return new Decision(policy, true, active, ledger.size() - active.size(), sourceVersion, null);
+    }
+
+    private static PurchaseLimitPolicy selectPolicy(List<Ticket> ledger, List<PurchaseLimitPolicy> all, UUID performanceId) {
+        PurchaseLimitPolicy selected = null;
+        for (Ticket ticket : ledger) {
+            PurchaseLimitPolicySelector.Result result = PurchaseLimitPolicySelector.select(all,
+                    new PurchaseLimitPolicySelector.Context(performanceId, null,
+                            PurchaseLimitPolicy.LimitSubject.ACCOUNT, false, ticket.purchasedAt()));
+            if (result.status() != PurchaseLimitPolicySelector.Status.SELECTED
+                    || selected != null && !selected.getId().equals(result.policy().getId())) return null;
+            selected = result.policy();
+        }
+        return selected;
+    }
+
+    private static String singleSourceVersion(List<Ticket> tickets) {
+        List<String> versions = tickets.stream().map(Ticket::sourceVersion).filter(value -> value != null && !value.isBlank())
+                .distinct().toList();
+        return versions.size() == 1 && tickets.stream().allMatch(ticket -> ticket.sourceVersion() != null && !ticket.sourceVersion().isBlank())
+                ? versions.getFirst() : null;
+    }
+
+    private static PurchaseLimitQuantityInputContract.IndividualTicket individual(Ticket ticket, LocalDateTime sourceAsOf) {
+        return new PurchaseLimitQuantityInputContract.IndividualTicket(ticket.account(), ticket.reservation(), ticket.ticket(),
+                ticket.purchasedAt().toInstant(ZoneOffset.UTC), ticket.quantity(),
+                PurchaseLimitQuantityInputContract.TicketStatus.valueOf(ticket.status()), ticket.sourceVersion(),
+                sourceAsOf.toInstant(ZoneOffset.UTC));
+    }
+
+    private static Track1PurchaseLimitAnalysisRequest.ConfirmedPolicy confirmedPolicy(PurchaseLimitPolicy policy) {
+        return new Track1PurchaseLimitAnalysisRequest.ConfirmedPolicy(policy.getMaxTicketsPerAccount(), policy.getPolicyVersion(),
+                policy.getEffectiveFrom().atOffset(ZoneOffset.UTC),
+                policy.getEffectiveUntil() == null ? null : policy.getEffectiveUntil().atOffset(ZoneOffset.UTC));
+    }
+
+    private static boolean validQuantityUnit(String unit) { return "TICKET".equals(unit) || "ORDER_LINE".equals(unit); }
 
     private Input blockedInput(Claim c, String code) { block(c, code); return null; }
     private void complete(Claim c, Input input, Track1PurchaseLimitAnalysisResponse response) {
@@ -240,8 +310,13 @@ public class BulkLedgerTrack1OutboxConsumer {
         return CandidatePipelineSupport.sha256("BL06", outboxId.toString(), Integer.toString(attemptNo));
     }
     private record Claim(UUID outboxId,UUID tenantId,UUID eventId,UUID performanceId,UUID versionId,String owner,long fence){}
-    private record Version(UUID id,UUID base,long generation,long revision,LocalDateTime asOf){}
-    private record Ticket(String ticket,String reservation,String account,String keyVersion,LocalDateTime purchasedAt,int quantity,String unit,String status,String sourceVersion,String payment,String address,String device,String ip,String signalVersion,String signalSourceVersion){ boolean signalMissing(){return signalVersion==null||!signalVersion.equals(keyVersion)||!sourceVersion.equals(signalSourceVersion)||(payment==null&&address==null&&device==null&&ip==null);} }
+    static record Version(UUID id,UUID base,long generation,long revision,LocalDateTime asOf,boolean completeSnapshot){}
+    static record Ticket(String ticket,String reservation,String account,String keyVersion,LocalDateTime purchasedAt,int quantity,String unit,String status,String sourceVersion,String payment,String address,String device,String ip,String signalVersion,String signalSourceVersion){ boolean signalMissing(){return signalVersion==null||!signalVersion.equals(keyVersion)||!sourceVersion.equals(signalSourceVersion)||(payment==null&&address==null&&device==null&&ip==null);} }
+    static record Decision(PurchaseLimitPolicy policy, boolean complete, List<Ticket> payload, int excludedRows,
+                           String quantitySourceVersion, String reason) {
+        static Decision unconfirmed(List<Ticket> ledger, String reason) { return new Decision(null, false, ledger, 0, null, reason); }
+        static Decision incomplete(PurchaseLimitPolicy policy, List<Ticket> ledger, String reason) { return new Decision(policy, false, ledger, 0, null, reason); }
+    }
     private record Input(UUID runId,Track1PurchaseLimitAnalysisRequest request){}
     private static final class Retryable extends RuntimeException { private final String code; private Retryable(String code){this.code=code;} String code(){return code;} }
 }

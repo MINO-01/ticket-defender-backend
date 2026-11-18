@@ -72,6 +72,39 @@ class FastApiAdapterPurchaseLimitHttpTest {
         }
     }
 
+    @Test
+    void preservesQuantityDataIncompleteWhenCancellationNettingIsNotConfirmed() throws IOException {
+        AtomicReference<String> body = new AtomicReference<>();
+        HttpServer server = server(response("QUANTITY_DATA_INCOMPLETE", "policy-v1", "[]"), new AtomicReference<>(), body);
+        try {
+            Track1PurchaseLimitAnalysisRequest request = new Track1PurchaseLimitAnalysisRequest(REQUEST_ID, List.of(
+                    new Track1PurchaseLimitAnalysisRequest.PerformanceScope(EVENT_ID, "event-external", PERFORMANCE_ID,
+                            Track1PurchaseLimitAnalysisRequest.PolicyVerificationStatus.CONFIRMED,
+                            new Track1PurchaseLimitAnalysisRequest.ConfirmedPolicy(2, "policy-v1",
+                                    OffsetDateTime.parse("2026-11-01T00:00:00Z"), null),
+                            Track1PurchaseLimitAnalysisRequest.QuantityDataStatus.INCOMPLETE, null, null,
+                            Track1PurchaseLimitAnalysisRequest.CancellationHandling.NOT_CONFIRMED,
+                            Track1PurchaseLimitAnalysisRequest.DuplicateHandling.DEDUPLICATED,
+                            "PUBLIC_LEDGER_SNAPSHOT_INCOMPLETE")), List.of(new Track1PurchaseLimitAnalysisRequest.Ticket(
+                    "account-1", "reservation-1", "event-external", PERFORMANCE_ID,
+                    OffsetDateTime.parse("2026-11-02T10:00:00Z"), 1, "a".repeat(64), null, "b".repeat(64), null,
+                    Track1PurchaseLimitAnalysisRequest.QuantityInputType.INDIVIDUAL_TICKET, "ticket-1",
+                    Track1PurchaseLimitAnalysisRequest.TicketStatus.CANCELLED, "provider-v7",
+                    OffsetDateTime.parse("2026-11-09T00:00:00Z"))));
+
+            Track1PurchaseLimitAnalysisResponse response = adapter(server.getAddress().getPort()).requestPurchaseLimitAnalysis(request);
+
+            assertThat(response.purchaseLimitEvaluations()).singleElement()
+                    .extracting(Track1PurchaseLimitAnalysisResponse.PurchaseLimitEvaluation::status)
+                    .isEqualTo(Track1PurchaseLimitAnalysisResponse.EvaluationStatus.QUANTITY_DATA_INCOMPLETE);
+            assertThat(body.get()).contains("\"quantityDataStatus\":\"INCOMPLETE\"")
+                    .contains("\"cancellationHandling\":\"NOT_CONFIRMED\"")
+                    .contains("\"ticketStatus\":\"CANCELLED\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private FastApiAdapter adapter(int port) {
         FastApiAdapter adapter = new FastApiAdapter(RestClient.builder());
         ReflectionTestUtils.setField(adapter, "fastApiUrl", "http://127.0.0.1:" + port);

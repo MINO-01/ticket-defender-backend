@@ -21,10 +21,14 @@ class BulkLedgerTrack1OutboxMigrationMySqlTest {
         try (Connection connection = source.getConnection()) {
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl06-track1-outbox-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-track1-bulk-job-migration.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-track1-auxiliary-results-migration.sql"));
         }
         assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_analysis_jobs' and constraint_name='uk_td_bl06_analysis_outbox'", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_ticket_signals' and constraint_name='uk_td_bl06_signal_ticket'", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_bulk_jobs' and constraint_name='uk_bl07_job_outbox'", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_bulk_members' and constraint_name='PRIMARY'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_policy_snapshots' and constraint_name='PRIMARY'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_ledger_track1_bulk_limit_findings' and constraint_name='PRIMARY'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.columns where table_schema=database() and table_name='td_bulk_ledger_track1_bulk_shared_signal_observations' and column_name='source_cursor'", Integer.class)).isEqualTo(1);
     }
 }

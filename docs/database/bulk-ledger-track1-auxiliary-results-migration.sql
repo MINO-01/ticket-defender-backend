@@ -37,6 +37,7 @@ CREATE TABLE td_bulk_ledger_track1_policy_snapshots (
 CREATE TABLE td_bulk_ledger_track1_bulk_shared_signal_observations (
     job_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     observation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    source_cursor VARCHAR(512) NULL,
     performance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     scope_type VARCHAR(16) NOT NULL, signal_type VARCHAR(16) NOT NULL,
     distinct_account_count INT NOT NULL, scope_account_count INT NOT NULL, distinct_reservation_count INT NOT NULL,

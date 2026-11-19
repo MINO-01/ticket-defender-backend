@@ -34,4 +34,37 @@ class Track1BulkAuxiliaryContractValidatorTest {
         var invalid=new Track1BulkJobDto.PurchaseLimitEvaluation(event,"event",performance,"POLICY_NOT_CONFIRMED","v1",0);
         assertThatThrownBy(()->Track1BulkAuxiliaryContractValidator.evaluations(job,new Track1BulkJobDto.PurchaseLimitEvaluationPage(job,"COMPLETED",null,"COMPLETED",List.of(invalid)))).isInstanceOf(FastApiResponseContractException.class);
     }
+
+    @Test void rejectsFindingWhoseReservationQuantitiesDoNotMatchTheAccountTotal() {
+        var finding=new Track1BulkJobDto.AccountLimitFinding("a".repeat(64),4,2,"p1",List.of(
+                new Track1BulkJobDto.ReservationQuantity("b".repeat(64),3)));
+        var page=new Track1BulkJobDto.PurchaseLimitFindingPage(job,UUID.randomUUID(),"COMPLETED",null,"EVALUATED","p1",List.of(finding));
+        assertThatThrownBy(()->Track1BulkAuxiliaryContractValidator.findings(job,page.performanceId(),page))
+                .isInstanceOf(FastApiResponseContractException.class);
+    }
+
+    @Test void rejectsFindingThatDoesNotExceedTheConfirmedAccountLimit() {
+        var finding=new Track1BulkJobDto.AccountLimitFinding("a".repeat(64),2,2,"p1",List.of(
+                new Track1BulkJobDto.ReservationQuantity("b".repeat(64),2)));
+        var page=new Track1BulkJobDto.PurchaseLimitFindingPage(job,UUID.randomUUID(),"COMPLETED",null,"EVALUATED","p1",List.of(finding));
+        assertThatThrownBy(()->Track1BulkAuxiliaryContractValidator.findings(job,page.performanceId(),page))
+                .isInstanceOf(FastApiResponseContractException.class);
+    }
+
+    @Test void rejectsFindingWhenReservationQuantityAdditionOverflows() {
+        var finding=new Track1BulkJobDto.AccountLimitFinding("a".repeat(64),Long.MAX_VALUE,1,"p1",List.of(
+                new Track1BulkJobDto.ReservationQuantity("b".repeat(64),Long.MAX_VALUE),
+                new Track1BulkJobDto.ReservationQuantity("c".repeat(64),1)));
+        var page=new Track1BulkJobDto.PurchaseLimitFindingPage(job,UUID.randomUUID(),"COMPLETED",null,"EVALUATED","p1",List.of(finding));
+        assertThatThrownBy(()->Track1BulkAuxiliaryContractValidator.findings(job,page.performanceId(),page))
+                .isInstanceOf(FastApiResponseContractException.class);
+    }
+
+    @Test void acceptsFindingWhoseReservationQuantitiesMatchAnExceededLimit() {
+        var finding=new Track1BulkJobDto.AccountLimitFinding("a".repeat(64),3,2,"p1",List.of(
+                new Track1BulkJobDto.ReservationQuantity("b".repeat(64),1),
+                new Track1BulkJobDto.ReservationQuantity("c".repeat(64),2)));
+        var page=new Track1BulkJobDto.PurchaseLimitFindingPage(job,UUID.randomUUID(),"COMPLETED",null,"EVALUATED","p1",List.of(finding));
+        assertThatCode(()->Track1BulkAuxiliaryContractValidator.findings(job,page.performanceId(),page)).doesNotThrowAnyException();
+    }
 }

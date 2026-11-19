@@ -59,9 +59,18 @@ final class Track1BulkAuxiliaryContractValidator {
                     || item.maxTicketsPerAccount() < 1 || !page.policyVersion().equals(item.policyVersion())
                     || item.reservationQuantities() == null || item.reservationQuantities().isEmpty()) invalid();
             Set<String> reservations = new HashSet<>();
-            for (var reservation : item.reservationQuantities())
+            long reservationTotal = 0;
+            for (var reservation : item.reservationQuantities()) {
                 if (reservation == null || !token(reservation.reservationNo()) || !reservations.add(reservation.reservationNo())
                         || reservation.effectiveTicketQuantity() < 1) invalid();
+                try {
+                    reservationTotal = Math.addExact(reservationTotal, reservation.effectiveTicketQuantity());
+                } catch (ArithmeticException overflow) {
+                    invalid();
+                }
+            }
+            if (reservationTotal != item.effectiveTicketQuantity()
+                    || item.effectiveTicketQuantity() <= item.maxTicketsPerAccount()) invalid();
         }
         cursor(page.nextCursor());
     }

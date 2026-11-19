@@ -1,6 +1,11 @@
 package com.ticket.defender_core.application.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
+
+import com.ticket.defender_core.adapter.out.api.FastApiResponseContractException;
 
 import java.lang.reflect.Proxy;
 import java.sql.PreparedStatement;
@@ -98,5 +103,20 @@ class BulkLedgerTrack1BulkWorkerTest {
         assertThat(BulkLedgerTrack1BulkWorker.exactlyOneRequiredEvaluation(1,2)).isFalse();
         assertThat(BulkLedgerTrack1BulkWorker.sameEvaluationCursor("10","10")).isTrue();
         assertThat(BulkLedgerTrack1BulkWorker.sameEvaluationCursor("10","11")).isFalse();
+    }
+
+    @Test
+    void blocksDataResponseContractViolationsButRetriesDependencyFailures() {
+        assertThat(BulkLedgerTrack1BulkWorker.dataContractFailureCode(new FastApiResponseContractException("invalid")))
+                .isEqualTo("DATA_RESPONSE_CONTRACT_INVALID");
+        assertThat(BulkLedgerTrack1BulkWorker.dataContractFailureCode(new ResourceAccessException("offline"))).isNull();
+        assertThat(BulkLedgerTrack1BulkWorker.dataContractFailureCode(new HttpServerErrorException(HttpStatus.SERVICE_UNAVAILABLE))).isNull();
+    }
+
+    @Test
+    void distinguishesSharedObservationReplaysFromCrossCursorDuplicates() {
+        assertThat(BulkLedgerTrack1BulkWorker.sameSharedCursor("10", "10")).isTrue();
+        assertThat(BulkLedgerTrack1BulkWorker.sameSharedCursor(null, null)).isTrue();
+        assertThat(BulkLedgerTrack1BulkWorker.sameSharedCursor("10", "11")).isFalse();
     }
 }

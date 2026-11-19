@@ -65,4 +65,15 @@ class BulkLedgerTrack1BulkWorkerTest {
         BulkLedgerTrack1BulkWorker.configureMySqlStreaming(statement);
         assertThat(fetchSize.get()).isEqualTo(Integer.MIN_VALUE);
     }
+
+    @Test
+    void rejectsRepeatedOrNonNumericDataCursorsInsteadOfTreatingAPartialPageAsComplete() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("10", "10"))
+                .isInstanceOf(RuntimeException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("10", "next"))
+                .isInstanceOf(RuntimeException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("10", "9"))
+                .isInstanceOf(RuntimeException.class);
+        BulkLedgerTrack1BulkWorker.rejectCursor("10", "11");
+    }
 }

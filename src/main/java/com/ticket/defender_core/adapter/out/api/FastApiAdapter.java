@@ -149,7 +149,23 @@ public class FastApiAdapter {
         String path = BULK_JOB_PATH + "/" + jobId + "/results/" + java.net.URLEncoder.encode(clusterId, StandardCharsets.UTF_8) + "/members?limit=500" + (cursor == null ? "" : "&cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8));
         return bulkGet(path, Track1BulkJobDto.Members.class);
     }
+    public Track1BulkJobDto.SharedSignalObservationPage bulkSharedSignalObservations(UUID jobId, String cursor) {
+        var page = bulkGet(BULK_JOB_PATH + "/" + jobId + "/auxiliary/shared-signal-observations?limit=500"
+                + cursor(cursor), Track1BulkJobDto.SharedSignalObservationPage.class);
+        Track1BulkAuxiliaryContractValidator.shared(jobId, page); return page;
+    }
+    public Track1BulkJobDto.PurchaseLimitEvaluationPage bulkPurchaseLimitEvaluations(UUID jobId, String cursor) {
+        var page = bulkGet(BULK_JOB_PATH + "/" + jobId + "/auxiliary/purchase-limit-evaluations?limit=500"
+                + cursor(cursor), Track1BulkJobDto.PurchaseLimitEvaluationPage.class);
+        Track1BulkAuxiliaryContractValidator.evaluations(jobId, page); return page;
+    }
+    public Track1BulkJobDto.PurchaseLimitFindingPage bulkPurchaseLimitFindings(UUID jobId, UUID performanceId, String cursor) {
+        var page = bulkGet(BULK_JOB_PATH + "/" + jobId + "/auxiliary/purchase-limit-evaluations/"
+                + performanceId + "/findings?limit=500" + cursor(cursor), Track1BulkJobDto.PurchaseLimitFindingPage.class);
+        Track1BulkAuxiliaryContractValidator.findings(jobId, performanceId, page); return page;
+    }
     public Track1BulkJobDto.Accepted retryBulkJob(UUID jobId) { return bulkPost(BULK_JOB_PATH + "/" + jobId + "/retry", null, null, Track1BulkJobDto.Accepted.class); }
+    private static String cursor(String cursor) { return cursor == null ? "" : "&cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8); }
     private <T> T bulkGet(String path, Class<T> type) { return bulkRequest(restClient.get().uri(requirePermittedFastApiBaseUrl() + path), type); }
     private <T> T bulkPost(String path, Object body, String idempotencyKey, Class<T> type) {
         var request = restClient.post().uri(requirePermittedFastApiBaseUrl() + path).header(TRACK1_AUTH_HEADER, requireTrack1SharedSecret());

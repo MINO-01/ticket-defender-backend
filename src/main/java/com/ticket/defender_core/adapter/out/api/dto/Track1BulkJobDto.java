@@ -29,4 +29,24 @@ public final class Track1BulkJobDto {
                           List<String> deviceIdHashes, List<String> ipHashes) { }
     public record Members(UUID jobId, String clusterId, String nextCursor, List<Member> members) { }
     public record Member(String accountId, String reservationNo, String eventId) { }
+    public record SharedSignalObservationPage(UUID jobId, String status, String nextCursor,
+                                              String sharedSignalObservationsStatus,
+                                              List<SharedSignalObservation> sharedSignalObservations) { }
+    public record SharedSignalObservation(String observationId, String scopeType, String scopeId, String signalType,
+                                          int distinctAccountCount, int scopeAccountCount, int distinctReservationCount,
+                                          Long totalTicketQuantity, String ticketQuantityStatus,
+                                          SharedSignalCorroboration corroboration, String ipNetworkType,
+                                          Long purchaseWindowSeconds, boolean excludedFromLouvain) { }
+    public record SharedSignalCorroboration(int paymentSharedAccountCount, int deviceSharedAccountCount) { }
+    public record PurchaseLimitEvaluationPage(UUID jobId, String status, String nextCursor,
+                                              String purchaseLimitEvaluationsStatus,
+                                              List<PurchaseLimitEvaluation> purchaseLimitEvaluations) { }
+    public record PurchaseLimitEvaluation(UUID internalEventId, String eventId, UUID performanceId, String status,
+                                          String policyVersion, int accountLimitFindingCount) { }
+    public record PurchaseLimitFindingPage(UUID jobId, UUID performanceId, String status, String nextCursor,
+                                           String evaluationStatus, String policyVersion,
+                                           List<AccountLimitFinding> accountLimitFindings) { }
+    public record AccountLimitFinding(String accountId, long effectiveTicketQuantity, int maxTicketsPerAccount,
+                                      String policyVersion, List<ReservationQuantity> reservationQuantities) { }
+    public record ReservationQuantity(String reservationNo, long effectiveTicketQuantity) { }
 }

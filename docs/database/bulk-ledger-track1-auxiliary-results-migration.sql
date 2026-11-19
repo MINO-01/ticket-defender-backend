@@ -59,7 +59,7 @@ CREATE TABLE td_bulk_ledger_track1_bulk_limit_evaluations (
     internal_event_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     external_event_id VARCHAR(128) NOT NULL, evaluation_status VARCHAR(48) NOT NULL,
     policy_version VARCHAR(128) NULL, expected_finding_count INT NOT NULL,
-    findings_cursor VARCHAR(512) NULL, findings_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    source_cursor VARCHAR(512) NULL, findings_cursor VARCHAR(512) NULL, findings_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     PRIMARY KEY(job_id,performance_id), KEY idx_bl07_limit_evaluation_status(job_id,findings_status),
     CONSTRAINT fk_bl07_limit_evaluation_job FOREIGN KEY(job_id) REFERENCES td_bulk_ledger_track1_bulk_jobs(id),
     CONSTRAINT chk_bl07_limit_evaluation_status CHECK (evaluation_status IN ('EVALUATED','POLICY_NOT_CONFIRMED','QUANTITY_DATA_INCOMPLETE','POLICY_TIME_NOT_APPLICABLE')),

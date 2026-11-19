@@ -41,7 +41,9 @@ final class Track1BulkAuxiliaryContractValidator {
             if (item == null || item.internalEventId() == null || item.performanceId() == null || blank(item.eventId())
                     || !performances.add(item.performanceId()) || !EVALUATION_STATUSES.contains(item.status())
                     || item.accountLimitFindingCount() < 0) invalid();
-            if (("EVALUATED".equals(item.status())) != (item.policyVersion() != null && !item.policyVersion().isBlank())) invalid();
+            boolean policyVersionPresent=item.policyVersion()!=null&&!item.policyVersion().isBlank();
+            if (("EVALUATED".equals(item.status()) && !policyVersionPresent)
+                    || ("POLICY_NOT_CONFIRMED".equals(item.status()) && policyVersionPresent)) invalid();
             if (!"EVALUATED".equals(item.status()) && item.accountLimitFindingCount() != 0) invalid();
         }
         cursor(page.nextCursor());

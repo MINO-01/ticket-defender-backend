@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Proxy;
 import java.sql.PreparedStatement;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,5 +78,25 @@ class BulkLedgerTrack1BulkWorkerTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("10", "9"))
                 .isInstanceOf(RuntimeException.class);
         BulkLedgerTrack1BulkWorker.rejectCursor("10", "11");
+    }
+
+    @Test
+    void keepsGrossPolicyEvidenceOutOfTheDataScopeContract() {
+        var scope=BulkLedgerTrack1BulkWorker.scopeForData(UUID.randomUUID(),"event",UUID.randomUUID(),"source",
+                OffsetDateTime.now(ZoneOffset.UTC),"CONFIRMED",new com.ticket.defender_core.adapter.out.api.dto.Track1BulkJobDto.ConfirmedPolicy(2,"v1",OffsetDateTime.now(ZoneOffset.UTC),null),"INCOMPLETE","GROSS","GROSS_RULE_NOT_SUPPORTED");
+        assertThat(scope.policyVerificationStatus()).isEqualTo("POLICY_NOT_CONFIRMED");
+        assertThat(scope.policy()).isNull();
+        assertThat(scope.quantityDataStatus()).isEqualTo("INCOMPLETE");
+        assertThat(scope.cancellationHandling()).isEqualTo("NOT_CONFIRMED");
+        assertThat(scope.dataCompletenessReason()).isEqualTo("GROSS_RULE_NOT_SUPPORTED");
+    }
+
+    @Test
+    void requiresExactlyOneSavedEvaluationForTheJobPerformanceBeforeCompletion() {
+        assertThat(BulkLedgerTrack1BulkWorker.exactlyOneRequiredEvaluation(1,1)).isTrue();
+        assertThat(BulkLedgerTrack1BulkWorker.exactlyOneRequiredEvaluation(0,0)).isFalse();
+        assertThat(BulkLedgerTrack1BulkWorker.exactlyOneRequiredEvaluation(1,2)).isFalse();
+        assertThat(BulkLedgerTrack1BulkWorker.sameEvaluationCursor("10","10")).isTrue();
+        assertThat(BulkLedgerTrack1BulkWorker.sameEvaluationCursor("10","11")).isFalse();
     }
 }

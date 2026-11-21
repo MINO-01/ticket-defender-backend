@@ -22,6 +22,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +60,7 @@ public class BulkLedgerImportService {
     private final BulkLedgerImportErrorRepository errors;
     private final BulkLedgerUploadStorage uploadStorage;
     private final BulkLedgerPublicationService publications;
+    private final JdbcTemplate jdbc;
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long uploadMaximumBytes;
     @Value("${ticket-defender.bulk-ledger-upload.upload-ttl:PT10M}") private java.time.Duration uploadTtl;
 
@@ -229,6 +231,83 @@ public class BulkLedgerImportService {
         return publicationView(publications.find(importId, actor.tenantId()));
     }
 
+    /**
+     * Reads the private candidate rows for every declared import scope. It deliberately takes no locks and performs
+     * no repair: this preview is informational and the publication transaction remains the authority for eligibility.
+     */
+    @Transactional(readOnly = true)
+    public BulkLedgerImportDto.CandidatePreviewView candidates(UUID importId) {
+        TenantScope actor = tenantScope(WRITE_ROLES);
+        BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
+        List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
+        if (!allowed(actor, jobScopes)) throw notFound();
+
+        List<CandidateImport> candidates = jdbc.query("""
+                select id,status,failure_code from td_bulk_ledger_candidate_imports
+                where import_id=? and tenant_id=?
+                """, (rs, row) -> new CandidateImport(UUID.fromString(rs.getString("id")),
+                BulkLedgerImportDto.CandidatePreparationStatus.valueOf(rs.getString("status")), rs.getString("failure_code")),
+                importId.toString(), actor.tenantId().toString());
+        if (candidates.size() > 1) throw new IllegalStateException("candidate import uniqueness violated");
+        if (candidates.isEmpty()) return candidatePreview(importId, BulkLedgerImportDto.CandidatePreparationStatus.NOT_STARTED,
+                BulkLedgerImportDto.CandidateDataStatus.NOT_AVAILABLE, null, jobScopes, Map.of());
+
+        CandidateImport candidate = candidates.getFirst();
+        Map<ScopeKey, CandidateVersion> versions = new HashMap<>();
+        boolean duplicateOrForeignScope = false;
+        for (CandidateVersion version : jdbc.query("""
+                select v.event_id,v.performance_id,v.id,v.generation_no,v.revision_no,v.base_version_id,
+                       v.expected_head_known,v.expected_head_version_id,v.status,h.version_id as current_head_version_id
+                from td_bulk_ledger_versions v
+                left join td_bulk_ledger_publication_heads h
+                  on h.tenant_id=v.tenant_id and h.performance_id=v.performance_id
+                where v.candidate_import_id=? and v.tenant_id=?
+                """, (rs, row) -> new CandidateVersion(new ScopeKey(uuid(rs, "event_id"), uuid(rs, "performance_id")),
+                uuid(rs, "id"), rs.getLong("generation_no"), rs.getLong("revision_no"), uuid(rs, "base_version_id"),
+                rs.getBoolean("expected_head_known"), uuid(rs, "expected_head_version_id"), uuid(rs, "current_head_version_id"),
+                rs.getString("status")), candidate.id().toString(), actor.tenantId().toString())) {
+            if (versions.put(version.scope(), version) != null) duplicateOrForeignScope = true;
+        }
+        Set<ScopeKey> expected = jobScopes.stream().map(scope -> new ScopeKey(scope.getEventId(), scope.getPerformanceId()))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (!expected.equals(versions.keySet())) duplicateOrForeignScope = true;
+        BulkLedgerImportDto.CandidateDataStatus dataStatus = candidateDataStatus(candidate.status(), versions.size(), jobScopes.size(), duplicateOrForeignScope);
+        return candidatePreview(importId, candidate.status(), dataStatus, candidate.failureCode(), jobScopes, versions);
+    }
+
+    private static BulkLedgerImportDto.CandidateDataStatus candidateDataStatus(BulkLedgerImportDto.CandidatePreparationStatus status,
+            int versionCount, int expectedCount, boolean invalid) {
+        if (invalid) return BulkLedgerImportDto.CandidateDataStatus.INCOMPLETE;
+        if (status == BulkLedgerImportDto.CandidatePreparationStatus.PREPARING && versionCount < expectedCount)
+            return BulkLedgerImportDto.CandidateDataStatus.PREPARING;
+        if (status == BulkLedgerImportDto.CandidatePreparationStatus.NOT_STARTED) return BulkLedgerImportDto.CandidateDataStatus.NOT_AVAILABLE;
+        return BulkLedgerImportDto.CandidateDataStatus.COMPLETE;
+    }
+
+    private static BulkLedgerImportDto.CandidatePreviewView candidatePreview(UUID importId,
+            BulkLedgerImportDto.CandidatePreparationStatus status, BulkLedgerImportDto.CandidateDataStatus dataStatus,
+            String failureCode, List<BulkLedgerImportScope> scopes, Map<ScopeKey, CandidateVersion> versions) {
+        return new BulkLedgerImportDto.CandidatePreviewView(importId, status, dataStatus, failureCode,
+                scopes.stream().map(scope -> candidateScope(scope, versions.get(new ScopeKey(scope.getEventId(), scope.getPerformanceId())))).toList());
+    }
+
+    private static BulkLedgerImportDto.CandidateScope candidateScope(BulkLedgerImportScope scope, CandidateVersion version) {
+        if (version == null) return new BulkLedgerImportDto.CandidateScope(scope.getEventId(), scope.getPerformanceId(),
+                null, null, null, null, null, null, null, BulkLedgerImportDto.CandidateHeadStatus.UNAVAILABLE, null);
+        BulkLedgerImportDto.CandidateHeadStatus headStatus = !version.expectedHeadKnown()
+                ? BulkLedgerImportDto.CandidateHeadStatus.UNKNOWN
+                : java.util.Objects.equals(version.expectedHeadVersionId(), version.currentHeadVersionId())
+                        ? BulkLedgerImportDto.CandidateHeadStatus.CURRENT : BulkLedgerImportDto.CandidateHeadStatus.CHANGED;
+        return new BulkLedgerImportDto.CandidateScope(scope.getEventId(), scope.getPerformanceId(), version.id(),
+                version.generation(), version.revision(), version.baseVersionId(), version.expectedHeadKnown(),
+                version.expectedHeadVersionId(), version.currentHeadVersionId(), headStatus, version.status());
+    }
+
+    private static UUID uuid(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        String value = rs.getString(column);
+        return value == null ? null : UUID.fromString(value);
+    }
+
     private static BulkLedgerImportDto.PublicationView publicationView(BulkLedgerPublicationService.Publication source) {
         return new BulkLedgerImportDto.PublicationView(source.publicationId(), source.importId(), source.sourceSystem(), source.sourceBatchId(), source.publishedAt(), source.scopes().stream()
                 .map(scope -> new BulkLedgerImportDto.PublishedScope(scope.eventId(), scope.performanceId(), scope.previousVersionId(),
@@ -353,4 +432,9 @@ public class BulkLedgerImportService {
                                    Long sourceSequenceStart, Long sourceSequenceEnd) { }
     private record AuthorizedScope(UUID tenantId, UUID membershipId) { }
     private record TenantScope(UUID tenantId, UUID membershipId, Set<UUID> eventIds) { }
+    private record ScopeKey(UUID eventId, UUID performanceId) { }
+    private record CandidateImport(UUID id, BulkLedgerImportDto.CandidatePreparationStatus status, String failureCode) { }
+    private record CandidateVersion(ScopeKey scope, UUID id, long generation, long revision, UUID baseVersionId,
+                                    boolean expectedHeadKnown, UUID expectedHeadVersionId, UUID currentHeadVersionId,
+                                    String status) { }
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Ticket Defender bulk ledger import API
-  version: 1.3.0
+  version: 1.4.0
   description: >-
     BL-03 keeps v1 staging-only. v2 accepts explicit ticket facts and source ordering, then prepares private candidate
     ledger versions. A ready v2 candidate can be atomically published by a TENANT_ADMIN; publication only writes
@@ -86,6 +86,20 @@ paths:
       responses:
         '200': { description: no-store publication result, content: { application/json: { schema: { $ref: '#/components/schemas/Publication' } } } }
         '404': { description: RESOURCE_NOT_FOUND or no committed publication }
+  /api/v1/admin/ledger-imports/{importId}/candidates:
+    parameters: [{ $ref: '#/components/parameters/ImportId' }]
+    get:
+      summary: Preview every server-owned candidate ledger scope before publication
+      description: >-
+        This is a no-store, read-only point-in-time preview. It neither creates nor repairs candidates and does not
+        guarantee that a later publication will succeed; publication rechecks current heads and source checkpoints.
+        A caller needs TENANT_ADMIN and access to every import scope. A foreign or partially inaccessible import is
+        reported as RESOURCE_NOT_FOUND without returning any partial scope data.
+      responses:
+        '200': { description: candidate preparation, completeness and current head relation, content: { application/json: { schema: { $ref: '#/components/schemas/CandidatePreview' } } } }
+        '401': { description: UNAUTHENTICATED }
+        '403': { description: caller lacks TENANT_ADMIN }
+        '404': { description: RESOURCE_NOT_FOUND for foreign or partially out-of-scope import }
 components:
   securitySchemes: { adminBearer: { type: http, scheme: bearer, bearerFormat: JWT } }
   parameters: { ImportId: { name: importId, in: path, required: true, schema: { type: string, format: uuid } } }
@@ -155,3 +169,30 @@ components:
               generation: { type: integer, minimum: 0 }
               revision: { type: integer, minimum: 0 }
               outboxPending: { type: boolean, description: 'Stored reservation only; it does not indicate analysis execution.' }
+    CandidatePreview:
+      type: object
+      required: [importId, preparationStatus, dataStatus, failureCode, scopes]
+      properties:
+        importId: { type: string, format: uuid }
+        preparationStatus: { type: string, enum: [NOT_STARTED, PREPARING, READY, REJECTED, PUBLISHED] }
+        dataStatus: { type: string, enum: [NOT_AVAILABLE, PREPARING, COMPLETE, INCOMPLETE] }
+        failureCode: { type: [string, 'null'], description: 'Present only when preparation is REJECTED.' }
+        scopes:
+          type: array
+          description: 'Exactly the declared import scopes, ordered by eventId then performanceId.'
+          items: { $ref: '#/components/schemas/CandidateScope' }
+    CandidateScope:
+      type: object
+      required: [eventId, performanceId, versionId, generation, revision, baseVersionId, expectedHeadKnown, expectedHeadVersionId, currentHeadVersionId, headStatus, versionStatus]
+      properties:
+        eventId: { type: string, format: uuid }
+        performanceId: { type: string, format: uuid }
+        versionId: { type: [string, 'null'], format: uuid, description: 'Null when preparation has not created this scope version.' }
+        generation: { type: [integer, 'null'], minimum: 0 }
+        revision: { type: [integer, 'null'], minimum: 0 }
+        baseVersionId: { type: [string, 'null'], format: uuid }
+        expectedHeadKnown: { type: [boolean, 'null'], description: 'Null when the candidate scope version is unavailable.' }
+        expectedHeadVersionId: { type: [string, 'null'], format: uuid }
+        currentHeadVersionId: { type: [string, 'null'], format: uuid }
+        headStatus: { type: string, enum: [UNAVAILABLE, UNKNOWN, CURRENT, CHANGED] }
+        versionStatus: { type: [string, 'null'], enum: [PREPARING, READY, REJECTED, PUBLISHED] }

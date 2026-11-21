@@ -205,9 +205,13 @@ public class BulkLedgerTrack1BulkWorker {
             if(cluster.hasMoreMembers()) { String cursor=null; do {
                 // Data I/O stays outside the short transaction that persists this one cursor page.
                 Track1BulkJobDto.Members members=data.bulkMembers(c.dataJobId(),cluster.clusterId(),cursor);
+                if(!memberPageMatches(c.dataJobId(),cluster.clusterId(),members)) throw new Blocked("DATA_MEMBER_PAGE_SCOPE_INVALID");
+                rejectCursor(cursor,members.nextCursor());
                 tx.executeWithoutResult(x->{require(c);members.members().forEach(m->saveMember(c,j.externalEvent(),cluster.clusterId(),m));heartbeat(c);});
                 cursor=members.nextCursor();
             } while(cursor!=null); }
+            // Data's memberCount is the number of distinct accounts, not the number of ticket/reservation rows.
+            tx.executeWithoutResult(x->{require(c);Integer stored=jdbc.queryForObject("select count(distinct account_reference_hmac) from td_bulk_ledger_track1_bulk_members where job_id=? and cluster_id=?",Integer.class,c.id().toString(),cluster.clusterId());if(!memberAccountCountMatches(stored==null?-1:stored,cluster.memberCount()))throw new Blocked("DATA_MEMBER_COUNT_MISMATCH");heartbeat(c);});
         }
         tx.executeWithoutResult(x->{require(c);String next=page.nextCursor(); rejectCursor(j.cursor(),next); jdbc.update("update td_bulk_ledger_track1_bulk_jobs set data_status='COMPLETED',algorithm_version=?,result_cursor=?,collection_phase=?,status='COLLECTING',lease_until=null,updated_at=utc_timestamp(6) where id=? and fence_token=?",page.algorithmVersion(),next,next==null?"SHARED_SIGNALS":"CLUSTERS",c.id().toString(),c.fence());});
     }
@@ -234,6 +238,8 @@ public class BulkLedgerTrack1BulkWorker {
     static boolean sameEvaluationCursor(String stored,String current){return Objects.equals(stored,current);}
     static boolean sameSharedCursor(String stored,String current){return Objects.equals(stored,current);}
     static boolean exactlyOneRequiredEvaluation(int required,int total){return required==1&&total==1;}
+    static boolean memberPageMatches(UUID expectedJobId,String expectedClusterId,Track1BulkJobDto.Members page){return page!=null&&expectedJobId.equals(page.jobId())&&expectedClusterId.equals(page.clusterId())&&page.members()!=null;}
+    static boolean memberAccountCountMatches(int storedDistinctAccounts,int declaredMemberCount){return storedDistinctAccounts==declaredMemberCount;}
     static String dataContractFailureCode(RuntimeException failure){return failure instanceof FastApiResponseContractException?"DATA_RESPONSE_CONTRACT_INVALID":null;}
     static void rejectCursor(String previous,String next){if(next!=null&&(!next.matches("\\d+")||next.equals(previous)||(previous!=null&&Long.parseLong(next)<=Long.parseLong(previous))))throw new Blocked("DATA_CURSOR_INVALID");}
     private void saveCluster(Claim c,String externalEvent,Track1BulkJobDto.Cluster cluster) { jdbc.update("insert into td_bulk_ledger_track1_bulk_clusters(job_id,cluster_id,risk_score,member_count,payment_hashes_json,address_hashes_json,device_hashes_json,ip_hashes_json) values(?,?,?,?,cast(? as json),cast(? as json),cast(? as json),cast(? as json)) on duplicate key update risk_score=values(risk_score),member_count=values(member_count)",c.id().toString(),cluster.clusterId(),cluster.riskScore(),cluster.memberCount(),asJson(cluster.paymentHashes()),asJson(cluster.addressHashes()),asJson(cluster.deviceIdHashes()),asJson(cluster.ipHashes())); cluster.members().forEach(m->saveMember(c,externalEvent,cluster.clusterId(),m)); }

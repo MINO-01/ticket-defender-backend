@@ -48,6 +48,19 @@ public final class BulkLedgerImportDto {
                                   OffsetDateTime publishedAt, List<PublishedScope> scopes) { }
     public record PublishedScope(UUID eventId, UUID performanceId, UUID previousVersionId, UUID versionId,
                                  long generation, long revision, boolean outboxPending) { }
+    /**
+     * Candidate data is a point-in-time preview only. The publication command always rechecks the current heads.
+     * Nullable version fields mean that preparation has not yet produced a version for that declared import scope.
+     */
+    public record CandidatePreviewView(UUID importId, CandidatePreparationStatus preparationStatus,
+                                       CandidateDataStatus dataStatus, String failureCode,
+                                       List<CandidateScope> scopes) { }
+    public enum CandidatePreparationStatus { NOT_STARTED, PREPARING, READY, REJECTED, PUBLISHED }
+    public enum CandidateDataStatus { NOT_AVAILABLE, PREPARING, COMPLETE, INCOMPLETE }
+    public enum CandidateHeadStatus { UNAVAILABLE, UNKNOWN, CURRENT, CHANGED }
+    public record CandidateScope(UUID eventId, UUID performanceId, UUID versionId, Long generation, Long revision,
+                                 UUID baseVersionId, Boolean expectedHeadKnown, UUID expectedHeadVersionId,
+                                 UUID currentHeadVersionId, CandidateHeadStatus headStatus, String versionStatus) { }
     public record Page<T>(List<T> items, int page, int pageSize, boolean hasNext) { }
 
     private static OffsetDateTime offset(java.time.LocalDateTime value) {

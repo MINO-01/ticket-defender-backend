@@ -72,4 +72,13 @@ public class BulkLedgerImportController {
     public ResponseEntity<BulkLedgerImportDto.PublicationView> publication(@PathVariable UUID importId) {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.publication(importId));
     }
+
+    /**
+     * Returns the server-owned candidate versions before publication. This endpoint never prepares or publishes a
+     * candidate; publication performs its own current-state validation.
+     */
+    @GetMapping("/{importId}/candidates")
+    public ResponseEntity<BulkLedgerImportDto.CandidatePreviewView> candidates(@PathVariable UUID importId) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.candidates(importId));
+    }
 }

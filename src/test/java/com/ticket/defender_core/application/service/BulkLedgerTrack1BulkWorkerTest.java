@@ -6,6 +6,7 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 
 import com.ticket.defender_core.adapter.out.api.FastApiResponseContractException;
+import com.ticket.defender_core.adapter.out.api.dto.Track1BulkJobDto;
 
 import java.lang.reflect.Proxy;
 import java.sql.PreparedStatement;
@@ -118,5 +119,39 @@ class BulkLedgerTrack1BulkWorkerTest {
         assertThat(BulkLedgerTrack1BulkWorker.sameSharedCursor("10", "10")).isTrue();
         assertThat(BulkLedgerTrack1BulkWorker.sameSharedCursor(null, null)).isTrue();
         assertThat(BulkLedgerTrack1BulkWorker.sameSharedCursor("10", "11")).isFalse();
+    }
+
+    @Test
+    void acceptsOnlyMemberPagesForTheClaimedJobAndCluster() {
+        UUID jobId = UUID.randomUUID();
+        String clusterId = "cluster-1";
+        var matching = new Track1BulkJobDto.Members(jobId, clusterId, "500", java.util.List.of(
+                new Track1BulkJobDto.Member("a".repeat(64), "b".repeat(64), "event"),
+                new Track1BulkJobDto.Member("a".repeat(64), "c".repeat(64), "event")
+        ));
+
+        assertThat(BulkLedgerTrack1BulkWorker.memberPageMatches(jobId, clusterId, matching)).isTrue();
+        assertThat(BulkLedgerTrack1BulkWorker.memberPageMatches(UUID.randomUUID(), clusterId, matching)).isFalse();
+        assertThat(BulkLedgerTrack1BulkWorker.memberPageMatches(jobId, "cluster-2", matching)).isFalse();
+    }
+
+    @Test
+    void memberPageCursorMustMakeForwardNumericProgress() {
+        BulkLedgerTrack1BulkWorker.rejectCursor(null, "500");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("500", "500"))
+                .isInstanceOf(RuntimeException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("500", "499"))
+                .isInstanceOf(RuntimeException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> BulkLedgerTrack1BulkWorker.rejectCursor("500", "cursor"))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void completesMemberCollectionOnlyWhenStoredDistinctAccountsMatchTheClusterDeclaration() {
+        // Two reservation rows for one account are valid and must remain one distinct cluster member.
+        assertThat(BulkLedgerTrack1BulkWorker.memberAccountCountMatches(1, 1)).isTrue();
+        // A missing account or a duplicate page that displaces an account must not complete the cluster.
+        assertThat(BulkLedgerTrack1BulkWorker.memberAccountCountMatches(1, 2)).isFalse();
+        assertThat(BulkLedgerTrack1BulkWorker.memberAccountCountMatches(2, 1)).isFalse();
     }
 }

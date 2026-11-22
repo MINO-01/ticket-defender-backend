@@ -30,6 +30,8 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.jdbc.core.JdbcTemplate;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -188,6 +190,28 @@ class OfficialPdfIssuanceIntegrationTest {
         verify(officialStorage, times(1)).putIfAbsent(eq(issued.officialPdfIssuanceId()), anyString(), any(byte[].class));
         assertThat(audits.findByIssuanceIdOrderByOccurredAtAscIdAsc(issued.officialPdfIssuanceId()))
                 .extracting(OfficialPdfAuditEvent::getEventType).contains("ARTIFACT_DOWNLOADED");
+    }
+
+    @Test
+    void longKoreanReportWrapsAndSplitsAcrossPagesForVisualReview() throws Exception {
+        String longAssessment = String.join("\n", java.util.Collections.nCopies(30,
+                "합성 장문 검토 문장은 표와 식별자 다음에 안전하게 줄바꿈되고, 조사 우선순위는 부정 거래 확정이 아니라 추가 검토가 필요한 후보임을 설명합니다."));
+        Fixture fixture = approvedFixture("합성 장문 한글 공식 검토 보고서", longAssessment,
+                "합성 fixture의 장문 본문을 사용한 레이아웃 검증이며, 실제 개인정보나 운영 증거를 포함하지 않습니다.",
+                "합성 검토 결론: 추가 확인이 필요하며 자동 제재 또는 확정 판단이 아닙니다.");
+        authenticate(adminSubject);
+
+        OfficialPdfDto.Issuance issued = official.request(fixture.decisionId(), UUID.randomUUID().toString());
+        byte[] bytes = official.download(issued.officialPdfIssuanceId()).bytes();
+        writeVisualReviewArtifact(bytes);
+
+        try (var document = Loader.loadPDF(bytes)) {
+            assertThat(document.getNumberOfPages()).isGreaterThan(1);
+            String text = new PDFTextStripper().getText(document).replaceAll("\\s+", "");
+            // PDFBox normalizes embedded Korean-font spaces to '?', so retain glyph-level checks here;
+            // the opt-in rasterized artifact is the authoritative layout check.
+            assertThat(text).contains("합성", "장문", "한글", "후보", "자동", "제재", "확정");
+        }
     }
 
     @Test
@@ -610,6 +634,11 @@ class OfficialPdfIssuanceIntegrationTest {
     }
 
     private Fixture approvedFixture() {
+        return approvedFixture("합성 승인 보고서", "합성 평가 내용은 공식 PDF 검증을 위해 충분히 길게 작성합니다.",
+                "합성 한계 사항 & <추가 확인 필요> é", "합성 결론");
+    }
+
+    private Fixture approvedFixture(String title, String assessment, String limitations, String conclusion) {
         UUID fanReportId = UUID.randomUUID();
         UUID evidenceId = UUID.randomUUID();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -644,8 +673,7 @@ class OfficialPdfIssuanceIntegrationTest {
                 new CasePreparationDto.Capture(reviewing.caseVersion(), "Capture official PDF evidence"), UUID.randomUUID().toString());
         CasePreparationDto.Draft draft = preparation.draft(opened.caseId(), new CasePreparationDto.DraftInput(
                 cases.findById(opened.caseId()).orElseThrow().getCaseVersion(), snapshot.evidenceSnapshotId(),
-                "합성 승인 보고서", "합성 평가 내용은 공식 PDF 검증을 위해 충분히 길게 작성합니다.",
-                "합성 한계 사항 & <추가 확인 필요> é", "합성 결론", "Seal official PDF report"), UUID.randomUUID().toString());
+                title, assessment, limitations, conclusion, "Seal official PDF report"), UUID.randomUUID().toString());
         UUID sourceId = sources.findByCaseIdOrderByLinkedAtAscIdAsc(opened.caseId()).stream()
                 .filter(source -> source.getSourceType() == CaseSourceReference.Type.EVIDENCE_ASSET)
                 .findFirst().orElseThrow().getId();
@@ -715,6 +743,14 @@ class OfficialPdfIssuanceIntegrationTest {
         } catch (Exception impossible) {
             throw new IllegalStateException(impossible);
         }
+    }
+
+    /** Opt-in only: preserves a synthetic PDF under build/ for a renderer-backed human visual review. */
+    private static void writeVisualReviewArtifact(byte[] bytes) throws java.io.IOException {
+        if (!"true".equalsIgnoreCase(System.getenv("TD_PDF_VISUAL_ARTIFACT"))) return;
+        Path output = Path.of("build", "reports", "official-pdf", "official-pdf-korean-long-content.pdf");
+        Files.createDirectories(output.getParent());
+        Files.write(output, bytes);
     }
 
     private record Fixture(UUID caseId, UUID reportVersionId, UUID evidenceId, UUID decisionId) { }

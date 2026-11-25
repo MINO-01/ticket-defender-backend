@@ -35,6 +35,11 @@ public class BulkLedgerImportController {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.list(page, pageSize));
     }
 
+    @GetMapping("/upload-deletions/status")
+    public ResponseEntity<BulkLedgerImportDto.UploadDeletionStatus> uploadDeletionStatus() {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.uploadDeletionStatus());
+    }
+
     @GetMapping("/{importId}")
     public ResponseEntity<BulkLedgerImportDto.View> detail(@PathVariable UUID importId) {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.detail(importId));

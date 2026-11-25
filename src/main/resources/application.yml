@@ -45,6 +45,13 @@ ticket-defender:
     max-bytes: ${BULK_LEDGER_UPLOAD_MAX_BYTES:1073741824}
     upload-ttl: ${BULK_LEDGER_UPLOAD_TTL:PT10M}
     batch-size: ${BULK_LEDGER_UPLOAD_BATCH_SIZE:1000}
+    # v3 원본 신호 수신은 기본 비활성화입니다. 켜려면 정리 작업도 켜야 하며 시작 시 저장소 버전 삭제를 확인합니다.
+    v3-raw-intake:
+      enabled: ${BULK_LEDGER_V3_RAW_INTAKE_ENABLED:false}
+    cleanup:
+      enabled: ${BULK_LEDGER_UPLOAD_CLEANUP_ENABLED:false}
+      retention: ${BULK_LEDGER_UPLOAD_CLEANUP_RETENTION:PT24H}
+      delay: ${BULK_LEDGER_UPLOAD_CLEANUP_DELAY:PT1H}
     storage:
       endpoint: ${BULK_LEDGER_UPLOAD_S3_ENDPOINT:}
       region: ${BULK_LEDGER_UPLOAD_S3_REGION:us-east-1}
@@ -53,6 +60,12 @@ ticket-defender:
       secret-key: ${BULK_LEDGER_UPLOAD_S3_SECRET_KEY:}
   track1-v2:
     enabled: ${TRACK1_V2_ENABLED:false}
+  # 신호 HMAC 키 출처입니다. SYNTHETIC_CONFIG는 개발과 테스트 전용이며 운영은 KMS 구현을 등록해야 합니다.
+  track1-signal-hmac:
+    key-source: ${TRACK1_SIGNAL_HMAC_KEY_SOURCE:SYNTHETIC_CONFIG}
+  # 망 유형 CIDR 표입니다(예: 203.0.113.0/24=CORPORATE_EDU). 비어 있으면 모두 UNKNOWN입니다.
+  track1:
+    ip-network-classes: ${TRACK1_IP_NETWORK_CLASSES:}
   bulk-ledger-track1:
     # Publication outbox consumption is disabled until a synthetic isolated worker is explicitly enabled.
     enabled: ${BULK_LEDGER_TRACK1_ENABLED:false}

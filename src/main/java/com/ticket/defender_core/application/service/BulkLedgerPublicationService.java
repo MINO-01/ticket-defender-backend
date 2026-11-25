@@ -53,7 +53,7 @@ public class BulkLedgerPublicationService {
         }
         PublicationRow alreadyPublished = publicationByImport(importId, tenantId);
         if (alreadyPublished != null) return publication(alreadyPublished);
-        if (!"v2".equals(job.schemaVersion()) || !"READY_TO_PUBLISH".equals(job.status()))
+        if (!java.util.Set.of("v2", "v3").contains(job.schemaVersion()) || !"READY_TO_PUBLISH".equals(job.status()))
             throw conflict("LEDGER_PUBLICATION_NOT_READY");
 
         Candidate candidate = candidate(job);
@@ -106,6 +106,7 @@ public class BulkLedgerPublicationService {
                     UUID.randomUUID().toString(), publicationId.toString(), historyId.toString(), importId.toString(), tenantId.toString(), scope.eventId().toString(), scope.performanceId().toString(), version.id().toString(),
                     CandidatePipelineSupport.sha256("BL05_OUTBOX", publicationId.toString(), version.id().toString()), Timestamp.valueOf(now));
             results.add(new PublishedScope(scope.eventId(), scope.performanceId(), previous == null ? null : previous.id(), version.id(), version.generation(), version.revision(), true));
+            if ("v3".equals(job.schemaVersion())) publishRawSignals(job, scope, version, now);
         }
         if (jdbc.update("update td_bulk_ledger_versions set status='PUBLISHED' where candidate_import_id=? and status='READY'", candidate.id().toString()) != versions.size())
             throw conflict("LEDGER_PUBLICATION_CANDIDATE_INVALID");
@@ -136,6 +137,33 @@ public class BulkLedgerPublicationService {
                     || current.sequenceEnd() == null || scope.sequenceStart() == null || scope.sequenceStart() != current.sequenceEnd() + 1)
                 throw conflict("LEDGER_PUBLICATION_CHANGE_BASELINE_STALE");
         }
+    }
+
+    /**
+     * v3 스테이징에 저장된 신호 HMAC을 공개 버전 ID로 신호 테이블에 기록합니다. 같은 트랜잭션에서 공개 head와 함께
+     * 확정됩니다. 티켓마다 가장 늦은 원장 행(source_sequence, 행 번호 순)만 쓰고 REMOVE 행은 제외합니다.
+     * 행 단위 목적은 BL-07 검사와 맞도록 TRACK1_CONNECTION이며, 신호별 목적 이름은 키 파생에만 쓰였습니다.
+     */
+    private void publishRawSignals(Job job, Scope scope, Version version, LocalDateTime now) {
+        jdbc.update("""
+                insert into td_bulk_ledger_track1_ticket_signals(id,version_id,ticket_reference_hmac,hmac_key_version,hmac_purpose,
+                  payment_hmac,address_hmac,device_hmac,ip_hmac,refund_account_hmac,phone_hmac,ip_network_type,phone_source,ip_network_type_source,
+                  source_version,created_at)
+                select uuid(),?,s.ticket_reference_hmac,s.hmac_key_version,'TRACK1_CONNECTION',
+                  s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.phone_source,s.ip_network_type_source,
+                  s.source_version,?
+                from td_bulk_import_staging_rows s
+                where s.import_id=? and s.tenant_id=? and s.event_id=? and s.performance_id=?
+                  and coalesce(s.change_action,'UPSERT') <> 'REMOVE'
+                  and (s.payment_hmac is not null or s.address_hmac is not null or s.device_hmac is not null or s.ip_hmac is not null
+                       or s.refund_account_hmac is not null or s.phone_hmac is not null)
+                  and not exists (
+                    select 1 from td_bulk_import_staging_rows n
+                    where n.import_id=s.import_id and n.performance_id=s.performance_id and n.ticket_reference_hmac=s.ticket_reference_hmac
+                      and (coalesce(n.source_sequence,-1) > coalesce(s.source_sequence,-1)
+                           or (coalesce(n.source_sequence,-1) = coalesce(s.source_sequence,-1) and n.source_row_no > s.source_row_no)))
+                """, version.id().toString(), Timestamp.valueOf(now), job.id().toString(), job.tenantId().toString(),
+                scope.eventId().toString(), scope.performanceId().toString());
     }
 
     /** A change revision has no snapshot as-of of its own, so use the published revision-zero ancestor as its provenance. */

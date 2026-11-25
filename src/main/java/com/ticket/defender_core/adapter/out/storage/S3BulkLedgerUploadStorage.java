@@ -81,6 +81,48 @@ public final class S3BulkLedgerUploadStorage implements BulkLedgerUploadStorage 
         } catch (RuntimeException failure) { throw failure;
         } catch (Exception failure) { throw new Unavailable(failure); }
     }
+    @Override public void deleteAllVersions(String key) {
+        if (key == null || key.isBlank()) throw new InvalidObject();
+        try {
+            String keyMarker = null, versionMarker = null;
+            while (true) {
+                var request = software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest.builder().bucket(bucket).prefix(key);
+                if (keyMarker != null) request.keyMarker(keyMarker);
+                if (versionMarker != null) request.versionIdMarker(versionMarker);
+                var page = reader.listObjectVersions(request.build());
+                // 접두 일치가 아니라 정확히 같은 키의 버전과 delete marker만 지웁니다.
+                for (var version : page.versions()) if (key.equals(version.key())) deleteVersion(key, version.versionId());
+                for (var marker : page.deleteMarkers()) if (key.equals(marker.key())) deleteVersion(key, marker.versionId());
+                if (!Boolean.TRUE.equals(page.isTruncated())) break;
+                keyMarker = page.nextKeyMarker(); versionMarker = page.nextVersionIdMarker();
+            }
+        } catch (InvalidObject failure) { throw failure;
+        } catch (Exception failure) { throw new Unavailable("Upload object deletion failed"); }
+    }
+
+    @Override public boolean verifyDeletePermission() {
+        String key = "bulk-ledger-private/_delete-permission-probe/" + java.util.UUID.randomUUID() + ".txt";
+        try {
+            byte[] probe = "td-delete-probe".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            reader.putObject(PutObjectRequest.builder().bucket(bucket).key(key).contentType("text/plain").contentLength((long) probe.length).build(),
+                    RequestBody.fromBytes(probe));
+            deleteAllVersions(key);
+            try {
+                reader.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+                return false;
+            } catch (software.amazon.awssdk.services.s3.model.S3Exception missing) {
+                return missing.statusCode() == 404;
+            }
+        } catch (Exception unverified) {
+            return false;
+        }
+    }
+
+    private void deleteVersion(String key, String versionId) {
+        if (versionId == null || versionId.isBlank() || "null".equals(versionId)) throw new InvalidObject();
+        reader.deleteObject(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.builder().bucket(bucket).key(key).versionId(versionId).build());
+    }
+
     /** Data adds its configured prefix to this opaque manifest name; backend must upload to the identical S3 key. */
     static String bulkObjectKey(String prefix, String artifactName) {
         if (prefix == null || prefix.isBlank() || artifactName == null || !artifactName.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}"))

@@ -26,6 +26,7 @@ class BulkLedgerImportMigrationMySqlTest {
             jdbc.execute("set foreign_key_checks=0");
             jdbc.execute("drop table if exists td_bulk_ledger_publication_outbox"); jdbc.execute("drop table if exists td_bulk_ledger_publication_history"); jdbc.execute("drop table if exists td_bulk_ledger_publications");
             jdbc.execute("drop table if exists td_bulk_ledger_publication_heads"); jdbc.execute("drop table if exists td_bulk_ledger_change_events"); jdbc.execute("drop table if exists td_bulk_ledger_ticket_versions"); jdbc.execute("drop table if exists td_bulk_ledger_versions"); jdbc.execute("drop table if exists td_bulk_ledger_candidate_imports");
+            jdbc.execute("drop table if exists td_bulk_import_upload_deletions");
             jdbc.execute("drop table if exists td_bulk_import_staging_rows"); jdbc.execute("drop table if exists td_bulk_import_errors"); jdbc.execute("drop table if exists td_bulk_import_scopes"); jdbc.execute("drop table if exists td_bulk_import_jobs");
             jdbc.execute("set foreign_key_checks=1");
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
@@ -33,6 +34,8 @@ class BulkLedgerImportMigrationMySqlTest {
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl03-candidate-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl04-candidate-recovery-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl05-publication-migration.sql"));
+            // v3 원본 신호 스테이징 컬럼과 업로드 삭제 기록은 BL-05 다음에 적용합니다.
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-v3-raw-signal-migration.sql"));
         }
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "tenant_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "created_by_membership_id");
@@ -55,6 +58,21 @@ class BulkLedgerImportMigrationMySqlTest {
                 UUID.randomUUID().toString(), job, tenant, event, performance, 2, "a".repeat(64), "b".repeat(64), "v1", 1, "c".repeat(64));
         assertThatThrownBy(() -> jdbc.update("insert into td_bulk_import_staging_rows(id,import_id,tenant_id,event_id,performance_id,source_row_no,reservation_reference_hmac,ticket_reference_hmac,hmac_key_version,ticket_quantity,row_digest) values(?,?,?,?,?,?,?,?,?,?,?)",
                 UUID.randomUUID().toString(), job, tenant, event, performance, 2, "a".repeat(64), "b".repeat(64), "v1", 1, "d".repeat(64))).isInstanceOf(DataAccessException.class);
+
+        // v3 신호 컬럼은 nullable이고 출처 표시는 토큰과 함께만 저장됩니다.
+        String v3Insert = "insert into td_bulk_import_staging_rows(id,import_id,tenant_id,event_id,performance_id,source_row_no,reservation_reference_hmac,ticket_reference_hmac,hmac_key_version,ticket_quantity,row_digest,ip_hmac,ip_network_type,ip_network_type_source,phone_hmac,phone_source) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        jdbc.update(v3Insert, UUID.randomUUID().toString(), job, tenant, event, performance, 3, "a".repeat(64), "c".repeat(64), "v1", 1, "e".repeat(64),
+                "f".repeat(64), "UNKNOWN", "UNKNOWN", "1".repeat(64), "RECIPIENT");
+        assertThatThrownBy(() -> jdbc.update(v3Insert, UUID.randomUUID().toString(), job, tenant, event, performance, 4, "a".repeat(64), "d".repeat(64), "v1", 1, "f".repeat(64),
+                null, "UNKNOWN", "UNKNOWN", null, null)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update(v3Insert, UUID.randomUUID().toString(), job, tenant, event, performance, 5, "a".repeat(64), "2".repeat(64), "v1", 1, "3".repeat(64),
+                null, null, null, null, "MEMBER")).isInstanceOf(DataAccessException.class);
+        String deletion = "insert into td_bulk_import_upload_deletions(import_id,tenant_id,status,attempt_count,trigger_reason,last_failure_code,deleted_at,created_at,updated_at) values(?,?,?,?,?,?,?,utc_timestamp(6),utc_timestamp(6))";
+        assertThatThrownBy(() -> jdbc.update(deletion, job, tenant, "FAILED", 3, "STAGING_COMPLETED", null, null)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update(deletion, job, tenant, "DELETED", 1, "STAGING_COMPLETED", null, null)).isInstanceOf(DataAccessException.class);
+        jdbc.update(deletion, job, tenant, "FAILED", 3, "STAGING_COMPLETED", "UPLOAD_DELETE_UNAVAILABLE", null);
+        assertThat(jdbc.queryForObject("select count(*) from td_bulk_import_upload_deletions where status='FAILED' and attempt_count>=3", Integer.class)).isEqualTo(1);
+        jdbc.update("delete from td_bulk_import_upload_deletions where import_id=?", job);
     }
 
     private static void assertAsciiBinaryUuidColumn(JdbcTemplate jdbc, String table, String column) {

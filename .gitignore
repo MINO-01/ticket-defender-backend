@@ -50,6 +50,11 @@ out/
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
 application-secret.yml
 application-local.yml
 

@@ -16,6 +16,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -82,36 +83,44 @@ public class Case {
     public void transition(Status target, String classification, LocalDateTime now) {
         this.status = Objects.requireNonNull(target);
         if (classification != null) this.classification = classification;
-        this.updatedAt = Objects.requireNonNull(now);
+        this.updatedAt = nextUpdatedAt(now);
     }
 
     public void assign(UUID membershipId, LocalDateTime now) {
         this.assigneeMembershipId = membershipId;
-        this.updatedAt = Objects.requireNonNull(now);
+        this.updatedAt = nextUpdatedAt(now);
     }
 
     public void recordPreparation(LocalDateTime now) {
-        this.updatedAt = Objects.requireNonNull(now);
+        this.updatedAt = nextUpdatedAt(now);
     }
 
     public void submitForApproval(UUID reportVersionId, LocalDateTime now) {
         if (status != Status.IN_REVIEW) throw new IllegalStateException("Case is not under review");
         this.currentReportVersionId = Objects.requireNonNull(reportVersionId);
         this.status = Status.READY_FOR_APPROVAL;
-        this.updatedAt = Objects.requireNonNull(now);
+        this.updatedAt = nextUpdatedAt(now);
     }
 
     public void approveForReport(UUID reportVersionId, LocalDateTime now) {
         requirePendingReport(reportVersionId);
         this.status = Status.APPROVED_FOR_REPORT;
-        this.updatedAt = Objects.requireNonNull(now);
+        this.updatedAt = nextUpdatedAt(now);
     }
 
     public void returnToReview(UUID reportVersionId, LocalDateTime now) {
         requirePendingReport(reportVersionId);
         this.currentReportVersionId = null;
         this.status = Status.IN_REVIEW;
-        this.updatedAt = Objects.requireNonNull(now);
+        this.updatedAt = nextUpdatedAt(now);
+    }
+
+    private LocalDateTime nextUpdatedAt(LocalDateTime now) {
+        LocalDateTime persistedNow = Objects.requireNonNull(now).truncatedTo(ChronoUnit.MICROS);
+        LocalDateTime persistedPrevious = updatedAt.truncatedTo(ChronoUnit.MICROS);
+        return persistedNow.isAfter(persistedPrevious)
+                ? persistedNow
+                : persistedPrevious.plus(1, ChronoUnit.MICROS);
     }
 
     private void requirePendingReport(UUID reportVersionId) {

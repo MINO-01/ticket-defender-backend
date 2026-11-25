@@ -114,7 +114,8 @@ public class BulkLedgerTrack1BulkWorker {
                 union all select p.id,p.base_version_id,p.generation_no,p.revision_no from td_bulk_ledger_versions p join l on l.base_version_id=p.id where p.status='PUBLISHED' and p.generation_no=l.generation_no and p.revision_no=l.revision_no-1),
               ranked as (select tv.*,row_number() over(partition by tv.ticket_reference_hmac order by l.revision_no desc) rn from td_bulk_ledger_ticket_versions tv join l on l.id=tv.version_id)
               select r.ticket_reference_hmac,r.reservation_reference_hmac,r.account_reference_hmac,r.hmac_key_version,r.purchased_at,r.ticket_quantity,r.ticket_status,r.source_version,
-                     s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.hmac_key_version,s.source_version,s.hmac_purpose
+                     s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,
+                     s.hmac_key_version,s.source_version,s.hmac_purpose
               from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
               where r.rn=1 order by r.ticket_reference_hmac
               """;
@@ -125,14 +126,14 @@ public class BulkLedgerTrack1BulkWorker {
                 return statement;
               },rs->{
                 try {
-                    String sourceVersion=rs.getString(8), ledgerKeyVersion=rs.getString(4), keyVersion=rs.getString(13);
+                    String sourceVersion=rs.getString(8), ledgerKeyVersion=rs.getString(4), keyVersion=rs.getString(16);
                     // Snapshot validation has already inspected all states. Data receives only effective rows.
                     if (!"ACTIVE".equals(rs.getString(7))) return;
-                    String invalid=inputFailure(rs.getString(7), ledgerKeyVersion, keyVersion, rs.getString(15), sourceVersion, rs.getString(14), rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12));
+                    String invalid=inputFailure(rs.getString(7), ledgerKeyVersion, keyVersion, rs.getString(18), sourceVersion, rs.getString(17), rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),rs.getString(13),rs.getString(14));
                     if(invalid!=null) throw new Blocked(invalid);
                     if(source[0]!=null&&!source[0].equals(sourceVersion)||key[0]!=null&&!key[0].equals(keyVersion)) throw new Blocked("LEDGER_SOURCE_OR_KEY_MIXED"); source[0]=sourceVersion; key[0]=keyVersion;
                     Map<String,Object> row=new LinkedHashMap<>(); row.put("accountId",rs.getString(3)); row.put("reservationNo",rs.getString(2)); row.put("eventId",m.externalEvent()); row.put("performanceId",c.performanceId().toString());
-                    row.put("purchasedAt",rs.getTimestamp(5).toLocalDateTime().atOffset(ZoneOffset.UTC).toString()); row.put("effectiveTicketQuantity",rs.getInt(6)); row.put("paymentHash",rs.getString(9)); row.put("addressHash",rs.getString(10)); row.put("deviceIdHash",rs.getString(11)); row.put("ipHash",rs.getString(12));
+                    row.put("purchasedAt",rs.getTimestamp(5).toLocalDateTime().atOffset(ZoneOffset.UTC).toString()); row.put("effectiveTicketQuantity",rs.getInt(6)); row.put("paymentHash",rs.getString(9)); row.put("addressHash",rs.getString(10)); row.put("deviceIdHash",rs.getString(11)); row.put("ipHash",rs.getString(12)); row.put("refundAccountHash",rs.getString(13)); row.put("phoneHash",rs.getString(14)); row.put("ipNetworkType",rs.getString(15));
                     row.put("quantityInputType","INDIVIDUAL_TICKET"); row.put("ticketReference",rs.getString(1)); row.put("ticketStatus",rs.getString(7)); row.put("sourceVersion",sourceVersion); row.put("sourceAsOf",m.sourceAsOf().atOffset(ZoneOffset.UTC).toString());
                     byte[] bytes=(json.writeValueAsString(row)+"\n").getBytes(StandardCharsets.UTF_8); w.write(new String(bytes,StandardCharsets.UTF_8)); digest.update(bytes); count[0]++; if(count[0]%PAGE==0) heartbeat(c);
                 } catch(Blocked e){throw e;} catch(Exception e){throw new RuntimeException(e);}
@@ -264,9 +265,10 @@ public class BulkLedgerTrack1BulkWorker {
     }
     static String failureState(int failuresBefore, String retryStage) { return failuresBefore >= 2 ? "FAILED" : retryStage; }
     static boolean manifestObjectVersionCompatible(String value) { return value != null && value.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}"); }
-    static String inputFailure(String ticketStatus,String ledgerKeyVersion,String signalKeyVersion,String purpose,String ticketSourceVersion,String signalSourceVersion,String payment,String address,String device,String ip) {
+    static String inputFailure(String ticketStatus,String ledgerKeyVersion,String signalKeyVersion,String purpose,String ticketSourceVersion,String signalSourceVersion,String payment,String address,String device,String ip) { return inputFailure(ticketStatus,ledgerKeyVersion,signalKeyVersion,purpose,ticketSourceVersion,signalSourceVersion,payment,address,device,ip,null,null); }
+    static String inputFailure(String ticketStatus,String ledgerKeyVersion,String signalKeyVersion,String purpose,String ticketSourceVersion,String signalSourceVersion,String payment,String address,String device,String ip,String refundAccount,String phone) {
         if(!"ACTIVE".equals(ticketStatus)) return "LEDGER_TICKET_STATUS_NOT_SUPPORTED";
-        if(signalKeyVersion==null||payment==null&&address==null&&device==null&&ip==null) return "LEDGER_SIGNAL_MISSING";
+        if(signalKeyVersion==null||payment==null&&address==null&&device==null&&ip==null&&refundAccount==null&&phone==null) return "LEDGER_SIGNAL_MISSING";
         if(ledgerKeyVersion==null||!ledgerKeyVersion.equals(signalKeyVersion)) return "LEDGER_HMAC_KEY_VERSION_MISMATCH";
         if(!"TRACK1_CONNECTION".equals(purpose)||ticketSourceVersion==null||!ticketSourceVersion.equals(signalSourceVersion)) return "LEDGER_SIGNAL_OR_PROVENANCE_INVALID";
         return null;

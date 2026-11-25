@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import com.ticket.defender_core.adapter.out.api.dto.MultiEventAnalysisDto;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -17,7 +18,9 @@ import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -35,6 +38,184 @@ class FastApiAdapterTest {
     private static final String TEST_TRACK1_SHARED_SECRET = "test-only-track1-shared-secret-value";
     private static final String TOO_SHORT_UTF8_SECRET = "가".repeat(10);
     private static final String CONTROL_CHARACTER_SECRET = TEST_TRACK1_SHARED_SECRET + "\r\n";
+
+    @Test
+    @DisplayName("다공연 분석은 신규 가명 신호를 내부 인증 경로로 보내고 고정 버전 응답을 검증한다")
+    void analyzeMultiEvent_sendsFixedContractAndAcceptsMatchingResponse() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test/");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        MultiEventAnalysisDto.Request request = multiEventRequest();
+        String response = """
+                {"analysisId":"%s","ledgerVersionSetDigest":"%s",
+                 "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "projectionScoreVersion":"score-v2-exp2",
+                 "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
+                 "algorithm":"GDS_LOUVAIN",
+                 "algorithmVersion":"gds-2.6.6",
+                 "candidates":[{"candidateId":"multi-%s","priorityBand":"MEDIUM",
+                   "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                   "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
+                   "distinctAccountCount":2,"distinctEventCount":2,"distinctPerformanceCount":2,
+                   "verifiedRelationshipCount":2,
+                   "sourceScopes":[
+                     {"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000001","ledgerVersionId":"00000000-0000-4000-8000-000000000011","sourceBatchId":"batch-a"},
+                     {"eventId":"event-b","performanceId":"00000000-0000-4000-8000-000000000002","ledgerVersionId":"00000000-0000-4000-8000-000000000012","sourceBatchId":"batch-b"}],
+                   "availableSignals":["refund_account_hash"],"excludedSignals":[],
+                   "unavailableSignals":["address_hash","device_id_hash","phone_hash"],
+                   "normalSharingPossibilities":["NORMAL_SHARED_POSSIBLE"],
+                   "scoreBreakdown":{"L":0.8,"G":0.68,"B":0.41666666666666663,"Q":0.5,"R":0.3333333333333333,"score":0.2267,"quantityStatus":"POLICY_NOT_CONFIRMED","quantityReason":"POLICY_NOT_CONFIRMED"},
+                   "memberAccountIds":["%s","%s"],
+                   "relationships":[{"signalType":"refund_account_hash","accountIds":["%s","%s"],"sourceScopes":[
+                     {"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000001","ledgerVersionId":"00000000-0000-4000-8000-000000000011","sourceBatchId":"batch-a"},
+                     {"eventId":"event-b","performanceId":"00000000-0000-4000-8000-000000000002","ledgerVersionId":"00000000-0000-4000-8000-000000000012","sourceBatchId":"batch-b"}]}]}]}
+                """.formatted(request.analysisId(), request.ledgerVersionSetDigest(), "1".repeat(64),
+                "a".repeat(64), "b".repeat(64), "a".repeat(64), "b".repeat(64));
+
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(httpRequest -> {
+                    assertThat(httpRequest.getHeaders().get("X-TD-Track1-Key"))
+                            .containsExactly(TEST_TRACK1_SHARED_SECRET);
+                })
+                .andExpect(content().string(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("\"refundAccountHash\":\"" + "e".repeat(64) + "\""),
+                        org.hamcrest.Matchers.containsString("\"phoneHash\":\"" + "f".repeat(64) + "\""))))
+                .andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+
+        MultiEventAnalysisDto.Response result = adapter.analyzeMultiEvent(request);
+
+        assertThat(result.analysisId()).isEqualTo(request.analysisId());
+        assertThat(result.projectionScoreVersion()).isEqualTo("score-v2-exp2");
+        assertThat(result.candidates()).hasSize(1);
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("다공연 응답의 projection score 버전이 exp2와 다르면 거부한다")
+    void analyzeMultiEvent_rejectsMismatchedProjectionScoreVersion() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        MultiEventAnalysisDto.Request request = multiEventRequest();
+        String response = """
+                {"analysisId":"%s","ledgerVersionSetDigest":"%s",
+                 "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "projectionScoreVersion":"score-v2-exp1",
+                 "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
+                 "algorithm":"GDS_LOUVAIN",
+                 "algorithmVersion":"gds-2.6.6",
+                 "candidates":[]}
+                """.formatted(request.analysisId(), request.ledgerVersionSetDigest());
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))
+                .andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+
+        assertThrows(FastApiResponseContractException.class, () -> adapter.analyzeMultiEvent(request));
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("NDJSON 다공연 작업은 기존 JSON 상한을 넘는 50,001행 manifest를 등록한다")
+    void createMultiEventJob_acceptsRowsAboveTheJsonLimit() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        var manifest = artifactManifest(50_001);
+        var acceptedId = UUID.fromString("00000000-0000-4000-8000-000000000090");
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/jobs"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(httpRequest -> {
+                    assertThat(httpRequest.getHeaders().get("X-TD-Track1-Key"))
+                            .containsExactly(TEST_TRACK1_SHARED_SECRET);
+                    assertThat(httpRequest.getHeaders().get("Idempotency-Key")).containsExactly("mei-test");
+                })
+                .andExpect(content().string(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("\"recordCount\":50001"),
+                        org.hamcrest.Matchers.containsString("\"inputFormatVersion\":\"multi-event-exp2-ndjson-v1\""),
+                        org.hamcrest.Matchers.containsString("\"sourceEventId\""))))
+                .andRespond(withSuccess("{\"jobId\":\"" + acceptedId + "\",\"status\":\"QUEUED\",\"existing\":false}",
+                        MediaType.APPLICATION_JSON));
+
+        var accepted = adapter.createMultiEventJob(new MultiEventAnalysisDto.ArtifactCreate(manifest), "mei-test");
+
+        assertThat(accepted.jobId()).isEqualTo(acceptedId);
+        assertThat(accepted.status()).isEqualTo("QUEUED");
+        server.verify();
+    }
+
+    @Test
+    void createMultiEventJob_rejectsManifestAboveTheExplicit400kCapBeforeHttp() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        server.expect(ExpectedCount.never(), requestTo("https://fastapi.test/api/v2/multi-event/jobs"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        assertThrows(FastApiResponseContractException.class, () -> adapter.createMultiEventJob(
+                new MultiEventAnalysisDto.ArtifactCreate(artifactManifest(400_001)), "mei-test"));
+
+        server.verify();
+    }
+
+    private MultiEventAnalysisDto.ArtifactManifest artifactManifest(long recordCount) {
+        OffsetDateTime asOf = OffsetDateTime.parse("2026-11-25T00:00:00Z");
+        return new MultiEventAnalysisDto.ArtifactManifest("mei-test-artifact", "mei-test-artifact", "s3-version-1",
+                "a".repeat(64), recordCount, "multi-event-exp2-ndjson-v1",
+                UUID.fromString("2136558c-2326-4430-a46d-0793494e9b49"),
+                UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "supplier-a", "TRACK1_CONNECTION", "key-v1",
+                "d".repeat(64), asOf, asOf.minusDays(30), asOf.minusDays(1),
+                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub", List.of(
+                new MultiEventAnalysisDto.ArtifactLedgerScope("event-a",
+                        UUID.fromString("00000000-0000-4000-8000-000000000001"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000011"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000021"), "batch-a", null),
+                new MultiEventAnalysisDto.ArtifactLedgerScope("event-b",
+                        UUID.fromString("00000000-0000-4000-8000-000000000002"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000012"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000022"), "batch-b", null)));
+    }
+
+    private MultiEventAnalysisDto.Request multiEventRequest() {
+        UUID performanceOne = UUID.fromString("00000000-0000-4000-8000-000000000001");
+        UUID performanceTwo = UUID.fromString("00000000-0000-4000-8000-000000000002");
+        UUID versionOne = UUID.fromString("00000000-0000-4000-8000-000000000011");
+        UUID versionTwo = UUID.fromString("00000000-0000-4000-8000-000000000012");
+        OffsetDateTime asOf = OffsetDateTime.parse("2026-11-25T00:00:00Z");
+        var scopes = List.of(
+                new MultiEventAnalysisDto.LedgerScope("event-a", performanceOne, versionOne, "batch-a"),
+                new MultiEventAnalysisDto.LedgerScope("event-b", performanceTwo, versionTwo, "batch-b"));
+        var tickets = List.of(
+                new MultiEventAnalysisDto.Ticket("a".repeat(64), "1".repeat(64), "event-a", performanceOne, versionOne,
+                        1L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"),
+                new MultiEventAnalysisDto.Ticket("b".repeat(64), "2".repeat(64), "event-a", performanceOne, versionOne,
+                        2L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"),
+                new MultiEventAnalysisDto.Ticket("a".repeat(64), "3".repeat(64), "event-b", performanceTwo, versionTwo,
+                        1L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"),
+                new MultiEventAnalysisDto.Ticket("b".repeat(64), "4".repeat(64), "event-b", performanceTwo, versionTwo,
+                        2L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"));
+        return new MultiEventAnalysisDto.Request(
+                UUID.fromString(REQUEST_ID),
+                UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "d".repeat(64),
+                asOf, asOf.minusDays(30), asOf.minusDays(1),
+                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
+                scopes, tickets);
+    }
 
     @Test
     @DisplayName("Track 1 분석 요청은 전용 내부 인증 헤더를 전송한다")

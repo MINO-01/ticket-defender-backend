@@ -41,7 +41,9 @@ bl01_suite() {
   run_test bulk-ledger-import-migration '*BulkLedgerImportMigrationMySqlTest'
   run_test bulk-ledger-track1-outbox-migration '*BulkLedgerTrack1OutboxMigrationMySqlTest'
   run_test multi-event-artifact-migration '*MultiEventArtifactMigrationMySqlTest'
+  run_test multi-performance-raw-intake-migration '*MultiPerformanceRawIntakeMigrationMySqlTest'
   run_test bulk-ledger-import-http '*BulkLedgerImportHttpMySqlTest'
+  run_test bulk-ledger-v3-raw-intake-http '*BulkLedgerV3RawIntakeHttpMySqlTest'
 }
 
 mysql_full() {

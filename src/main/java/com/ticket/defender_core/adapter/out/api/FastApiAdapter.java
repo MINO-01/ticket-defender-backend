@@ -216,7 +216,8 @@ public class FastApiAdapter {
                 || manifest.analysisAsOf() == null || manifest.analysisStartAt() == null || manifest.analysisEndAt() == null
                 || !manifest.analysisEndAt().isAfter(manifest.analysisStartAt())
                 || manifest.analysisEndAt().isAfter(manifest.analysisAsOf())
-                || !"score-v2-exp2-multi-event-recurrence".equals(manifest.scoreVersion())
+                || !MULTI_PERFORMANCE_SCORE_VERSION.equals(manifest.scoreVersion())
+                || manifest.ledgerScopes().stream().map(scope -> scope == null ? null : scope.performanceId()).distinct().count() < 2
                 || !"projection-v2.2-exp2-ipwindow-softhub".equals(manifest.projectionVersion())
                 || manifest.ledgerScopes().stream().anyMatch(scope -> scope == null || scope.eventId() == null
                     || scope.eventId().isBlank() || scope.eventId().length() > 128 || scope.sourceEventId() == null
@@ -262,10 +263,18 @@ public class FastApiAdapter {
         catch (RestClientException cause) { throw cause; }
     }
 
+    /** 회차 수로 R을 계산하는 다회차 후보 점수 버전입니다. 퇴역한 event 기준 버전은 보내지도 받지도 않습니다. */
+    static final String MULTI_PERFORMANCE_SCORE_VERSION = "score-v2-exp2-multi-performance-recurrence";
+    private static final String COCLUSTER = "stable_account_cocluster";
+    private static final Set<String> STRONG_RELATIONSHIP_SIGNALS = Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash");
+    private static final Set<String> EXP2_SIGNALS = Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash", "payment_hash",
+            "ip_window:RESIDENTIAL", "ip_window:CORPORATE_EDU", "ip_window:DATACENTER_PROXY", "ip_window:UNKNOWN", "ip_window:MOBILE_CGNAT");
+    private static final Set<String> UNAVAILABLE_SIGNALS = Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash", "payment_hash", "ip_window");
+
     private static void validateMultiEventResponse(MultiEventAnalysisDto.Request request, MultiEventAnalysisDto.Response response) {
         if (response == null || !request.analysisId().equals(response.analysisId())
                 || !request.ledgerVersionSetDigest().equals(response.ledgerVersionSetDigest())
-                || !"score-v2-exp2-multi-event-recurrence".equals(request.scoreVersion())
+                || !MULTI_PERFORMANCE_SCORE_VERSION.equals(request.scoreVersion())
                 || !"projection-v2.2-exp2-ipwindow-softhub".equals(request.projectionVersion())
                 || !request.scoreVersion().equals(response.scoreVersion())
                 || !"score-v2-exp2".equals(response.projectionScoreVersion())
@@ -307,6 +316,10 @@ public class FastApiAdapter {
                     || candidate.scoreBreakdown() == null || !Double.isFinite(candidate.scoreBreakdown().score())
                     || candidate.scoreBreakdown().score() < 0 || candidate.scoreBreakdown().score() > 1
                     || candidate.distinctAccountCount() != candidate.memberAccountIds().size()
+                    || candidate.availableSignals() == null || candidate.availableSignals().isEmpty()
+                    || !EXP2_SIGNALS.containsAll(candidate.availableSignals())
+                    || candidate.excludedSignals() == null || !EXP2_SIGNALS.containsAll(candidate.excludedSignals())
+                    || candidate.unavailableSignals() == null || !UNAVAILABLE_SIGNALS.containsAll(candidate.unavailableSignals())
                     || !scoreBreakdownValid(candidate)) {
                 throw new FastApiResponseContractException("Invalid multi-event candidate response");
             }
@@ -336,7 +349,8 @@ public class FastApiAdapter {
             Set<String> relationshipObservations = new HashSet<>();
             for (var relationship : candidate.relationships()) {
                 if (relationship == null || relationship.signalType() == null
-                        || !Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash").contains(relationship.signalType())
+                        || (!STRONG_RELATIONSHIP_SIGNALS.contains(relationship.signalType()) && !COCLUSTER.equals(relationship.signalType()))
+                        || (STRONG_RELATIONSHIP_SIGNALS.contains(relationship.signalType()) && !candidate.availableSignals().contains(relationship.signalType()))
                         || relationship.accountIds() == null || relationship.accountIds().size() < 2
                         || new HashSet<>(relationship.accountIds()).size() != relationship.accountIds().size()
                         || relationship.sourceScopes() == null || relationship.sourceScopes().isEmpty()
@@ -346,19 +360,23 @@ public class FastApiAdapter {
                 for (String account : relationship.accountIds()) if (!HASH_TOKEN_PATTERN.matcher(account).matches() || !inputAccounts.contains(account)) {
                     throw new FastApiResponseContractException("Multi-event relationship has an invalid account reference");
                 }
-                Set<String> relationshipEvents = new HashSet<>();
+                Set<UUID> relationshipPerformances = new HashSet<>();
                 for (var scope : relationship.sourceScopes()) {
                     String scopeKey = scopeKey(scope);
                     MultiEventAnalysisDto.LedgerScope requestedScope = requestedScopeByKey.get(scopeKey);
                     if (requestedScope == null || !java.util.Objects.equals(requestedScope.policySnapshotId(), scope.policySnapshotId())) throw new FastApiResponseContractException("Multi-event relationship has an unrequested source scope or policy snapshot");
                     if (!candidateScopeKeys.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event relationship source is outside its candidate");
                     String triple = scopeTriple(scope.eventId(), scope.performanceId(), scope.ledgerVersionId());
-                    if (!sharedSignalBound(inputSignalTokensByScope.get(triple), relationship.signalType(), relationship.accountIds()))
-                        throw new FastApiResponseContractException("Multi-event relationship is not bound to a shared signal in its fixed source scope");
-                    relationshipEvents.add(scope.eventId());
+                    // 같은 계정 반복 동시 군집은 Louvain 군집 자체를 다시 계산할 수 없으므로 계정과 회차 존재만 확인합니다.
+                    boolean bound = COCLUSTER.equals(relationship.signalType())
+                            ? inputAccountsByScope.getOrDefault(triple, Set.of()).containsAll(relationship.accountIds())
+                            : sharedSignalBound(inputSignalTokensByScope.get(triple), relationship.signalType(), relationship.accountIds());
+                    if (!bound)
+                        throw new FastApiResponseContractException("Multi-event relationship is not bound to its fixed source scope");
+                    relationshipPerformances.add(scope.performanceId());
                     relationshipObservations.add(relationship.signalType() + "|" + scopeKey);
                 }
-                if (relationshipEvents.size() < 2) throw new FastApiResponseContractException("Multi-event relationship lacks repeated event evidence");
+                if (relationshipPerformances.size() < 2) throw new FastApiResponseContractException("Multi-event relationship lacks repeated performance evidence");
             }
             if (relationshipObservations.size() != candidate.verifiedRelationshipCount()) throw new FastApiResponseContractException("Multi-event relationship count does not match its sources");
         }
@@ -395,7 +413,8 @@ public class FastApiAdapter {
         var score = candidate.scoreBreakdown();
         double[] parts = {score.L(), score.G(), score.B(), score.Q(), score.R(), score.score()};
         for (double value : parts) if (!Double.isFinite(value) || value < 0 || value > 1) return false;
-        double expectedRecurrence = Math.min((candidate.distinctEventCount() - 1) / 3.0, 1.0);
+        // 사전 등록 정의: R은 서로 다른 회차 수로 계산합니다.
+        double expectedRecurrence = Math.min((candidate.distinctPerformanceCount() - 1) / 3.0, 1.0);
         double expectedBehavior = 0.5 * score.Q() + 0.5 * expectedRecurrence;
         double expectedScore = Math.round(score.L() * score.G() * score.B() * 10_000.0) / 10_000.0;
         return Math.abs(score.R() - expectedRecurrence) < 1.0e-9

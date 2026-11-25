@@ -12,13 +12,20 @@ public final class MultiEventAnalysisDto {
                           OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt,
                           String scoreVersion, String projectionVersion, List<LedgerScope> ledgerScopes,
                           List<Ticket> tickets) { }
-    public record LedgerScope(String eventId, UUID performanceId, UUID ledgerVersionId, String sourceBatchId) { }
+    public record LedgerScope(String eventId, UUID performanceId, UUID ledgerVersionId, String sourceBatchId,
+                              UUID policySnapshotId) {
+        public LedgerScope(String eventId, UUID performanceId, UUID ledgerVersionId, String sourceBatchId) {
+            this(eventId, performanceId, ledgerVersionId, sourceBatchId, null);
+        }
+    }
     public record Ticket(String accountId, String reservationNo, String eventId, UUID performanceId, UUID ledgerVersionId,
-                         String supplierNamespace, String hmacPurpose, String hmacKeyVersion, OffsetDateTime purchasedAt,
-                         Integer effectiveTicketQuantity, String paymentHash, String addressHash, String deviceIdHash,
+                         Long sourceRowOrdinal, String supplierNamespace, String hmacPurpose, String hmacKeyVersion, OffsetDateTime purchasedAt,
+                         Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit, UUID quantityPolicySnapshotId,
+                         String quantityPolicyVersion, String quantitySourceVersion, String paymentHash, String addressHash, String deviceIdHash,
                          String ipHash, String refundAccountHash, String phoneHash, String ipNetworkType,
                          String quantityStatus, String quantityReason, String sourceVersion) { }
-    public record Response(UUID analysisId, String ledgerVersionSetDigest, String scoreVersion, String projectionVersion,
+    public record Response(UUID analysisId, String ledgerVersionSetDigest, String scoreVersion,
+                           String projectionScoreVersion, String projectionVersion,
                            String algorithm, String algorithmVersion, List<Candidate> candidates) { }
     public record Candidate(String candidateId, String priorityBand, String scoreVersion, String projectionVersion,
                             int distinctAccountCount, int distinctEventCount, int distinctPerformanceCount,

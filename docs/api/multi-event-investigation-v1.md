@@ -8,8 +8,11 @@
 - 모든 경로는 관리자 JWT와 event 기반 역할 확인을 거친다.
 - 요청 본문에는 tenantId가 없다. 서버가 각 eventId 권한에서 tenant를 해석한다.
 - 두 개 이상의 서로 다른 event가 같은 tenant 및 같은 관리자 membership 범위여야 한다.
-- 서버는 공개된 원장 head만 고정하고, canonical 정렬한 `(eventId, performanceId, versionId)`의
-  SHA-256을 `ledgerVersionSetDigest`로 저장한다.
+- 서버는 공개된 원장 head와 완료된 bulk 정책 snapshot 참조를 생성 시 고정한다. canonical
+  `(eventId, performanceId, versionId)`의 SHA-256은 `ledgerVersionSetDigest`에, policy snapshot
+  집합은 idempotency request digest에 바인딩한다.
+- 실행 목록은 고정된 모든 event의 현재 membership grant가 있는 행만 SQL에서 pagination 전에
+  반환한다. 상세 및 모든 후속 조회/재시도는 해당 run 전체 scope의 현재 권한을 다시 검사한다.
 - 서로 다른 supplier namespace, HMAC purpose, HMAC key version은 요청 전에 차단한다.
 
 ## 경로
@@ -27,11 +30,28 @@
 
 `pageSize`는 1부터 100까지다. 다른 tenant 범위는 기존 404 정책을 따른다.
 
+## MySQL migration 순서
+
+기존 BL-07 및 exp2 신호 migration을 적용한 뒤 다음 순서를 유지한다.
+
+1. `multi-event-investigation-migration.sql`
+2. `multi-event-quantity-snapshot-migration.sql`
+3. `multi-event-source-binding-migration.sql`
+
+마지막 migration은 선택된 원장 버전이 같은 tenant, event, performance에 속하는지와 정책
+snapshot이 그 원장 버전을 참조하는지 복합 외래 키로 고정한다.
+
 ## Data 경계
 
 Spring은 고정된 scope, 목적 `TRACK1_CONNECTION`, 단일 supplier namespace와 단일 key version을
-내부 인증된 `/api/v2/multi-event/analyze`로 보낸다. Data 응답의 scope, 구성원, 관계 신호는
-요청 범위를 다시 검증한다. IP와 payment 신호만으로 공연 간 후보를 연결하지 않는다.
+내부 인증된 `/api/v2/multi-event/analyze`로 보낸다. 응답의 최종 score, edge projection score,
+projection, GDS runtime 버전을 각각 검증한다. 구성 계정이 입력에 존재하는지와 관계별 실제
+공유 신호 및 고정 source scope를 재검증한다. IP와 payment 신호만으로 공연 간 후보를 연결하지 않는다.
+티켓 행은 고정 scope별 순번을 포함해 같은 예약의 여러 티켓을 별도 입력으로 보존한다. 이 순번은
+중복 검사에만 사용하며 계정 연결 키가 아니다.
+
+현재 JSON 분석 경로는 50,000 ticket 제한이다. 400,000행 제품 분석은 immutable NDJSON artifact,
+페이지 처리 및 비동기 재개 경로가 준비될 때까지 완료 기준으로 볼 수 없다.
 
 HMAC 값은 Spring 내부 저장과 Data 내부 계약에서만 사용한다. 관리자 API와 Frontend에는
 원본 HMAC, 원본 개인정보, 객체 저장소 key를 반환하지 않는다.

@@ -48,6 +48,7 @@ public class FastApiAdapter {
     private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
     private static final Set<String> PERMITTED_HTTP_LOOPBACK_LITERALS = Set.of("127.0.0.1", "::1");
     private static final Pattern HASH_TOKEN_PATTERN = Pattern.compile("^[0-9a-f]{64}$");
+    private static final Pattern GDS_VERSION_PATTERN = Pattern.compile("^gds-[0-9]+(?:\\.[0-9]+){1,2}$");
 
     private final RestClient restClient;
 
@@ -208,19 +209,44 @@ public class FastApiAdapter {
     private static void validateMultiEventResponse(MultiEventAnalysisDto.Request request, MultiEventAnalysisDto.Response response) {
         if (response == null || !request.analysisId().equals(response.analysisId())
                 || !request.ledgerVersionSetDigest().equals(response.ledgerVersionSetDigest())
+                || !"score-v2-exp2-multi-event-recurrence".equals(request.scoreVersion())
+                || !"projection-v2.2-exp2-ipwindow-softhub".equals(request.projectionVersion())
                 || !request.scoreVersion().equals(response.scoreVersion())
+                || !"score-v2-exp2".equals(response.projectionScoreVersion())
                 || !request.projectionVersion().equals(response.projectionVersion())
-                || !"GDS_LOUVAIN".equals(response.algorithm()) || response.algorithmVersion() == null
-                || !response.algorithmVersion().contains(request.projectionVersion())
-                || !response.algorithmVersion().contains(request.scoreVersion()) || response.candidates() == null) {
+                || !"GDS_LOUVAIN".equals(response.algorithm())
+                || response.algorithmVersion() == null || !GDS_VERSION_PATTERN.matcher(response.algorithmVersion()).matches()
+                || response.candidates() == null) {
             throw new FastApiResponseContractException("FastAPI multi-event response does not match the fixed request");
         }
         Set<String> requestedScopes = new HashSet<>();
-        for (var scope : request.ledgerScopes()) requestedScopes.add(scopeKey(scope));
+        Map<String, String> requestScopeTriples = new HashMap<>();
+        Map<String, MultiEventAnalysisDto.LedgerScope> requestedScopeByKey = new HashMap<>();
+        for (var scope : request.ledgerScopes()) {
+            String key = scopeKey(scope);
+            requestedScopes.add(key);
+            requestScopeTriples.put(key, scopeTriple(scope.eventId(), scope.performanceId(), scope.ledgerVersionId()));
+            requestedScopeByKey.put(key, scope);
+        }
+        Map<String, Set<String>> inputAccountsByScope = new HashMap<>();
+        Map<String, Map<String, Map<String, Set<String>>>> inputSignalTokensByScope = new HashMap<>();
+        for (var ticket : request.tickets()) {
+            String ticketScope = scopeTriple(ticket.eventId(), ticket.performanceId(), ticket.ledgerVersionId());
+            inputAccountsByScope.computeIfAbsent(ticketScope, ignored -> new HashSet<>()).add(ticket.accountId());
+            Map<String, Map<String, Set<String>>> byAccount = inputSignalTokensByScope.computeIfAbsent(ticketScope, ignored -> new HashMap<>());
+            addSignalToken(byAccount, ticket.accountId(), "refund_account_hash", ticket.refundAccountHash());
+            addSignalToken(byAccount, ticket.accountId(), "phone_hash", ticket.phoneHash());
+            addSignalToken(byAccount, ticket.accountId(), "device_id_hash", ticket.deviceIdHash());
+            addSignalToken(byAccount, ticket.accountId(), "address_hash", ticket.addressHash());
+        }
+        Set<String> inputAccounts = request.tickets().stream().map(MultiEventAnalysisDto.Ticket::accountId).collect(java.util.stream.Collectors.toSet());
         Set<String> candidates = new HashSet<>();
         for (var candidate : response.candidates()) {
             if (candidate == null || candidate.candidateId() == null || !candidates.add(candidate.candidateId())
+                    || !request.scoreVersion().equals(candidate.scoreVersion())
+                    || !request.projectionVersion().equals(candidate.projectionVersion())
                     || candidate.memberAccountIds() == null || candidate.memberAccountIds().size() < 2
+                    || new HashSet<>(candidate.memberAccountIds()).size() != candidate.memberAccountIds().size()
                     || candidate.relationships() == null || candidate.relationships().isEmpty()
                     || candidate.scoreBreakdown() == null || !Double.isFinite(candidate.scoreBreakdown().score())
                     || candidate.scoreBreakdown().score() < 0 || candidate.scoreBreakdown().score() > 1
@@ -229,36 +255,50 @@ public class FastApiAdapter {
                 throw new FastApiResponseContractException("Invalid multi-event candidate response");
             }
             if (candidate.sourceScopes() == null || candidate.sourceScopes().size() < 2
+                    || new HashSet<>(candidate.sourceScopes().stream().map(FastApiAdapter::scopeKey).toList()).size() != candidate.sourceScopes().size()
                     || candidate.sourceScopes().stream().map(MultiEventAnalysisDto.LedgerScope::eventId).distinct().count() != candidate.distinctEventCount()
                     || candidate.sourceScopes().stream().map(MultiEventAnalysisDto.LedgerScope::performanceId).distinct().count() != candidate.distinctPerformanceCount())
                 throw new FastApiResponseContractException("Multi-event candidate counts do not match its sources");
             Set<String> candidateScopeKeys = new HashSet<>();
             for (var scope : candidate.sourceScopes()) {
                 String scopeKey = scopeKey(scope);
-                if (!requestedScopes.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event response has an unrequested source scope");
+                MultiEventAnalysisDto.LedgerScope requestedScope = requestedScopeByKey.get(scopeKey);
+                if (requestedScope == null || !java.util.Objects.equals(requestedScope.policySnapshotId(), scope.policySnapshotId())) throw new FastApiResponseContractException("Multi-event response has an unrequested source scope or policy snapshot");
+                if (!inputAccountsByScope.containsKey(scopeTriple(scope.eventId(), scope.performanceId(), scope.ledgerVersionId())))
+                    throw new FastApiResponseContractException("Multi-event response source scope has no fixed input tickets");
                 candidateScopeKeys.add(scopeKey);
             }
-            for (String account : candidate.memberAccountIds()) if (account == null || !HASH_TOKEN_PATTERN.matcher(account).matches()) {
+            for (String account : candidate.memberAccountIds()) if (account == null || !HASH_TOKEN_PATTERN.matcher(account).matches() || !inputAccounts.contains(account)) {
                 throw new FastApiResponseContractException("Multi-event response has an invalid account reference");
             }
             Set<String> members = new HashSet<>(candidate.memberAccountIds());
+            boolean memberInputBound = candidateScopeKeys.stream().anyMatch(key -> {
+                Set<String> scopeAccounts = inputAccountsByScope.get(requestScopeTriples.get(key));
+                return scopeAccounts != null && scopeAccounts.containsAll(members);
+            });
+            if (!memberInputBound) throw new FastApiResponseContractException("Multi-event candidate members are not bound to one of its fixed input scopes");
             Set<String> relationshipObservations = new HashSet<>();
             for (var relationship : candidate.relationships()) {
                 if (relationship == null || relationship.signalType() == null
                         || !Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash").contains(relationship.signalType())
                         || relationship.accountIds() == null || relationship.accountIds().size() < 2
+                        || new HashSet<>(relationship.accountIds()).size() != relationship.accountIds().size()
                         || relationship.sourceScopes() == null || relationship.sourceScopes().isEmpty()
                         || !members.equals(new HashSet<>(relationship.accountIds()))) {
                     throw new FastApiResponseContractException("Invalid multi-event relationship response");
                 }
-                for (String account : relationship.accountIds()) if (!HASH_TOKEN_PATTERN.matcher(account).matches()) {
+                for (String account : relationship.accountIds()) if (!HASH_TOKEN_PATTERN.matcher(account).matches() || !inputAccounts.contains(account)) {
                     throw new FastApiResponseContractException("Multi-event relationship has an invalid account reference");
                 }
                 Set<String> relationshipEvents = new HashSet<>();
                 for (var scope : relationship.sourceScopes()) {
                     String scopeKey = scopeKey(scope);
-                    if (!requestedScopes.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event relationship has an unrequested source scope");
+                    MultiEventAnalysisDto.LedgerScope requestedScope = requestedScopeByKey.get(scopeKey);
+                    if (requestedScope == null || !java.util.Objects.equals(requestedScope.policySnapshotId(), scope.policySnapshotId())) throw new FastApiResponseContractException("Multi-event relationship has an unrequested source scope or policy snapshot");
                     if (!candidateScopeKeys.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event relationship source is outside its candidate");
+                    String triple = scopeTriple(scope.eventId(), scope.performanceId(), scope.ledgerVersionId());
+                    if (!sharedSignalBound(inputSignalTokensByScope.get(triple), relationship.signalType(), relationship.accountIds()))
+                        throw new FastApiResponseContractException("Multi-event relationship is not bound to a shared signal in its fixed source scope");
                     relationshipEvents.add(scope.eventId());
                     relationshipObservations.add(relationship.signalType() + "|" + scopeKey);
                 }
@@ -266,6 +306,27 @@ public class FastApiAdapter {
             }
             if (relationshipObservations.size() != candidate.verifiedRelationshipCount()) throw new FastApiResponseContractException("Multi-event relationship count does not match its sources");
         }
+    }
+
+    private static void addSignalToken(Map<String, Map<String, Set<String>>> byAccount, String account, String signal, String token) {
+        if (token != null) byAccount.computeIfAbsent(account, ignored -> new HashMap<>())
+                .computeIfAbsent(signal, ignored -> new HashSet<>()).add(token);
+    }
+
+    private static boolean sharedSignalBound(Map<String, Map<String, Set<String>>> byAccount, String signal, List<String> accounts) {
+        if (byAccount == null || accounts == null || accounts.size() < 2) return false;
+        Set<String> shared = null;
+        for (String account : accounts) {
+            Set<String> values = byAccount.getOrDefault(account, Map.of()).getOrDefault(signal, Set.of());
+            if (shared == null) shared = new HashSet<>(values);
+            else shared.retainAll(values);
+            if (shared.isEmpty()) return false;
+        }
+        return shared != null && !shared.isEmpty();
+    }
+
+    private static String scopeTriple(String eventId, UUID performanceId, UUID versionId) {
+        return eventId + "|" + performanceId + "|" + versionId;
     }
 
     private static String scopeKey(MultiEventAnalysisDto.LedgerScope scope) {

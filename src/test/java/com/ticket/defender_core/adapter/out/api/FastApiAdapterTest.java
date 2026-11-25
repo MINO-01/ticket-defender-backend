@@ -51,11 +51,28 @@ class FastApiAdapterTest {
         String response = """
                 {"analysisId":"%s","ledgerVersionSetDigest":"%s",
                  "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "projectionScoreVersion":"score-v2-exp2",
                  "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
                  "algorithm":"GDS_LOUVAIN",
-                 "algorithmVersion":"gds-2.6.6;projection-v2.2-exp2-ipwindow-softhub;score-v2-exp2-multi-event-recurrence",
-                 "candidates":[]}
-                """.formatted(request.analysisId(), request.ledgerVersionSetDigest());
+                 "algorithmVersion":"gds-2.6.6",
+                 "candidates":[{"candidateId":"multi-%s","priorityBand":"MEDIUM",
+                   "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                   "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
+                   "distinctAccountCount":2,"distinctEventCount":2,"distinctPerformanceCount":2,
+                   "verifiedRelationshipCount":2,
+                   "sourceScopes":[
+                     {"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000001","ledgerVersionId":"00000000-0000-4000-8000-000000000011","sourceBatchId":"batch-a"},
+                     {"eventId":"event-b","performanceId":"00000000-0000-4000-8000-000000000002","ledgerVersionId":"00000000-0000-4000-8000-000000000012","sourceBatchId":"batch-b"}],
+                   "availableSignals":["refund_account_hash"],"excludedSignals":[],
+                   "unavailableSignals":["address_hash","device_id_hash","phone_hash"],
+                   "normalSharingPossibilities":["NORMAL_SHARED_POSSIBLE"],
+                   "scoreBreakdown":{"L":0.8,"G":0.68,"B":0.41666666666666663,"Q":0.5,"R":0.3333333333333333,"score":0.2267,"quantityStatus":"POLICY_NOT_CONFIRMED","quantityReason":"POLICY_NOT_CONFIRMED"},
+                   "memberAccountIds":["%s","%s"],
+                   "relationships":[{"signalType":"refund_account_hash","accountIds":["%s","%s"],"sourceScopes":[
+                     {"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000001","ledgerVersionId":"00000000-0000-4000-8000-000000000011","sourceBatchId":"batch-a"},
+                     {"eventId":"event-b","performanceId":"00000000-0000-4000-8000-000000000002","ledgerVersionId":"00000000-0000-4000-8000-000000000012","sourceBatchId":"batch-b"}]}]}]}
+                """.formatted(request.analysisId(), request.ledgerVersionSetDigest(), "1".repeat(64),
+                "a".repeat(64), "b".repeat(64), "a".repeat(64), "b".repeat(64));
 
         server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))
                 .andExpect(method(HttpMethod.POST))
@@ -71,13 +88,14 @@ class FastApiAdapterTest {
         MultiEventAnalysisDto.Response result = adapter.analyzeMultiEvent(request);
 
         assertThat(result.analysisId()).isEqualTo(request.analysisId());
-        assertThat(result.candidates()).isEmpty();
+        assertThat(result.projectionScoreVersion()).isEqualTo("score-v2-exp2");
+        assertThat(result.candidates()).hasSize(1);
         server.verify();
     }
 
     @Test
-    @DisplayName("다공연 응답이 요청한 고정 원장 digest와 다르면 거부한다")
-    void analyzeMultiEvent_rejectsMismatchedLedgerDigest() {
+    @DisplayName("다공연 응답의 projection score 버전이 exp2와 다르면 거부한다")
+    void analyzeMultiEvent_rejectsMismatchedProjectionScoreVersion() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         FastApiAdapter adapter = new FastApiAdapter(builder.build());
@@ -87,11 +105,12 @@ class FastApiAdapterTest {
         String response = """
                 {"analysisId":"%s","ledgerVersionSetDigest":"%s",
                  "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "projectionScoreVersion":"score-v2-exp1",
                  "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
                  "algorithm":"GDS_LOUVAIN",
-                 "algorithmVersion":"gds-2.6.6;projection-v2.2-exp2-ipwindow-softhub;score-v2-exp2-multi-event-recurrence",
+                 "algorithmVersion":"gds-2.6.6",
                  "candidates":[]}
-                """.formatted(request.analysisId(), "a".repeat(64));
+                """.formatted(request.analysisId(), request.ledgerVersionSetDigest());
         server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))
                 .andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
 
@@ -108,11 +127,23 @@ class FastApiAdapterTest {
         var scopes = List.of(
                 new MultiEventAnalysisDto.LedgerScope("event-a", performanceOne, versionOne, "batch-a"),
                 new MultiEventAnalysisDto.LedgerScope("event-b", performanceTwo, versionTwo, "batch-b"));
-        var tickets = List.of(new MultiEventAnalysisDto.Ticket(
-                "a".repeat(64), "b".repeat(64), "event-a", performanceOne, versionOne,
-                "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
-                null, null, null, null, "e".repeat(64), "f".repeat(64), null,
-                "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"));
+        var tickets = List.of(
+                new MultiEventAnalysisDto.Ticket("a".repeat(64), "1".repeat(64), "event-a", performanceOne, versionOne,
+                        1L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"),
+                new MultiEventAnalysisDto.Ticket("b".repeat(64), "2".repeat(64), "event-a", performanceOne, versionOne,
+                        2L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"),
+                new MultiEventAnalysisDto.Ticket("a".repeat(64), "3".repeat(64), "event-b", performanceTwo, versionTwo,
+                        1L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"),
+                new MultiEventAnalysisDto.Ticket("b".repeat(64), "4".repeat(64), "event-b", performanceTwo, versionTwo,
+                        2L, "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                        null, null, null, null, null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                        "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"));
         return new MultiEventAnalysisDto.Request(
                 UUID.fromString(REQUEST_ID),
                 UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "d".repeat(64),

@@ -32,7 +32,7 @@ import java.util.UUID;
         VerifiedPerformanceController.class,
         PerformanceLinkController.class, ReservationImportController.class, ListingCandidateMatchController.class,
         PurchaseLimitPolicyController.class, Track1QuantityController.class, AdminConsoleController.class,
-        BulkLedgerImportController.class})
+        BulkLedgerImportController.class, BulkLedgerTrack1Controller.class, MultiEventInvestigationController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)
     ResponseEntity<ProblemDetail> api(CaseApiException error) {

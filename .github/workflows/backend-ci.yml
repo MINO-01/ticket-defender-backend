@@ -132,6 +132,7 @@ jobs:
           # Track2CandidatePipelineHttpMySqlTest / Track2CandidatePipelineConcurrentMySqlTest / check_junit_results.py track2-candidate-concurrency
           # BulkLedgerCandidatePreparationMySqlTest / check_junit_results.py bulk-ledger-candidate-mysql
           # BulkLedgerPublicationMySqlTest / check_junit_results.py bulk-ledger-publication-mysql
+          # MultiEventArtifactMigrationMySqlTest / check_junit_results.py multi-event-artifact-migration (after BL-07)
           bash .github/scripts/run_ci_suite.sh '${{ needs.change-plan.outputs.mysql_suite }}'
 
   mysql8-track1-legacy:

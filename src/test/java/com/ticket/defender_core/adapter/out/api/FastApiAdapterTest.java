@@ -118,6 +118,71 @@ class FastApiAdapterTest {
         server.verify();
     }
 
+    @Test
+    @DisplayName("NDJSON 다공연 작업은 기존 JSON 상한을 넘는 50,001행 manifest를 등록한다")
+    void createMultiEventJob_acceptsRowsAboveTheJsonLimit() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        var manifest = artifactManifest(50_001);
+        var acceptedId = UUID.fromString("00000000-0000-4000-8000-000000000090");
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/jobs"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(httpRequest -> {
+                    assertThat(httpRequest.getHeaders().get("X-TD-Track1-Key"))
+                            .containsExactly(TEST_TRACK1_SHARED_SECRET);
+                    assertThat(httpRequest.getHeaders().get("Idempotency-Key")).containsExactly("mei-test");
+                })
+                .andExpect(content().string(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("\"recordCount\":50001"),
+                        org.hamcrest.Matchers.containsString("\"inputFormatVersion\":\"multi-event-exp2-ndjson-v1\""),
+                        org.hamcrest.Matchers.containsString("\"sourceEventId\""))))
+                .andRespond(withSuccess("{\"jobId\":\"" + acceptedId + "\",\"status\":\"QUEUED\",\"existing\":false}",
+                        MediaType.APPLICATION_JSON));
+
+        var accepted = adapter.createMultiEventJob(new MultiEventAnalysisDto.ArtifactCreate(manifest), "mei-test");
+
+        assertThat(accepted.jobId()).isEqualTo(acceptedId);
+        assertThat(accepted.status()).isEqualTo("QUEUED");
+        server.verify();
+    }
+
+    @Test
+    void createMultiEventJob_rejectsManifestAboveTheExplicit400kCapBeforeHttp() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        server.expect(ExpectedCount.never(), requestTo("https://fastapi.test/api/v2/multi-event/jobs"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        assertThrows(FastApiResponseContractException.class, () -> adapter.createMultiEventJob(
+                new MultiEventAnalysisDto.ArtifactCreate(artifactManifest(400_001)), "mei-test"));
+
+        server.verify();
+    }
+
+    private MultiEventAnalysisDto.ArtifactManifest artifactManifest(long recordCount) {
+        OffsetDateTime asOf = OffsetDateTime.parse("2026-11-25T00:00:00Z");
+        return new MultiEventAnalysisDto.ArtifactManifest("mei-test-artifact", "mei-test-artifact", "s3-version-1",
+                "a".repeat(64), recordCount, "multi-event-exp2-ndjson-v1",
+                UUID.fromString("2136558c-2326-4430-a46d-0793494e9b49"),
+                UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "supplier-a", "TRACK1_CONNECTION", "key-v1",
+                "d".repeat(64), asOf, asOf.minusDays(30), asOf.minusDays(1),
+                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub", List.of(
+                new MultiEventAnalysisDto.ArtifactLedgerScope("event-a",
+                        UUID.fromString("00000000-0000-4000-8000-000000000001"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000011"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000021"), "batch-a", null),
+                new MultiEventAnalysisDto.ArtifactLedgerScope("event-b",
+                        UUID.fromString("00000000-0000-4000-8000-000000000002"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000012"),
+                        UUID.fromString("00000000-0000-4000-8000-000000000022"), "batch-b", null)));
+    }
+
     private MultiEventAnalysisDto.Request multiEventRequest() {
         UUID performanceOne = UUID.fromString("00000000-0000-4000-8000-000000000001");
         UUID performanceTwo = UUID.fromString("00000000-0000-4000-8000-000000000002");

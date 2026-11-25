@@ -9,9 +9,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.OffsetDateTime;
@@ -24,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -101,6 +105,25 @@ class MultiEventInvestigationServiceTest {
     }
 
     @Test
+    void candidateMemberRelationshipAndSourceRowsStayHiddenUntilTheDataJobCompletes() {
+        when(access.event(EVENT_A, ROLES)).thenReturn(scope(EVENT_A));
+        when(access.event(EVENT_B, ROLES)).thenReturn(scope(EVENT_B));
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.contains("from td_multi_event_investigation_runs r")) return List.of(run("DATA_PENDING"));
+            if (sql.contains("select distinct event_id")) return List.of(EVENT_A, EVENT_B);
+            return List.of();
+        }).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
+
+        assertUnavailable(() -> service.candidates(EVENT_A, RUN_ID, 0, 20));
+        assertUnavailable(() -> service.members(EVENT_A, RUN_ID, "multi-" + "a".repeat(64), 0, 20));
+        assertUnavailable(() -> service.relationships(EVENT_A, RUN_ID, "multi-" + "a".repeat(64), 0, 20));
+        assertUnavailable(() -> service.scopes(EVENT_A, RUN_ID));
+
+        verify(jdbc, never()).queryForObject(anyString(), any(Class.class), any(Object[].class));
+    }
+
+    @Test
     void runReadsAreHiddenWhenAnotherScopeResolvesToADifferentTenant() {
         when(access.event(EVENT_A, ROLES)).thenReturn(scope(EVENT_A));
         when(access.event(EVENT_B, ROLES)).thenReturn(new CandidatePipelineAccess.Scope(
@@ -169,10 +192,143 @@ class MultiEventInvestigationServiceTest {
         assertThat(baselineArguments.get()[0]).isEqualTo("[\"" + accountA + "\",\"" + accountB + "\"]");
     }
 
+    @Test
+    void ledgerVersionDigestUsesCanonicalLexicalUuidOrderingAcrossHighBitBoundary() {
+        UUID event7f = UUID.fromString("7fffffff-0000-4000-8000-000000000001");
+        UUID event80 = UUID.fromString("80000000-0000-4000-8000-000000000001");
+        UUID perf7f = UUID.fromString("7fffffff-0000-4000-8000-000000000002");
+        UUID perf80 = UUID.fromString("80000000-0000-4000-8000-000000000002");
+        UUID version7f = UUID.fromString("7fffffff-0000-4000-8000-000000000003");
+        UUID version80 = UUID.fromString("80000000-0000-4000-8000-000000000003");
+        var scopes = List.of(
+                new MultiEventInvestigationService.Scope(event80, perf80, version80, "event-b", "batch-b", "supplier-a", null),
+                new MultiEventInvestigationService.Scope(event7f, perf7f, version7f, "event-a", "batch-a", "supplier-a", null));
+        String expectedRows = event7f + "|" + perf7f + "|" + version7f + "\n"
+                + event80 + "|" + perf80 + "|" + version80;
+
+        assertThat(MultiEventInvestigationService.canonicalLedgerVersionRows(scopes)).isEqualTo(expectedRows);
+        assertThat(CandidatePipelineSupport.sha256("MEI_LEDGER_VERSION_SET",
+                MultiEventInvestigationService.canonicalLedgerVersionRows(scopes)))
+                .isEqualTo(CandidatePipelineSupport.sha256("MEI_LEDGER_VERSION_SET", expectedRows));
+    }
+
+    @Test
+    void relationshipSummaryRejectsNarrowerAccountCountBeforeEvidencePersistence() {
+        var performanceA = UUID.fromString("00000000-0000-4000-8000-000000000041");
+        var performanceB = UUID.fromString("00000000-0000-4000-8000-000000000042");
+        var versionA = UUID.fromString("00000000-0000-4000-8000-000000000051");
+        var versionB = UUID.fromString("00000000-0000-4000-8000-000000000052");
+        var scopeA = new MultiEventAnalysisDto.LedgerScope("event-a", performanceA, versionA, "batch-a");
+        var scopeB = new MultiEventAnalysisDto.LedgerScope("event-b", performanceB, versionB, "batch-b");
+        var candidate = new MultiEventAnalysisDto.CandidateSummary("multi-" + "c".repeat(64), "HIGH",
+                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
+                3, 2, 2, 1, List.of(scopeA, scopeB), List.of("refund_account_hash"), List.of(), List.of(), List.of(), null);
+        var narrowerRelation = new MultiEventAnalysisDto.RelationshipSummary("relation-refund", "refund_account_hash",
+                2, 2, List.of(scopeA, scopeB));
+        var fixedScopes = java.util.Map.of(
+                "event-a|" + performanceA + "|" + versionA + "|batch-a", scopeA,
+                "event-b|" + performanceB + "|" + versionB + "|batch-b", scopeB);
+
+        assertThatThrownBy(() -> service.validateRelationshipSummary(candidate, narrowerRelation, fixedScopes))
+                .isInstanceOf(com.ticket.defender_core.adapter.out.api.FastApiResponseContractException.class);
+
+        verifyNoInteractions(jdbc, data);
+    }
+
+    @Test
+    void onlyTheExplicitDataQueueFull429IsClassifiedAsRetryableOverload() {
+        var full = org.springframework.web.client.HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS,
+                "Too Many Requests", new HttpHeaders(),
+                "{\"detail\":{\"code\":\"MULTI_EVENT_JOB_QUEUE_FULL\"}}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.charset.StandardCharsets.UTF_8);
+        var unrelated429 = org.springframework.web.client.HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS,
+                "Too Many Requests", new HttpHeaders(),
+                "{\"detail\":{\"code\":\"OTHER_RATE_LIMIT\"}}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(service.isDataQueueFull(full)).isTrue();
+        assertThat(service.isDataQueueFull(unrelated429)).isFalse();
+    }
+
+    @Test
+    void repeatedQueueFullDeferralsKeepTheFixedArtifactAndDoNotSpendAttemptBudget() {
+        String artifactId = "mei-fixed-artifact";
+        String idempotencyKey = MultiEventInvestigationService.dataJobIdempotencyKey(RUN_ID);
+        var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 5, "RUNNING", null,
+                artifactId, "s3-version-1", "a".repeat(64), 50_001L, 1);
+        AtomicReference<String> updateSql = new AtomicReference<>();
+        doAnswer(invocation -> {
+            java.util.function.Consumer<TransactionStatus> callback = invocation.getArgument(0);
+            callback.accept(new SimpleTransactionStatus());
+            return null;
+        }).when(tx).executeWithoutResult(any());
+        when(jdbc.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        when(jdbc.update(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            updateSql.set(invocation.getArgument(0));
+            return 1;
+        });
+
+        for (int retry = 0; retry < 4; retry++) {
+            service.markQueueFullPending(claim);
+            assertThat(MultiEventInvestigationService.shouldIncrementAttempt("DATA_PENDING", null, artifactId)).isFalse();
+            assertThat(MultiEventInvestigationService.dataJobIdempotencyKey(RUN_ID)).isEqualTo(idempotencyKey);
+            assertThat(updateSql.get()).contains("status='DATA_PENDING'", "failure_code=null", "lease_owner=null")
+                    .doesNotContain("attempt_count", "artifact_id=");
+        }
+    }
+
+    @Test
+    void dataRetryQueueFullDoesNotIncrementAttemptsBeforeAcceptance() {
+        UUID dataJobId = UUID.fromString("00000000-0000-4000-8000-000000000040");
+        var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 6, "RUNNING", dataJobId,
+                "mei-fixed-artifact", "s3-version-1", "a".repeat(64), 50_001L, 1);
+        var queueFull = org.springframework.web.client.HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS,
+                "Too Many Requests", new HttpHeaders(),
+                "{\"detail\":{\"code\":\"MULTI_EVENT_JOB_QUEUE_FULL\"}}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.charset.StandardCharsets.UTF_8);
+        when(data.retryMultiEventJob(dataJobId)).thenThrow(queueFull);
+
+        assertThatThrownBy(() -> service.retryDataJob(claim)).isSameAs(queueFull);
+
+        verify(tx, never()).executeWithoutResult(any());
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    void acceptedDataRetryIncrementsAttemptsOnlyWithFencedPendingTransition() {
+        UUID dataJobId = UUID.fromString("00000000-0000-4000-8000-000000000040");
+        var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 6, "RUNNING", dataJobId,
+                "mei-fixed-artifact", "s3-version-1", "a".repeat(64), 50_001L, 1);
+        AtomicReference<String> updateSql = new AtomicReference<>();
+        when(data.retryMultiEventJob(dataJobId)).thenReturn(
+                new MultiEventAnalysisDto.ArtifactAccepted(dataJobId, "QUEUED", false));
+        when(jdbc.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        when(jdbc.update(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            updateSql.set(invocation.getArgument(0));
+            return 1;
+        });
+        doAnswer(invocation -> {
+            java.util.function.Consumer<TransactionStatus> callback = invocation.getArgument(0);
+            callback.accept(new SimpleTransactionStatus());
+            return null;
+        }).when(tx).executeWithoutResult(any());
+
+        service.retryDataJob(claim);
+
+        assertThat(updateSql.get()).contains("status='DATA_PENDING'", "attempt_count=attempt_count+1",
+                "fence_token=?", "lease_owner=?");
+    }
+
     private void assertDenied(Runnable action) {
         assertThatThrownBy(() -> action.run())
                 .isInstanceOf(CaseApiException.class)
                 .extracting("code").isEqualTo("RESOURCE_NOT_FOUND");
+    }
+
+    private void assertUnavailable(Runnable action) {
+        assertThatThrownBy(() -> action.run())
+                .isInstanceOf(CaseApiException.class)
+                .extracting("code").isEqualTo("MULTI_EVENT_RESULTS_NOT_AVAILABLE");
     }
 
     private void stubRunAndScopeQueries() {
@@ -189,9 +345,14 @@ class MultiEventInvestigationServiceTest {
     }
 
     private static MultiEventInvestigationService.Run run() {
+        return run("COMPLETED");
+    }
+
+    private static MultiEventInvestigationService.Run run(String status) {
         OffsetDateTime now = OffsetDateTime.parse("2026-11-25T00:00:00Z");
-        return new MultiEventInvestigationService.Run(RUN_ID, "COMPLETED", null, "d".repeat(64),
+        return new MultiEventInvestigationService.Run(RUN_ID, status, null, "d".repeat(64),
                 "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub", "gds-2.6.6",
-                now, now.minusDays(2), now.minusDays(1), now.minusDays(1), now, now);
+                now, now.minusDays(2), now.minusDays(1), now.minusDays(1), now,
+                "COMPLETED".equals(status) ? now : null);
     }
 }

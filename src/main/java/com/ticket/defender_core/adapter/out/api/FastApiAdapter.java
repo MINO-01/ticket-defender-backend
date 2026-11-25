@@ -44,6 +44,7 @@ public class FastApiAdapter {
     private static final String PURCHASE_LIMIT_ANALYSIS_PATH = "/api/v2/clusters/analyze";
     private static final String BULK_JOB_PATH = "/api/v2/clusters/jobs";
     private static final String MULTI_EVENT_ANALYSIS_PATH = "/api/v2/multi-event/analyze";
+    private static final String MULTI_EVENT_JOB_PATH = "/api/v2/multi-event/jobs";
     private static final String TRACK1_AUTH_HEADER = "X-TD-Track1-Key";
     private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
     private static final Set<String> PERMITTED_HTTP_LOOPBACK_LITERALS = Set.of("127.0.0.1", "::1");
@@ -191,6 +192,61 @@ public class FastApiAdapter {
             }
             throw cause;
         }
+    }
+    /** Register a fixed private NDJSON artifact. Ticket rows are never sent in this JSON request. */
+    public MultiEventAnalysisDto.ArtifactAccepted createMultiEventJob(
+            MultiEventAnalysisDto.ArtifactCreate request, String idempotencyKey) {
+        if (request == null || request.manifest() == null || idempotencyKey == null || idempotencyKey.isBlank())
+            throw new FastApiResponseContractException("Invalid multi-event artifact registration");
+        var manifest = request.manifest();
+        if (manifest.artifactId() == null || !manifest.artifactId().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+                || !manifest.artifactId().equals(manifest.objectKey())
+                || manifest.objectVersion() == null || manifest.objectVersion().isBlank() || manifest.objectVersion().length() > 255
+                || manifest.analysisId() == null || manifest.tenantId() == null
+                || manifest.recordCount() < 1 || manifest.recordCount() > 400_000
+                || !"multi-event-exp2-ndjson-v1".equals(manifest.inputFormatVersion())
+                || manifest.ledgerScopes() == null || manifest.ledgerScopes().size() < 2
+                || manifest.ledgerScopes().size() > 500
+                || manifest.sha256() == null || !manifest.sha256().matches("[0-9a-f]{64}")
+                || manifest.supplierNamespace() == null || manifest.supplierNamespace().isBlank()
+                || manifest.supplierNamespace().length() > 64 || !"TRACK1_CONNECTION".equals(manifest.hmacPurpose())
+                || manifest.hmacKeyVersion() == null || manifest.hmacKeyVersion().isBlank()
+                || manifest.hmacKeyVersion().length() > 128
+                || manifest.ledgerVersionSetDigest() == null || !manifest.ledgerVersionSetDigest().matches("[0-9a-f]{64}")
+                || manifest.analysisAsOf() == null || manifest.analysisStartAt() == null || manifest.analysisEndAt() == null
+                || !manifest.analysisEndAt().isAfter(manifest.analysisStartAt())
+                || manifest.analysisEndAt().isAfter(manifest.analysisAsOf())
+                || !"score-v2-exp2-multi-event-recurrence".equals(manifest.scoreVersion())
+                || !"projection-v2.2-exp2-ipwindow-softhub".equals(manifest.projectionVersion())
+                || manifest.ledgerScopes().stream().anyMatch(scope -> scope == null || scope.eventId() == null
+                    || scope.eventId().isBlank() || scope.eventId().length() > 128 || scope.sourceEventId() == null
+                    || scope.performanceId() == null || scope.ledgerVersionId() == null
+                    || scope.sourceBatchId() == null || scope.sourceBatchId().isBlank())
+                || manifest.ledgerScopes().stream().map(scope -> scope.sourceEventId() + "|" + scope.performanceId())
+                    .distinct().count() != manifest.ledgerScopes().size())
+            throw new FastApiResponseContractException("Invalid multi-event artifact manifest");
+        return bulkPost(MULTI_EVENT_JOB_PATH, request, idempotencyKey, MultiEventAnalysisDto.ArtifactAccepted.class);
+    }
+    public MultiEventAnalysisDto.ArtifactStatus multiEventJobStatus(UUID jobId) {
+        return bulkGet(MULTI_EVENT_JOB_PATH + "/" + jobId, MultiEventAnalysisDto.ArtifactStatus.class);
+    }
+    public MultiEventAnalysisDto.ArtifactAccepted retryMultiEventJob(UUID jobId) {
+        return bulkPost(MULTI_EVENT_JOB_PATH + "/" + jobId + "/retry", null, null,
+                MultiEventAnalysisDto.ArtifactAccepted.class);
+    }
+    public MultiEventAnalysisDto.CandidatePage multiEventCandidatePage(UUID jobId, String cursor) {
+        String path = MULTI_EVENT_JOB_PATH + "/" + jobId + "/results?limit=100" + cursor(cursor);
+        return bulkGet(path, MultiEventAnalysisDto.CandidatePage.class);
+    }
+    public MultiEventAnalysisDto.MemberPage multiEventMemberPage(UUID jobId, String candidateId, String cursor) {
+        String path = MULTI_EVENT_JOB_PATH + "/" + jobId + "/results/"
+                + java.net.URLEncoder.encode(candidateId, StandardCharsets.UTF_8) + "/members?limit=500" + cursor(cursor);
+        return bulkGet(path, MultiEventAnalysisDto.MemberPage.class);
+    }
+    public MultiEventAnalysisDto.RelationshipPage multiEventRelationshipPage(UUID jobId, String candidateId, String cursor) {
+        String path = MULTI_EVENT_JOB_PATH + "/" + jobId + "/results/"
+                + java.net.URLEncoder.encode(candidateId, StandardCharsets.UTF_8) + "/relationships?limit=500" + cursor(cursor);
+        return bulkGet(path, MultiEventAnalysisDto.RelationshipPage.class);
     }
     private static String cursor(String cursor) { return cursor == null ? "" : "&cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8); }
     private <T> T bulkGet(String path, Class<T> type) { return bulkRequest(restClient.get().uri(requirePermittedFastApiBaseUrl() + path), type); }

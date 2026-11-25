@@ -33,6 +33,9 @@ CORE_SKIPS = {
     "com.ticket.defender_core.integration.BulkLedgerTrack1OutboxMigrationMySqlTest": (
         1, "Runs BL-06 after the Track 1 and bulk-ledger predecessor migrations in isolated MySQL CI"
     ),
+    "com.ticket.defender_core.integration.MultiEventArtifactMigrationMySqlTest": (
+        1, "Runs the exp2 and multi-event migration chain after BL-07 in isolated MySQL CI"
+    ),
     "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest": (
         8, "Runs over real HTTP in the isolated MySQL CI job"
     ),
@@ -325,6 +328,9 @@ MYSQL_SUITES = {
     ),
     "bulk-ledger-track1-outbox-migration": (
         "com.ticket.defender_core.integration.BulkLedgerTrack1OutboxMigrationMySqlTest", 1
+    ),
+    "multi-event-artifact-migration": (
+        "com.ticket.defender_core.integration.MultiEventArtifactMigrationMySqlTest", 1
     ),
     "bulk-ledger-import-http": (
         "com.ticket.defender_core.integration.BulkLedgerImportHttpMySqlTest", 8

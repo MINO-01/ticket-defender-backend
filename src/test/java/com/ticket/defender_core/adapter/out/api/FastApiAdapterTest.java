@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
+import com.ticket.defender_core.adapter.out.api.dto.MultiEventAnalysisDto;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -17,7 +18,9 @@ import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -35,6 +38,88 @@ class FastApiAdapterTest {
     private static final String TEST_TRACK1_SHARED_SECRET = "test-only-track1-shared-secret-value";
     private static final String TOO_SHORT_UTF8_SECRET = "가".repeat(10);
     private static final String CONTROL_CHARACTER_SECRET = TEST_TRACK1_SHARED_SECRET + "\r\n";
+
+    @Test
+    @DisplayName("다공연 분석은 신규 가명 신호를 내부 인증 경로로 보내고 고정 버전 응답을 검증한다")
+    void analyzeMultiEvent_sendsFixedContractAndAcceptsMatchingResponse() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test/");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        MultiEventAnalysisDto.Request request = multiEventRequest();
+        String response = """
+                {"analysisId":"%s","ledgerVersionSetDigest":"%s",
+                 "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
+                 "algorithm":"GDS_LOUVAIN",
+                 "algorithmVersion":"gds-2.6.6;projection-v2.2-exp2-ipwindow-softhub;score-v2-exp2-multi-event-recurrence",
+                 "candidates":[]}
+                """.formatted(request.analysisId(), request.ledgerVersionSetDigest());
+
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(httpRequest -> {
+                    assertThat(httpRequest.getHeaders().get("X-TD-Track1-Key"))
+                            .containsExactly(TEST_TRACK1_SHARED_SECRET);
+                })
+                .andExpect(content().string(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("\"refundAccountHash\":\"" + "e".repeat(64) + "\""),
+                        org.hamcrest.Matchers.containsString("\"phoneHash\":\"" + "f".repeat(64) + "\""))))
+                .andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+
+        MultiEventAnalysisDto.Response result = adapter.analyzeMultiEvent(request);
+
+        assertThat(result.analysisId()).isEqualTo(request.analysisId());
+        assertThat(result.candidates()).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("다공연 응답이 요청한 고정 원장 digest와 다르면 거부한다")
+    void analyzeMultiEvent_rejectsMismatchedLedgerDigest() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        MultiEventAnalysisDto.Request request = multiEventRequest();
+        String response = """
+                {"analysisId":"%s","ledgerVersionSetDigest":"%s",
+                 "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
+                 "algorithm":"GDS_LOUVAIN",
+                 "algorithmVersion":"gds-2.6.6;projection-v2.2-exp2-ipwindow-softhub;score-v2-exp2-multi-event-recurrence",
+                 "candidates":[]}
+                """.formatted(request.analysisId(), "a".repeat(64));
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))
+                .andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+
+        assertThrows(FastApiResponseContractException.class, () -> adapter.analyzeMultiEvent(request));
+        server.verify();
+    }
+
+    private MultiEventAnalysisDto.Request multiEventRequest() {
+        UUID performanceOne = UUID.fromString("00000000-0000-4000-8000-000000000001");
+        UUID performanceTwo = UUID.fromString("00000000-0000-4000-8000-000000000002");
+        UUID versionOne = UUID.fromString("00000000-0000-4000-8000-000000000011");
+        UUID versionTwo = UUID.fromString("00000000-0000-4000-8000-000000000012");
+        OffsetDateTime asOf = OffsetDateTime.parse("2026-11-25T00:00:00Z");
+        var scopes = List.of(
+                new MultiEventAnalysisDto.LedgerScope("event-a", performanceOne, versionOne, "batch-a"),
+                new MultiEventAnalysisDto.LedgerScope("event-b", performanceTwo, versionTwo, "batch-b"));
+        var tickets = List.of(new MultiEventAnalysisDto.Ticket(
+                "a".repeat(64), "b".repeat(64), "event-a", performanceOne, versionOne,
+                "supplier-a", "TRACK1_CONNECTION", "key-v1", asOf.minusDays(1), 1,
+                null, null, null, null, "e".repeat(64), "f".repeat(64), null,
+                "UNKNOWN", "QUANTITY_NOT_CONFIRMED", "source-v1"));
+        return new MultiEventAnalysisDto.Request(
+                UUID.fromString(REQUEST_ID),
+                UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "d".repeat(64),
+                asOf, asOf.minusDays(30), asOf.minusDays(1),
+                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
+                scopes, tickets);
+    }
 
     @Test
     @DisplayName("Track 1 분석 요청은 전용 내부 인증 헤더를 전송한다")

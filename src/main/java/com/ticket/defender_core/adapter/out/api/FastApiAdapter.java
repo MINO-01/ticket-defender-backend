@@ -6,6 +6,7 @@ import com.ticket.defender_core.adapter.out.api.dto.MacroAnalysisResponse;
 import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisRequest;
 import com.ticket.defender_core.adapter.out.api.dto.Track1PurchaseLimitAnalysisResponse;
 import com.ticket.defender_core.adapter.out.api.dto.Track1BulkJobDto;
+import com.ticket.defender_core.adapter.out.api.dto.MultiEventAnalysisDto;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +43,7 @@ public class FastApiAdapter {
     private static final String ANALYSIS_PATH = "/api/v1/clusters/analyze";
     private static final String PURCHASE_LIMIT_ANALYSIS_PATH = "/api/v2/clusters/analyze";
     private static final String BULK_JOB_PATH = "/api/v2/clusters/jobs";
+    private static final String MULTI_EVENT_ANALYSIS_PATH = "/api/v2/multi-event/analyze";
     private static final String TRACK1_AUTH_HEADER = "X-TD-Track1-Key";
     private static final int MIN_TRACK1_SHARED_SECRET_BYTES = 32;
     private static final Set<String> PERMITTED_HTTP_LOOPBACK_LITERALS = Set.of("127.0.0.1", "::1");
@@ -165,6 +167,30 @@ public class FastApiAdapter {
         Track1BulkAuxiliaryContractValidator.findings(jobId, performanceId, page); return page;
     }
     public Track1BulkJobDto.Accepted retryBulkJob(UUID jobId) { return bulkPost(BULK_JOB_PATH + "/" + jobId + "/retry", null, null, Track1BulkJobDto.Accepted.class); }
+    /** 다공연 요청은 Spring이 고정한 원장 범위만 전송한다. 사용자 tenant 입력은 이 경로에 없다. */
+    public MultiEventAnalysisDto.Response analyzeMultiEvent(MultiEventAnalysisDto.Request request) {
+        if (request == null || request.analysisId() == null || request.tenantId() == null
+                || request.ledgerScopes() == null || request.ledgerScopes().size() < 2
+                || request.tickets() == null || request.tickets().isEmpty()) {
+            throw new FastApiResponseContractException("Invalid multi-event request");
+        }
+        try {
+            MultiEventAnalysisDto.Response response = restClient.post()
+                    .uri(requirePermittedFastApiBaseUrl() + MULTI_EVENT_ANALYSIS_PATH)
+                    .header(TRACK1_AUTH_HEADER, requireTrack1SharedSecret())
+                    .body(request).retrieve()
+                    .onStatus(HttpStatusCode::is3xxRedirection,
+                            (a,b) -> { throw new FastApiAuthenticationConfigurationException(); })
+                    .body(MultiEventAnalysisDto.Response.class);
+            validateMultiEventResponse(request, response);
+            return response;
+        } catch (RestClientException cause) {
+            if (cause instanceof UnknownContentTypeException || cause.contains(HttpMessageNotReadableException.class)) {
+                throw new FastApiResponseContractException("FastAPI multi-event response violates the contract", cause);
+            }
+            throw cause;
+        }
+    }
     private static String cursor(String cursor) { return cursor == null ? "" : "&cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8); }
     private <T> T bulkGet(String path, Class<T> type) { return bulkRequest(restClient.get().uri(requirePermittedFastApiBaseUrl() + path), type); }
     private <T> T bulkPost(String path, Object body, String idempotencyKey, Class<T> type) {
@@ -177,6 +203,87 @@ public class FastApiAdapter {
         try { return request.header(TRACK1_AUTH_HEADER, requireTrack1SharedSecret()).retrieve()
                 .onStatus(HttpStatusCode::is3xxRedirection, (a,b)-> { throw new FastApiAuthenticationConfigurationException(); }).body(type); }
         catch (RestClientException cause) { throw cause; }
+    }
+
+    private static void validateMultiEventResponse(MultiEventAnalysisDto.Request request, MultiEventAnalysisDto.Response response) {
+        if (response == null || !request.analysisId().equals(response.analysisId())
+                || !request.ledgerVersionSetDigest().equals(response.ledgerVersionSetDigest())
+                || !request.scoreVersion().equals(response.scoreVersion())
+                || !request.projectionVersion().equals(response.projectionVersion())
+                || !"GDS_LOUVAIN".equals(response.algorithm()) || response.algorithmVersion() == null
+                || !response.algorithmVersion().contains(request.projectionVersion())
+                || !response.algorithmVersion().contains(request.scoreVersion()) || response.candidates() == null) {
+            throw new FastApiResponseContractException("FastAPI multi-event response does not match the fixed request");
+        }
+        Set<String> requestedScopes = new HashSet<>();
+        for (var scope : request.ledgerScopes()) requestedScopes.add(scopeKey(scope));
+        Set<String> candidates = new HashSet<>();
+        for (var candidate : response.candidates()) {
+            if (candidate == null || candidate.candidateId() == null || !candidates.add(candidate.candidateId())
+                    || candidate.memberAccountIds() == null || candidate.memberAccountIds().size() < 2
+                    || candidate.relationships() == null || candidate.relationships().isEmpty()
+                    || candidate.scoreBreakdown() == null || !Double.isFinite(candidate.scoreBreakdown().score())
+                    || candidate.scoreBreakdown().score() < 0 || candidate.scoreBreakdown().score() > 1
+                    || candidate.distinctAccountCount() != candidate.memberAccountIds().size()
+                    || !scoreBreakdownValid(candidate)) {
+                throw new FastApiResponseContractException("Invalid multi-event candidate response");
+            }
+            if (candidate.sourceScopes() == null || candidate.sourceScopes().size() < 2
+                    || candidate.sourceScopes().stream().map(MultiEventAnalysisDto.LedgerScope::eventId).distinct().count() != candidate.distinctEventCount()
+                    || candidate.sourceScopes().stream().map(MultiEventAnalysisDto.LedgerScope::performanceId).distinct().count() != candidate.distinctPerformanceCount())
+                throw new FastApiResponseContractException("Multi-event candidate counts do not match its sources");
+            Set<String> candidateScopeKeys = new HashSet<>();
+            for (var scope : candidate.sourceScopes()) {
+                String scopeKey = scopeKey(scope);
+                if (!requestedScopes.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event response has an unrequested source scope");
+                candidateScopeKeys.add(scopeKey);
+            }
+            for (String account : candidate.memberAccountIds()) if (account == null || !HASH_TOKEN_PATTERN.matcher(account).matches()) {
+                throw new FastApiResponseContractException("Multi-event response has an invalid account reference");
+            }
+            Set<String> members = new HashSet<>(candidate.memberAccountIds());
+            Set<String> relationshipObservations = new HashSet<>();
+            for (var relationship : candidate.relationships()) {
+                if (relationship == null || relationship.signalType() == null
+                        || !Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash").contains(relationship.signalType())
+                        || relationship.accountIds() == null || relationship.accountIds().size() < 2
+                        || relationship.sourceScopes() == null || relationship.sourceScopes().isEmpty()
+                        || !members.equals(new HashSet<>(relationship.accountIds()))) {
+                    throw new FastApiResponseContractException("Invalid multi-event relationship response");
+                }
+                for (String account : relationship.accountIds()) if (!HASH_TOKEN_PATTERN.matcher(account).matches()) {
+                    throw new FastApiResponseContractException("Multi-event relationship has an invalid account reference");
+                }
+                Set<String> relationshipEvents = new HashSet<>();
+                for (var scope : relationship.sourceScopes()) {
+                    String scopeKey = scopeKey(scope);
+                    if (!requestedScopes.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event relationship has an unrequested source scope");
+                    if (!candidateScopeKeys.contains(scopeKey)) throw new FastApiResponseContractException("Multi-event relationship source is outside its candidate");
+                    relationshipEvents.add(scope.eventId());
+                    relationshipObservations.add(relationship.signalType() + "|" + scopeKey);
+                }
+                if (relationshipEvents.size() < 2) throw new FastApiResponseContractException("Multi-event relationship lacks repeated event evidence");
+            }
+            if (relationshipObservations.size() != candidate.verifiedRelationshipCount()) throw new FastApiResponseContractException("Multi-event relationship count does not match its sources");
+        }
+    }
+
+    private static String scopeKey(MultiEventAnalysisDto.LedgerScope scope) {
+        if (scope == null || scope.eventId() == null || scope.performanceId() == null || scope.ledgerVersionId() == null || scope.sourceBatchId() == null)
+            throw new FastApiResponseContractException("Multi-event source scope is incomplete");
+        return scope.eventId() + "|" + scope.performanceId() + "|" + scope.ledgerVersionId() + "|" + scope.sourceBatchId();
+    }
+
+    private static boolean scoreBreakdownValid(MultiEventAnalysisDto.Candidate candidate) {
+        var score = candidate.scoreBreakdown();
+        double[] parts = {score.L(), score.G(), score.B(), score.Q(), score.R(), score.score()};
+        for (double value : parts) if (!Double.isFinite(value) || value < 0 || value > 1) return false;
+        double expectedRecurrence = Math.min((candidate.distinctEventCount() - 1) / 3.0, 1.0);
+        double expectedBehavior = 0.5 * score.Q() + 0.5 * expectedRecurrence;
+        double expectedScore = Math.round(score.L() * score.G() * score.B() * 10_000.0) / 10_000.0;
+        return Math.abs(score.R() - expectedRecurrence) < 1.0e-9
+                && Math.abs(score.B() - expectedBehavior) < 1.0e-9
+                && Math.abs(score.score() - expectedScore) < 1.0e-9;
     }
 
     private MacroAnalysisRequest asV1Request(Track1PurchaseLimitAnalysisRequest request) {
@@ -368,7 +475,7 @@ public class FastApiAdapter {
         for (FastApiClusterResponse.Member member : cluster.members()) {
             if (member == null || isBlank(member.accountId()) || isBlank(member.reservationNo())
                     || isBlank(member.eventId())) {
-                throw new FastApiResponseContractException("군집 구성원의 계정·예매·공연 식별자가 모두 필요합니다.");
+                throw new FastApiResponseContractException("군집 구성원의 계정, 예매, 공연 식별자가 모두 필요합니다.");
             }
             TicketKey memberKey = TicketKey.from(member);
             MacroAnalysisRequest.Ticket submittedTicket = submittedTickets.get(memberKey);

@@ -61,6 +61,8 @@ public class BulkLedgerImportService {
     private final BulkLedgerUploadStorage uploadStorage;
     private final BulkLedgerPublicationService publications;
     private final JdbcTemplate jdbc;
+    private final BulkLedgerRawIntakePolicy rawIntake;
+    private final BulkLedgerUploadDeletionService uploadDeletions;
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long uploadMaximumBytes;
     @Value("${ticket-defender.bulk-ledger-upload.upload-ttl:PT10M}") private java.time.Duration uploadTtl;
 
@@ -82,7 +84,8 @@ public class BulkLedgerImportService {
                     canonical.addAll(List.of(scope.eventId().toString(), scope.performanceId().toString(),
                             String.valueOf(scope.scopeAsOf()), String.valueOf(scope.cursorStart()), String.valueOf(scope.cursorEnd())));
                     // BL-01/v1 digests are persisted idempotency keys. Do not append v2-only null fields to their canonical form.
-                    if ("v2".equals(schemaVersion)) canonical.addAll(List.of(String.valueOf(scope.sourceSequenceStart()), String.valueOf(scope.sourceSequenceEnd())));
+                    // v3는 v2 범위 규칙을 그대로 쓰며 schemaVersion 값 자체가 digest에 들어가 v2와 구분됩니다.
+                    if ("v2".equals(schemaVersion) || "v3".equals(schemaVersion)) canonical.addAll(List.of(String.valueOf(scope.sourceSequenceStart()), String.valueOf(scope.sourceSequenceEnd())));
                     canonical.add(Long.toString(scope.declaredRows()));
                 });
         return CandidatePipelineSupport.sha256(canonical.toArray(String[]::new));
@@ -98,6 +101,7 @@ public class BulkLedgerImportService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         // Check before replay too: a disabled or non-isolated environment must not expose this import workflow.
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
+        if ("v3".equals(request.schemaVersion())) rawIntake.requireV3Accepted();
         String keyDigest = CandidatePipelineSupport.idempotencyDigest(idempotencyKey);
         var replay = jobs.findByCreatedByMembershipIdAndIdempotencyKeyDigest(actor.membershipId(), keyDigest);
         if (replay.isPresent()) return replay(replay.get(), request.requestDigest());
@@ -118,6 +122,15 @@ public class BulkLedgerImportService {
             throw conflict("BULK_IMPORT_CONCURRENT_REGISTRATION");
         }
         return view(job, scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId()));
+    }
+
+    /** 업로드 원본 삭제 결과 요약입니다. 3회 시도 후에도 지우지 못한 건수를 운영자가 확인합니다. */
+    @Transactional(readOnly = true)
+    public BulkLedgerImportDto.UploadDeletionStatus uploadDeletionStatus() {
+        TenantScope actor = tenantScope(VIEW_ROLES);
+        BulkLedgerUploadDeletionService.Summary summary = uploadDeletions.summary(actor.tenantId());
+        return new BulkLedgerImportDto.UploadDeletionStatus(rawIntake.v3Accepted(), summary.deleted(), summary.failedAfterRetries(),
+                BulkLedgerUploadDeletionService.MAX_ATTEMPTS);
     }
 
     @Transactional(readOnly = true)
@@ -172,6 +185,8 @@ public class BulkLedgerImportService {
         if (!allowed(actor, jobScopes)) throw notFound();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
+        if ("v3".equals(job.getSchemaVersion())) rawIntake.requireV3Accepted();
+        requireUploadNotExpired(job.getId());
         if (job.getDeclaredFileBytes() > uploadMaximumBytes) throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_TOO_LARGE");
         java.time.Instant expires = now.atOffset(ZoneOffset.UTC).toInstant().plus(uploadTtl);
         String key = objectKey(job.getId());
@@ -195,6 +210,8 @@ public class BulkLedgerImportService {
         if (!allowed(actor, jobScopes)) throw notFound();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
+        if ("v3".equals(job.getSchemaVersion())) rawIntake.requireV3Accepted();
+        requireUploadNotExpired(job.getId());
         try {
             BulkLedgerUploadStorage.VerifiedObject object = uploadStorage.verify(objectKey(job.getId()), null, uploadMaximumBytes);
             if (object.byteSize() != job.getDeclaredFileBytes() || !job.getDeclaredObjectSha256().equals(object.sha256()))
@@ -316,6 +333,11 @@ public class BulkLedgerImportService {
 
     private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }
 
+    /** 정리 작업이 원본을 지운 업로드는 다시 올리거나 완료할 수 없습니다. 새 작업으로 등록해야 합니다. */
+    private void requireUploadNotExpired(UUID importId) {
+        if (uploadDeletions.retentionExpired(importId)) throw conflict(BulkLedgerUploadDeletionService.UPLOAD_OBJECT_EXPIRED);
+    }
+
     private List<AuthorizedScope> authorizeScopes(List<NormalizedScope> input, Set<AdminRole> requiredRoles) {
         List<AuthorizedScope> result = new ArrayList<>();
         UUID tenant = null; UUID membership = null;
@@ -375,7 +397,7 @@ public class BulkLedgerImportService {
         if (request == null || request.declaredFileBytes() == null || request.declaredRowCount() == null || request.completeSnapshot() == null || request.scopes() == null || request.scopes().isEmpty())
             throw CandidatePipelineSupport.invalid();
         String schema = CandidatePipelineSupport.bounded(request.schemaVersion(), 32);
-        if (!"v1".equals(schema) && !"v2".equals(schema)) throw CandidatePipelineSupport.invalid();
+        if (!"v1".equals(schema) && !"v2".equals(schema) && !"v3".equals(schema)) throw CandidatePipelineSupport.invalid();
         String system = CandidatePipelineSupport.bounded(request.sourceSystem(), 64);
         String batch = CandidatePipelineSupport.bounded(request.sourceBatchId(), 128);
         BulkLedgerImportJob.Mode mode = enumValue(BulkLedgerImportJob.Mode.class, request.mode());

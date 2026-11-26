@@ -11,6 +11,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /** Prepares private candidate versions. Publication heads and analysis are deliberately outside this service. */
@@ -30,7 +31,8 @@ public class BulkLedgerCandidatePreparationService {
     /** A short DB lease makes a READY_TO_PUBLISH candidate safely resumable without re-running upload or staging. */
     public void prepare(UUID importId) {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow();
-        if (!"v2".equals(job.getSchemaVersion()) || job.getStatus() != BulkLedgerImportJob.Status.READY_TO_PUBLISH) return;
+        // v3는 v2 원장 사실을 그대로 포함하므로 같은 후보 준비 경로를 씁니다.
+        if (!Set.of("v2", "v3").contains(job.getSchemaVersion()) || job.getStatus() != BulkLedgerImportJob.Status.READY_TO_PUBLISH) return;
         UUID candidateId = ensureCandidate(job);
         Lease lease = claim(candidateId);
         if (lease == null) return;

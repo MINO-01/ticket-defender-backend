@@ -26,6 +26,15 @@ public class BulkLedgerStagingWriter {
              quantity_unit, ticket_status, source_version, source_event_id, source_changed_at, source_sequence, change_action, row_digest)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """;
+    /** v3 행만 쓰는 INSERT입니다. v1, v2 행은 기존 문장을 그대로 써서 새 컬럼에 의존하지 않습니다. */
+    private static final String INSERT_V3 = """
+            INSERT INTO td_bulk_import_staging_rows
+            (id, import_id, tenant_id, event_id, performance_id, source_row_no, reservation_reference_hmac,
+             ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
+             quantity_unit, ticket_status, source_version, source_event_id, source_changed_at, source_sequence, change_action, row_digest,
+             payment_hmac, address_hmac, device_hmac, ip_hmac, refund_account_hmac, phone_hmac, phone_source, ip_network_type, ip_network_type_source)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final int batchSize;
@@ -75,7 +84,9 @@ public class BulkLedgerStagingWriter {
                 else if (!existing.getFirst().equals(row.rowDigest())) throw new BulkLedgerStagingConflictException(row.rowNumber());
             }
             if (inserts.isEmpty()) return;
-            jdbc.batchUpdate(INSERT, new BatchPreparedStatementSetter() {
+            boolean v3 = inserts.getFirst().signals() != null;
+            if (inserts.stream().anyMatch(row -> (row.signals() != null) != v3)) throw new IllegalStateException("BULK_STAGING_SCHEMA_MIXED");
+            jdbc.batchUpdate(v3 ? INSERT_V3 : INSERT, new BatchPreparedStatementSetter() {
             @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
                 var row = inserts.get(index);
                 statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, importId.toString());
@@ -90,6 +101,14 @@ public class BulkLedgerStagingWriter {
                 if (row.sourceSequence() == null) statement.setNull(18, java.sql.Types.BIGINT); else statement.setLong(18, row.sourceSequence());
                 statement.setString(19, row.changeAction());
                 statement.setString(20, row.rowDigest());
+                var signals = row.signals();
+                if (signals != null) {
+                    statement.setString(21, signals.paymentHmac()); statement.setString(22, signals.addressHmac());
+                    statement.setString(23, signals.deviceHmac()); statement.setString(24, signals.ipHmac());
+                    statement.setString(25, signals.refundAccountHmac()); statement.setString(26, signals.phoneHmac());
+                    statement.setString(27, signals.phoneSource()); statement.setString(28, signals.ipNetworkType());
+                    statement.setString(29, signals.ipNetworkTypeSource());
+                }
             }
             @Override public int getBatchSize() { return inserts.size(); }
         });

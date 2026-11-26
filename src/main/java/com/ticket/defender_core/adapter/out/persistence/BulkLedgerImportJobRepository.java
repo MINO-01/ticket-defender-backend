@@ -18,7 +18,7 @@ public interface BulkLedgerImportJobRepository extends JpaRepository<BulkLedgerI
     @Query(value = """
             select j.* from td_bulk_import_jobs j
             left join td_bulk_ledger_candidate_imports c on c.import_id=j.id
-            where j.status='READY_TO_PUBLISH' and j.schema_version='v2'
+            where j.status='READY_TO_PUBLISH' and j.schema_version in ('v2','v3')
               and (c.id is null or c.status='PREPARING')
             order by coalesce(c.updated_at,j.updated_at),j.id limit 10
             """, nativeQuery = true)

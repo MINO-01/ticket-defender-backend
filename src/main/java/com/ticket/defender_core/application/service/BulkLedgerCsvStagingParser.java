@@ -33,19 +33,36 @@ public final class BulkLedgerCsvStagingParser {
             "ticket_reference", "account_reference", "purchased_at", "ticket_quantity");
     private static final Set<String> V2 = Set.of("quantity_unit", "ticket_status", "source_version");
     private static final Set<String> CHANGE = Set.of("source_event_id", "source_changed_at", "change_action");
+    /** v3 선택 원본 신호 열입니다. 값은 읽는 즉시 정규화하고 HMAC하며 원본은 이 메서드 밖으로 나가지 않습니다. */
+    static final Set<String> V3_OPTIONAL = Set.of("device_reference", "ip_reference", "ip_network_type", "delivery_address",
+            "recipient_phone", "member_phone", "payment_masked_card", "payment_issuer_code", "payment_method_type",
+            "refund_bank_code", "refund_account_number");
 
     public record ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                             String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
                             int ticketQuantity, String quantityUnit, String ticketStatus, String sourceVersion,
                             String sourceEventId, LocalDateTime sourceChangedAt, Long sourceSequence,
-                            String changeAction, String rowDigest) {
+                            String changeAction, String rowDigest, RawSignals signals) {
+        public ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
+                         String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
+                         int ticketQuantity, String quantityUnit, String ticketStatus, String sourceVersion,
+                         String sourceEventId, LocalDateTime sourceChangedAt, Long sourceSequence,
+                         String changeAction, String rowDigest) {
+            this(rowNumber, eventId, performanceId, reservationToken, ticketToken, accountToken, keyVersion, purchasedAt,
+                    ticketQuantity, quantityUnit, ticketStatus, sourceVersion, sourceEventId, sourceChangedAt, sourceSequence,
+                    changeAction, rowDigest, null);
+        }
         public ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                          String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
                          int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction, String rowDigest) {
             this(rowNumber, eventId, performanceId, reservationToken, ticketToken, accountToken, keyVersion, purchasedAt,
-                    ticketQuantity, null, null, null, sourceEventId, sourceChangedAt, null, changeAction, rowDigest);
+                    ticketQuantity, null, null, null, sourceEventId, sourceChangedAt, null, changeAction, rowDigest, null);
         }
     }
+    /** v3 행의 HMAC 토큰과 출처 표시입니다. 원본 값은 담지 않습니다. */
+    public record RawSignals(String paymentHmac, String addressHmac, String deviceHmac, String ipHmac,
+                             String refundAccountHmac, String phoneHmac, String phoneSource,
+                             String ipNetworkType, String ipNetworkTypeSource) { }
     public record Result(long rows) { }
     @FunctionalInterface public interface RowConsumer { void accept(ParsedRow row); }
 
@@ -60,7 +77,18 @@ public final class BulkLedgerCsvStagingParser {
                         List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
                         TenantPurposeReferenceHasher ticketHasher, TenantPurposeReferenceHasher accountHasher,
                         RowConsumer consumer) {
-        boolean v2 = "v2".equals(schemaVersion);
+        return parse(input, schemaVersion, mode, tenantId, scopes, reservationHasher, ticketHasher, accountHasher, null, consumer);
+    }
+
+    public Result parse(InputStream input, String schemaVersion, BulkLedgerImportJob.Mode mode, UUID tenantId,
+                        List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
+                        TenantPurposeReferenceHasher ticketHasher, TenantPurposeReferenceHasher accountHasher,
+                        BulkLedgerRawSignalHashers signalHashers, RowConsumer consumer) {
+        boolean v3 = "v3".equals(schemaVersion);
+        // v3는 v2 필수 열과 원장 사실 검증을 그대로 포함합니다.
+        boolean v2 = "v2".equals(schemaVersion) || v3;
+        if (v3 && (signalHashers == null || !signalHashers.keyVersion().equals(reservationHasher.keyVersion())))
+            throw new IllegalStateException("v3 raw signal hashers must share the staging HMAC key version");
         Map<String, BulkLedgerImportScope> scopeByKey = new HashMap<>();
         for (BulkLedgerImportScope scope : scopes) scopeByKey.put(key(scope.getEventId(), scope.getPerformanceId()), scope);
         Map<String, Long> scopeRows = new HashMap<>();
@@ -71,7 +99,7 @@ public final class BulkLedgerCsvStagingParser {
             var iterator = parser.iterator();
             if (!iterator.hasNext()) throw failure(1, "BULK_CSV_HEADER_REQUIRED");
             CSVRecord header = iterator.next();
-            Map<String, Integer> indexes = headers(header, mode, v2);
+            Map<String, Integer> indexes = headers(header, mode, v2, v3);
             long rows = 0;
             while (iterator.hasNext()) {
                 // Commons CSV record numbers include the header record, which matches the source line convention
@@ -109,9 +137,18 @@ public final class BulkLedgerCsvStagingParser {
                 long seen = scopeRows.merge(key(event, performance), 1L, Long::sum);
                 if (seen > scope.getDeclaredRowCount()) throw failure(rowNumber, "BULK_CSV_SCOPE_ROW_COUNT_EXCEEDED");
                 try { rows = Math.addExact(rows, 1); } catch (ArithmeticException overflow) { throw failure(rowNumber, "BULK_CSV_ROW_COUNT_OVERFLOW"); }
+                RawSignals signals = v3 ? signals(record, indexes, rowNumber, tenantId, signalHashers) : null;
                 String reservationToken = reservationHasher.hash(tenantId, reservation), ticketToken = ticketHasher.hash(tenantId, ticket);
                 String accountToken = account == null ? null : accountHasher.hash(tenantId, account);
-                String digest = v2
+                String digest = v3
+                        ? CandidatePipelineSupport.sha256("BULK_CSV_V3", event.toString(), performance.toString(), reservationToken, ticketToken,
+                                String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
+                                String.valueOf(quantityUnit), String.valueOf(ticketStatus), String.valueOf(sourceVersion),
+                                String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(sourceSequence), String.valueOf(changeAction),
+                                String.valueOf(signals.paymentHmac()), String.valueOf(signals.addressHmac()), String.valueOf(signals.deviceHmac()),
+                                String.valueOf(signals.ipHmac()), String.valueOf(signals.refundAccountHmac()), String.valueOf(signals.phoneHmac()),
+                                String.valueOf(signals.phoneSource()), String.valueOf(signals.ipNetworkType()), String.valueOf(signals.ipNetworkTypeSource()))
+                        : v2
                         ? CandidatePipelineSupport.sha256(event.toString(), performance.toString(), reservationToken, ticketToken,
                                 String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
                                 String.valueOf(quantityUnit), String.valueOf(ticketStatus), String.valueOf(sourceVersion),
@@ -121,14 +158,16 @@ public final class BulkLedgerCsvStagingParser {
                                 String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(changeAction));
                 consumer.accept(new ParsedRow(rowNumber, event, performance, reservationToken, ticketToken, accountToken,
                         reservationHasher.keyVersion(), purchasedAt, quantity, quantityUnit, ticketStatus, sourceVersion,
-                        sourceEventId, sourceChangedAt, sourceSequence, changeAction, digest));
+                        sourceEventId, sourceChangedAt, sourceSequence, changeAction, digest, signals));
             }
             for (BulkLedgerImportScope scope : scopes)
                 if (scopeRows.getOrDefault(key(scope.getEventId(), scope.getPerformanceId()), 0L) != scope.getDeclaredRowCount())
                     throw failure(0, "BULK_CSV_SCOPE_ROW_COUNT_MISMATCH");
             return new Result(rows);
         } catch (BulkLedgerCsvValidationException rejected) { throw rejected; }
-        catch (IOException | IllegalArgumentException malformed) { throw failure(0, "BULK_CSV_INVALID_UTF8_OR_SYNTAX"); }
+        // commons-csv는 따옴표 오류 같은 문법 오류를 UncheckedIOException으로 던집니다. 재시도할 수 있는 장애가 아니라
+        // 입력 거절이며, 원인 메시지는 버리고 고정 코드만 남깁니다.
+        catch (IOException | java.io.UncheckedIOException | IllegalArgumentException malformed) { throw failure(0, "BULK_CSV_INVALID_UTF8_OR_SYNTAX"); }
     }
 
     private static InputStream stripUtf8Bom(InputStream input) throws IOException {
@@ -137,16 +176,73 @@ public final class BulkLedgerCsvStagingParser {
         if (!(a == 0xef && b == 0xbb && c == 0xbf)) buffered.reset();
         return buffered;
     }
-    private static Map<String, Integer> headers(CSVRecord header, BulkLedgerImportJob.Mode mode, boolean v2) {
+    /**
+     * 각 원본 신호 열을 정규화한 즉시 신호별 목적의 HMAC으로 바꿉니다. 정규화된 원본 문자열은 지역 변수로만 존재하고
+     * 반환 객체, 컬렉션, 예외 메시지에 들어가지 않습니다.
+     */
+    private static RawSignals signals(CSVRecord record, Map<String, Integer> indexes, long row, UUID tenantId,
+                                      BulkLedgerRawSignalHashers hashers) {
+        String device = BulkLedgerRawSignalNormalizer.device(optionalColumn(record, indexes, "device_reference", row));
+        String deviceHmac = device == null ? null : hashers.device().hash(tenantId, device);
+
+        String ip = BulkLedgerRawSignalNormalizer.ipv4(optionalColumn(record, indexes, "ip_reference", row), row);
+        String declaredType = BulkLedgerRawSignalNormalizer.networkType(optionalColumn(record, indexes, "ip_network_type", row), row);
+        if (declaredType != null && ip == null) throw failure(row, "BULK_CSV_IP_NETWORK_TYPE_INVALID");
+        String ipHmac = null, networkType = null, networkSource = null;
+        if (ip != null) {
+            ipHmac = hashers.ip().hash(tenantId, ip);
+            if (declaredType != null) { networkType = declaredType; networkSource = "DECLARED"; }
+            else {
+                var classified = hashers.classifier().classify(ip);
+                networkType = classified.orElse("UNKNOWN");
+                networkSource = classified.isPresent() ? "CLASSIFIED" : "UNKNOWN";
+            }
+        }
+
+        String address = BulkLedgerRawSignalNormalizer.address(optionalColumn(record, indexes, "delivery_address", row), row);
+        String addressHmac = address == null ? null : hashers.address().hash(tenantId, address);
+
+        String recipient = BulkLedgerRawSignalNormalizer.phone(optionalColumn(record, indexes, "recipient_phone", row), row);
+        String member = BulkLedgerRawSignalNormalizer.phone(optionalColumn(record, indexes, "member_phone", row), row);
+        String phoneHmac = recipient != null ? hashers.phone().hash(tenantId, recipient)
+                : member != null ? hashers.phone().hash(tenantId, member) : null;
+        String phoneSource = recipient != null ? "RECIPIENT" : member != null ? "MEMBER" : null;
+
+        String card = BulkLedgerRawSignalNormalizer.maskedCard(optionalColumn(record, indexes, "payment_masked_card", row), row);
+        String issuer = BulkLedgerRawSignalNormalizer.upper(optionalColumn(record, indexes, "payment_issuer_code", row));
+        String method = BulkLedgerRawSignalNormalizer.upper(optionalColumn(record, indexes, "payment_method_type", row));
+        if ((card == null) != (issuer == null) || (card == null) != (method == null)) throw failure(row, "BULK_CSV_PAYMENT_INCOMPLETE");
+        String paymentHmac = card == null ? null : hashers.payment().hash(tenantId, card + "|" + issuer + "|" + method);
+
+        String bank = BulkLedgerRawSignalNormalizer.digits(optionalColumn(record, indexes, "refund_bank_code", row), row, "BULK_CSV_REFUND_ACCOUNT_INCOMPLETE");
+        String accountNumber = BulkLedgerRawSignalNormalizer.digits(optionalColumn(record, indexes, "refund_account_number", row), row, "BULK_CSV_REFUND_ACCOUNT_INCOMPLETE");
+        if ((bank == null) != (accountNumber == null)) throw failure(row, "BULK_CSV_REFUND_ACCOUNT_INCOMPLETE");
+        String refundHmac = bank == null ? null : hashers.refundAccount().hash(tenantId, bank + "|" + accountNumber);
+
+        return new RawSignals(paymentHmac, addressHmac, deviceHmac, ipHmac, refundHmac, phoneHmac, phoneSource, networkType, networkSource);
+    }
+
+    private static String optionalColumn(CSVRecord record, Map<String, Integer> indexes, String name, long row) {
+        Integer index = indexes.get(name);
+        if (index == null) return null;
+        String value = record.get(index);
+        if (value.length() > MAX_FIELD_LENGTH) throw failure(row, "BULK_CSV_FIELD_INVALID");
+        String stripped = value.strip();
+        return stripped.isEmpty() ? null : stripped;
+    }
+
+    private static Map<String, Integer> headers(CSVRecord header, BulkLedgerImportJob.Mode mode, boolean v2, boolean v3) {
         Map<String, Integer> result = new HashMap<>(); Set<String> required = new HashSet<>(COMMON);
         if (v2) required.addAll(V2);
         if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED) {
             required.addAll(CHANGE);
             if (v2) required.add("source_sequence");
         }
+        Set<String> allowed = new HashSet<>(required);
+        if (v3) allowed.addAll(V3_OPTIONAL);
         for (int index = 0; index < header.size(); index++) {
             String value = header.get(index);
-            if (!required.contains(value) || result.putIfAbsent(value, index) != null) throw failure(1, "BULK_CSV_HEADER_INVALID");
+            if (!allowed.contains(value) || result.putIfAbsent(value, index) != null) throw failure(1, "BULK_CSV_HEADER_INVALID");
         }
         if (!result.keySet().containsAll(required)) throw failure(1, "BULK_CSV_HEADER_REQUIRED");
         return result;

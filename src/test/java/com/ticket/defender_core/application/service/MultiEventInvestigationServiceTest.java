@@ -221,7 +221,7 @@ class MultiEventInvestigationServiceTest {
         var scopeA = new MultiEventAnalysisDto.LedgerScope("event-a", performanceA, versionA, "batch-a");
         var scopeB = new MultiEventAnalysisDto.LedgerScope("event-b", performanceB, versionB, "batch-b");
         var candidate = new MultiEventAnalysisDto.CandidateSummary("multi-" + "c".repeat(64), "HIGH",
-                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
+                "score-v2-exp2-multi-performance-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
                 3, 2, 2, 1, List.of(scopeA, scopeB), List.of("refund_account_hash"), List.of(), List.of(), List.of(), null);
         var narrowerRelation = new MultiEventAnalysisDto.RelationshipSummary("relation-refund", "refund_account_hash",
                 2, 2, List.of(scopeA, scopeB));
@@ -351,7 +351,7 @@ class MultiEventInvestigationServiceTest {
     private static MultiEventInvestigationService.Run run(String status) {
         OffsetDateTime now = OffsetDateTime.parse("2026-11-25T00:00:00Z");
         return new MultiEventInvestigationService.Run(RUN_ID, status, null, "d".repeat(64),
-                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub", "gds-2.6.6",
+                "score-v2-exp2-multi-performance-recurrence", "projection-v2.2-exp2-ipwindow-softhub", "gds-2.6.6",
                 now, now.minusDays(2), now.minusDays(1), now.minusDays(1), now,
                 "COMPLETED".equals(status) ? now : null);
     }

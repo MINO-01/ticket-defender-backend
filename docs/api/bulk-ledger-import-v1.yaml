@@ -1,11 +1,15 @@
 openapi: 3.1.0
 info:
   title: Ticket Defender bulk ledger import API
-  version: 1.4.0
+  version: 1.5.0
   description: >-
     BL-03 keeps v1 staging-only. v2 accepts explicit ticket facts and source ordering, then prepares private candidate
     ledger versions. A ready v2 candidate can be atomically published by a TENANT_ADMIN; publication only writes
     a private MySQL outbox record and never starts analysis or makes a fraud decision.
+    v3는 v2 필수 열에 원본 신호 선택 열을 더한 합성 격리 전용 형식입니다. 백엔드가 행을 읽는 즉시 정규화하고 신호별
+    목적의 HMAC으로 바꾸며, 원본 값은 DB, 로그, 오류 응답에 남기지 않습니다. v3는 기본 비활성화이고, 켜려면 업로드
+    원본 정리 작업이 함께 켜져 있어야 하며 시작 시 저장소 버전 삭제가 확인돼야 합니다. 열, 정규화, 오류 코드, 삭제,
+    migration 순서는 docs/operations/bulk-ledger-v3-raw-intake.md를 따릅니다. v1과 v2의 동작은 바뀌지 않습니다.
 security: [{ adminBearer: [] }]
 paths:
   /api/v1/admin/ledger-imports:
@@ -23,10 +27,21 @@ paths:
         '403': { description: caller lacks TENANT_ADMIN }
         '404': { description: unknown or out-of-scope event/performance }
         '409': { description: idempotency/sourceBatch/state/concurrency conflict }
-        '422': { description: metadata or scope-manifest validation failure }
+        '422': { description: metadata or scope-manifest validation failure, or BULK_V3_RAW_INTAKE_DISABLED for v3 }
+        '503': { description: BULK_V3_DELETE_PERMISSION_UNVERIFIED for v3 when startup delete verification failed }
     get:
       summary: List visible import jobs
       responses: { '200': { description: no-store paged jobs }, '401': { description: UNAUTHENTICATED } }
+  /api/v1/admin/ledger-imports/upload-deletions/status:
+    get:
+      summary: 업로드 원본 삭제 결과 요약
+      description: >-
+        같은 tenant의 업로드 원본 삭제 성공 건수와 3회 시도 후에도 지우지 못한 건수를 돌려줍니다. 객체 키, 버전 ID,
+        원본 값은 담지 않습니다. 조회 역할(TENANT_ADMIN, ANALYST, REVIEWER, APPROVER)이 필요합니다.
+      responses:
+        '200': { description: no-store summary, content: { application/json: { schema: { $ref: '#/components/schemas/UploadDeletionStatus' } } } }
+        '401': { description: UNAUTHENTICATED }
+        '403': { description: caller lacks a view role }
   /api/v1/admin/ledger-imports/{importId}:
     parameters: [{ $ref: '#/components/parameters/ImportId' }]
     get:
@@ -36,7 +51,11 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ImportId' }]
     get:
       summary: List code-only validation errors
-      responses: { '200': { description: empty in BL-01 unless a future worker writes codes }, '404': { description: RESOURCE_NOT_FOUND } }
+      description: >-
+        행 번호와 코드만 담습니다. v3 행 오류 코드는 BULK_CSV_IP_INVALID, BULK_CSV_IP_NETWORK_TYPE_INVALID,
+        BULK_CSV_PAYMENT_UNMASKED, BULK_CSV_PAYMENT_INCOMPLETE, BULK_CSV_REFUND_ACCOUNT_INCOMPLETE, BULK_CSV_PHONE_INVALID,
+        BULK_CSV_ADDRESS_INVALID이며, v3가 닫힌 상태의 작업은 BULK_V3_RAW_INTAKE_DISABLED입니다.
+      responses: { '200': { description: code-only rows written by the staging worker }, '404': { description: RESOURCE_NOT_FOUND } }
   /api/v1/admin/ledger-imports/{importId}/cancel:
     parameters: [{ $ref: '#/components/parameters/ImportId' }]
     post:
@@ -50,7 +69,7 @@ paths:
       responses:
         '201': { description: one-time upload URL and expiry, headers: { Cache-Control: { schema: { example: no-store } } }, content: { application/json: { schema: { $ref: '#/components/schemas/UploadSession' } } } }
         '404': { description: RESOURCE_NOT_FOUND for a foreign job }
-        '409': { description: disabled synthetic scope or invalid state }
+        '409': { description: disabled synthetic scope, invalid state, or UPLOAD_OBJECT_EXPIRED after retention cleanup }
         '422': { description: declared file exceeds the configured private-upload limit }
         '503': { description: private object storage unavailable or disabled }
   /api/v1/admin/ledger-imports/{importId}/complete-upload:
@@ -61,17 +80,18 @@ paths:
       responses:
         '200': { description: UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, REJECTED, or FAILED_RETRYABLE job; response is no-store }
         '404': { description: RESOURCE_NOT_FOUND for a foreign job }
-        '409': { description: duplicate completion, expired session, cancellation, or unavailable synthetic scope }
+        '409': { description: duplicate completion, expired session, cancellation, unavailable synthetic scope, or UPLOAD_OBJECT_EXPIRED after retention cleanup }
         '422': { description: version, size, or SHA-256 mismatch }
         '503': { description: private object storage unavailable }
   /api/v1/admin/ledger-imports/{importId}/publish:
     parameters: [{ $ref: '#/components/parameters/ImportId' }]
     post:
-      summary: Atomically publish every READY v2 candidate scope for one import
+      summary: Atomically publish every READY v2 or v3 candidate scope for one import
       description: >-
         The server derives all performance scopes from the import. It locks those server-owned performance rows in
         deterministic order, rechecks expected heads and source checkpoints, then writes heads, PUBLISHED state,
         immutable history and PENDING outbox rows in one transaction. It never downloads CSV or calls analysis.
+        v3에서는 같은 트랜잭션에서 스테이징 신호 HMAC을 공개 버전 ID로 td_bulk_ledger_track1_ticket_signals에 기록합니다.
       parameters:
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -109,7 +129,7 @@ components:
       additionalProperties: false
       required: [schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256, declaredFileBytes, declaredRowCount, completeSnapshot, scopes]
       properties:
-        schemaVersion: { type: string, enum: [v1, v2], description: 'v1 remains staging-only. Candidate preparation requires v2.' }
+        schemaVersion: { type: string, enum: [v1, v2, v3], description: 'v1 remains staging-only. Candidate preparation requires v2 or v3. v3는 v2 범위 규칙을 그대로 쓰고 원본 신호 선택 열을 허용합니다.' }
         sourceSystem: { type: string, maxLength: 64 }
         sourceBatchId: { type: string, maxLength: 128 }
         mode: { type: string, enum: [FULL_SNAPSHOT, CHANGE_FEED] }
@@ -142,6 +162,14 @@ components:
         processedRowCount: { type: integer, minimum: 0 }
         acceptedRowCount: { type: integer, minimum: 0 }
         rejectedRowCount: { type: integer, minimum: 0 }
+    UploadDeletionStatus:
+      type: object
+      required: [v3RawIntakeAccepted, deletedCount, failedAfterRetriesCount, maxAttempts]
+      properties:
+        v3RawIntakeAccepted: { type: boolean, description: 'v3 설정이 켜져 있고 시작 시 저장소 버전 삭제가 확인됐는지' }
+        deletedCount: { type: integer, minimum: 0 }
+        failedAfterRetriesCount: { type: integer, minimum: 0, description: '3회 시도 후에도 지우지 못한 업로드 수' }
+        maxAttempts: { type: integer, enum: [3] }
     UploadSession:
       type: object
       required: [uploadUrl, expiresAt]

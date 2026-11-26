@@ -7,7 +7,9 @@
 
 - 모든 경로는 관리자 JWT와 event 기반 역할 확인을 거친다.
 - 요청 본문에는 tenantId가 없다. 서버가 각 eventId 권한에서 tenant를 해석한다.
-- 두 개 이상의 서로 다른 event가 같은 tenant 및 같은 관리자 membership 범위여야 한다.
+- event는 1개 이상이면 되고, 선택된 공개 원장 head 기준으로 서로 다른 performance(회차)가 2개 이상이어야
+  한다. 같은 공연의 다른 회차도 반복 근거다. 회차가 1개뿐이면 `MULTI_EVENT_PERFORMANCE_SCOPE_REQUIRED`로
+  거절한다. 모든 event는 같은 tenant 및 같은 관리자 membership 범위여야 한다.
 - 서버는 공개된 원장 head와 완료된 bulk 정책 snapshot 참조를 생성 시 고정한다. canonical
   `(eventId, performanceId, versionId)`의 SHA-256은 `ledgerVersionSetDigest`에, policy snapshot
   집합은 idempotency request digest에 바인딩한다.
@@ -30,6 +32,15 @@
 
 `pageSize`는 1부터 100까지다. 다른 tenant 범위는 기존 404 정책을 따른다.
 
+## 점수 버전
+
+- 새 실행은 `score-v2-exp2-multi-performance-recurrence`만 저장하고 Data에 보낸다. R은 사전 등록 정의
+  `min((서로 다른 회차 수 - 1) / 3, 1)`로 검산한다.
+- 이전 값 `score-v2-exp2-multi-event-recurrence`는 퇴역했다. 이 값으로 이미 저장된 실행은 조회만 가능하다.
+  재시도는 `SCORE_VERSION_RETIRED`로 거절하고, worker가 집어 든 미완료 실행은 `BLOCKED`와
+  `SCORE_VERSION_RETIRED`로 끝낸다. Data도 새 요청의 이전 값을 같은 코드로 거절한다.
+- 회차 edge 가중치 버전 `score-v2-exp2`와 projection 버전은 바뀌지 않았다.
+
 ## MySQL migration 순서
 
 기존 BL-07 및 exp2 신호 migration을 적용한 뒤 다음 순서를 유지한다.
@@ -38,6 +49,10 @@
 2. `multi-event-quantity-snapshot-migration.sql`
 3. `multi-event-source-binding-migration.sql`
 4. `multi-event-artifact-job-migration.sql`
+5. `bulk-ledger-track1-signal-source-migration.sql` (v3 원본 수신의 신호 출처 컬럼)
+6. `multi-event-multi-performance-migration.sql` (새 점수 버전과 퇴역 버전 동시 허용, 후보 `distinct_event_count >= 1`)
+
+대량 원장 쪽 v3 스테이징 migration을 포함한 전체 순서는 `docs/operations/bulk-ledger-v3-raw-intake.md`를 따른다.
 
 마지막 migration은 선택된 원장 버전이 같은 tenant, event, performance에 속하는지와 정책
 snapshot이 그 원장 버전을 참조하는지 복합 외래 키로 고정한다.
@@ -46,8 +61,31 @@ snapshot이 그 원장 버전을 참조하는지 복합 외래 키로 고정한�
 
 Spring은 소규모 실행에서 고정된 scope, 목적 `TRACK1_CONNECTION`, 단일 supplier namespace와 단일 key version을
 내부 인증된 `/api/v2/multi-event/analyze`로 보낸다. 응답의 최종 score, edge projection score,
-projection, GDS runtime 버전을 각각 검증한다. 구성 계정이 입력에 존재하는지와 관계별 실제
-공유 신호 및 고정 source scope를 재검증한다. IP와 payment 신호만으로 공연 간 후보를 연결하지 않는다.
+projection, GDS runtime 버전을 각각 검증한다. 구성 계정이 입력에 존재하는지와 관계별 근거 및 고정
+source scope를 재검증한다.
+
+### 연결 조건과 점수 구성의 재검증
+
+Data의 관계 유형(연결 조건)과 `availableSignals`(점수 구성)는 서로 다르며 Spring은 둘을 따로 검증한다.
+
+- 관계 유형은 강한 신호 4종(`refund_account_hash`, `phone_hash`, `device_id_hash`, `address_hash`)과
+  `stable_account_cocluster`다. 모든 관계는 서로 다른 회차 2개 이상에 걸쳐야 한다. 강한 신호 관계는 그
+  신호가 `availableSignals`에 들어 있어야 하며, 각 출처 회차에서 구성원 전원이 같은 token을 공유했는지
+  확인한다.
+- `stable_account_cocluster`는 같은 계정 2개 이상이 서로 다른 두 회차의 GDS Louvain 결과에서 같은 군집에
+  있었다는 근거다. Spring은 구성원 전원이 각 출처 회차의 고정 원장에서 분석 기간 안의 ACTIVE 티켓을
+  가지는지, 즉 계정과 회차 존재만 확인한다.
+- **한계:** Louvain 군집 자체는 Spring이 다시 계산하거나 검증할 수 없다. 같은 군집이었다는 사실은 Data의
+  회차별 GDS 실행 결과를 신뢰한 것이며, 이 관계는 계정 존재와 회차 출처 이상을 증명하지 않는다.
+  결제와 IP 시간창은 서로 다른 계정을 잇는 단독 연결 조건이 아니며, 같은 계정 집합의 반복 동시 군집은
+  계정 연속성에 근거한 연결이다.
+- `availableSignals`는 exp2 신호 10종(강한 신호 4종, `payment_hash`, 망 유형별 `ip_window:*` 5종)만
+  받는다. Spring은 신호마다 구성원 2명 이상이 출처 회차 하나 이상에서 실제로 공유했는지 SQL로 확인한다.
+  `ip_window:<유형>`은 같은 `ip_hmac`과 같은 600초 구간에서 공유했는지, 그 구간의 망 유형이 하나면 그 유형,
+  섞였으면 `UNKNOWN`인지까지 확인한다. 구간은 Data의 `int(purchasedAt.timestamp()) // 600`과 같도록
+  `timestampdiff(second,'1970-01-01 00:00:00',purchased_at) div 600`으로 계산하며, 경계 시각 고정 벡터
+  테스트로 두 계산이 같음을 확인한다. hub 제외 여부는 다시 판정하지 않는다.
+- `unavailableSignals`는 기본 신호 5종과 IP 시간창 전체를 뜻하는 `ip_window`만 받는다.
 티켓 행은 고정 scope별 순번을 포함해 같은 예약의 여러 티켓을 별도 입력으로 보존한다. 이 순번은
 중복 검사에만 사용하며 계정 연결 키가 아니다.
 

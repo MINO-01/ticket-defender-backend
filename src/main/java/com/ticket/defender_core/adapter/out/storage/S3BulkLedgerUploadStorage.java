@@ -81,6 +81,57 @@ public final class S3BulkLedgerUploadStorage implements BulkLedgerUploadStorage 
         } catch (RuntimeException failure) { throw failure;
         } catch (Exception failure) { throw new Unavailable(failure); }
     }
+    @Override public void deleteAllVersions(String key) {
+        if (key == null || key.isBlank()) throw new InvalidObject();
+        try {
+            String keyMarker = null, versionMarker = null;
+            while (true) {
+                var request = software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest.builder().bucket(bucket).prefix(key);
+                if (keyMarker != null) request.keyMarker(keyMarker);
+                if (versionMarker != null) request.versionIdMarker(versionMarker);
+                var page = reader.listObjectVersions(request.build());
+                // 접두 일치가 아니라 정확히 같은 키의 버전과 delete marker만 지웁니다.
+                for (var version : page.versions()) if (key.equals(version.key())) deleteVersion(key, version.versionId());
+                for (var marker : page.deleteMarkers()) if (key.equals(marker.key())) deleteVersion(key, marker.versionId());
+                if (!Boolean.TRUE.equals(page.isTruncated())) break;
+                keyMarker = page.nextKeyMarker(); versionMarker = page.nextVersionIdMarker();
+            }
+        } catch (InvalidObject failure) { throw failure;
+        } catch (Exception failure) { throw new Unavailable("Upload object deletion failed"); }
+    }
+
+    /**
+     * 시작 시 버전 삭제 권한 점검입니다. 점검 객체는 매번 같은 고정 키를 쓰므로 실행마다 새 객체가 쌓이지 않습니다.
+     * 이전 실행이 남긴 버전도 먼저 지우고, 삭제 후 그 키의 버전과 delete marker가 하나도 남지 않아야 성공입니다.
+     * delete marker만 남는 경우(버전 삭제 권한 없음)는 실패로 봅니다.
+     */
+    @Override public boolean verifyDeletePermission() {
+        String key = DELETE_PROBE_KEY;
+        try {
+            deleteAllVersions(key);
+            byte[] probe = "td-delete-probe".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            reader.putObject(PutObjectRequest.builder().bucket(bucket).key(key).contentType("text/plain").contentLength((long) probe.length).build(),
+                    RequestBody.fromBytes(probe));
+            deleteAllVersions(key);
+            return !hasAnyVersion(key);
+        } catch (Exception unverified) {
+            return false;
+        }
+    }
+
+    static final String DELETE_PROBE_KEY = "bulk-ledger-private/_delete-permission-probe/probe.txt";
+
+    private boolean hasAnyVersion(String key) {
+        var page = reader.listObjectVersions(software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest.builder().bucket(bucket).prefix(key).build());
+        return page.versions().stream().anyMatch(version -> key.equals(version.key()))
+                || page.deleteMarkers().stream().anyMatch(marker -> key.equals(marker.key()));
+    }
+
+    private void deleteVersion(String key, String versionId) {
+        if (versionId == null || versionId.isBlank() || "null".equals(versionId)) throw new InvalidObject();
+        reader.deleteObject(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.builder().bucket(bucket).key(key).versionId(versionId).build());
+    }
+
     /** Data adds its configured prefix to this opaque manifest name; backend must upload to the identical S3 key. */
     static String bulkObjectKey(String prefix, String artifactName) {
         if (prefix == null || prefix.isBlank() || artifactName == null || !artifactName.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}"))

@@ -34,18 +34,45 @@ public class BulkLedgerImportWorker {
     private final BulkLedgerStagingWriter staging;
     private final BulkLedgerCandidatePreparationService candidates;
     private final TransactionTemplate transactions;
+    private final BulkLedgerRawIntakePolicy rawIntake;
+    private final BulkLedgerRawSignalHasherFactory signalHashers;
+    private final BulkLedgerUploadDeletionService deletions;
     @Value("${ticket-defender.bulk-ledger-upload.worker-enabled:false}") private boolean enabled;
 
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
             BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions) {
+        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, null, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
+            SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
+            BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions,
+            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers, BulkLedgerUploadDeletionService deletions) {
         this.jobs = jobs; this.scopes = scopes; this.errors = errors; this.gate = gate; this.storage = storage; this.staging = staging; this.candidates = candidates; this.transactions = transactions;
+        this.rawIntake = rawIntake; this.signalHashers = signalHashers; this.deletions = deletions;
     }
 
     public void process(UUID importId) {
         Lease lease = transactions.execute(status -> acquire(importId));
         if (lease == null) return;
         boolean stagingReady = false;
+        boolean stagingFinal = false;
+        boolean v3 = "v3".equals(lease.schemaVersion());
+        if (deletions != null && deletions.retentionExpired(importId)) {
+            // 원본이 이미 지워져 재시도해도 성공할 수 없으므로 기존 거절 전이로 확정 실패를 남깁니다.
+            transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
+                    new BulkLedgerCsvValidationException(0, BulkLedgerUploadDeletionService.UPLOAD_OBJECT_EXPIRED)));
+            return;
+        }
+        if (v3 && (rawIntake == null || signalHashers == null || !rawIntake.v3Accepted())) {
+            // v3 원본 수신이 닫혀 있으면 원본을 읽지 않고 확정 거절한 뒤 업로드 객체를 지웁니다.
+            transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
+                    new BulkLedgerCsvValidationException(0, BulkLedgerRawIntakePolicy.DISABLED)));
+            deleteUpload(importId, lease.tenantId(), BulkLedgerUploadDeletionService.Reason.STAGING_REJECTED);
+            return;
+        }
         try {
             // Re-read exact object version: a current-object replacement cannot alter the staged source.
             storage.verify(objectKey(importId), lease.objectVersion(), lease.maximumBytes());
@@ -54,10 +81,12 @@ public class BulkLedgerImportWorker {
             var reservation = gate.referenceHasher(); // intentionally preserves Track 2 reservation contract
             var ticket = gate.referenceHasher("BL02_TICKET_REFERENCE");
             var account = gate.referenceHasher("BL02_ACCOUNT_REFERENCE");
+            BulkLedgerRawSignalHashers rawSignals = v3 ? signalHashers.hashers() : null;
             BulkLedgerStagingWriter.Session stagingSession = staging.open(importId, lease.tenantId(), lease.fence());
             BulkLedgerCsvStagingParser.Result result;
             try (InputStream source = storage.openVersion(objectKey(importId), lease.objectVersion())) {
-                result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account, stagingSession::accept);
+                result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account,
+                        rawSignals, stagingSession::accept);
             }
             stagingSession.finish();
             if (result.rows() != lease.declaredRows()) throw new BulkLedgerCsvValidationException(0, "BULK_CSV_DECLARED_ROW_COUNT_MISMATCH");
@@ -71,17 +100,24 @@ public class BulkLedgerImportWorker {
             }
             transactions.executeWithoutResult(status -> ready(importId, lease.fence(), result.rows()));
             stagingReady = true;
+            stagingFinal = true;
         } catch (BulkLedgerCsvValidationException rejected) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(), rejected));
+            stagingFinal = true;
         } catch (BulkLedgerStagingConflictException conflict) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
                     new BulkLedgerCsvValidationException(conflict.rowNumber(), "BULK_STAGING_ROW_CONFLICT")));
+            stagingFinal = true;
         } catch (BulkLedgerUploadStorage.ObjectChanged | BulkLedgerUploadStorage.InvalidObject changed) {
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
                     new BulkLedgerCsvValidationException(0, "BULK_UPLOAD_OBJECT_VERSION_CHANGED")));
+            stagingFinal = true;
         } catch (RuntimeException | java.io.IOException unavailable) {
+            // 재시도 가능한 실패에서는 원본이 다시 필요하므로 지우지 않습니다.
             transactions.executeWithoutResult(status -> retryable(importId, lease.fence()));
         }
+        if (stagingFinal) deleteUpload(importId, lease.tenantId(), stagingReady
+                ? BulkLedgerUploadDeletionService.Reason.STAGING_COMPLETED : BulkLedgerUploadDeletionService.Reason.STAGING_REJECTED);
 
         if (!stagingReady) return;
         // readyToPublish releases the staging fence. Candidate preparation owns a separate lease, so a
@@ -127,6 +163,10 @@ public class BulkLedgerImportWorker {
     }
     private void retryable(UUID importId, long fence) {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow(); job.retryableFailure(fence, LocalDateTime.now(ZoneOffset.UTC)); jobs.saveAndFlush(job);
+    }
+    /** 스테이징 성공 또는 확정 거절 직후 원본 객체를 지웁니다. 실패는 작업 상태를 바꾸지 않고 별도 기록만 남깁니다. */
+    private void deleteUpload(UUID importId, UUID tenantId, BulkLedgerUploadDeletionService.Reason reason) {
+        if (deletions != null) deletions.deleteUpload(importId, tenantId, reason);
     }
     private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }
     private record Lease(UUID tenantId, String schemaVersion, BulkLedgerImportJob.Mode mode, String objectVersion, long maximumBytes, long declaredRows, long fence) { }

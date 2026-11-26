@@ -50,13 +50,13 @@ class FastApiAdapterTest {
         MultiEventAnalysisDto.Request request = multiEventRequest();
         String response = """
                 {"analysisId":"%s","ledgerVersionSetDigest":"%s",
-                 "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "scoreVersion":"score-v2-exp2-multi-performance-recurrence",
                  "projectionScoreVersion":"score-v2-exp2",
                  "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
                  "algorithm":"GDS_LOUVAIN",
                  "algorithmVersion":"gds-2.6.6",
                  "candidates":[{"candidateId":"multi-%s","priorityBand":"MEDIUM",
-                   "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                   "scoreVersion":"score-v2-exp2-multi-performance-recurrence",
                    "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
                    "distinctAccountCount":2,"distinctEventCount":2,"distinctPerformanceCount":2,
                    "verifiedRelationshipCount":2,
@@ -104,7 +104,7 @@ class FastApiAdapterTest {
         MultiEventAnalysisDto.Request request = multiEventRequest();
         String response = """
                 {"analysisId":"%s","ledgerVersionSetDigest":"%s",
-                 "scoreVersion":"score-v2-exp2-multi-event-recurrence",
+                 "scoreVersion":"score-v2-exp2-multi-performance-recurrence",
                  "projectionScoreVersion":"score-v2-exp1",
                  "projectionVersion":"projection-v2.2-exp2-ipwindow-softhub",
                  "algorithm":"GDS_LOUVAIN",
@@ -172,7 +172,7 @@ class FastApiAdapterTest {
                 UUID.fromString("2136558c-2326-4430-a46d-0793494e9b49"),
                 UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "supplier-a", "TRACK1_CONNECTION", "key-v1",
                 "d".repeat(64), asOf, asOf.minusDays(30), asOf.minusDays(1),
-                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub", List.of(
+                "score-v2-exp2-multi-performance-recurrence", "projection-v2.2-exp2-ipwindow-softhub", List.of(
                 new MultiEventAnalysisDto.ArtifactLedgerScope("event-a",
                         UUID.fromString("00000000-0000-4000-8000-000000000001"),
                         UUID.fromString("00000000-0000-4000-8000-000000000011"),
@@ -213,7 +213,7 @@ class FastApiAdapterTest {
                 UUID.fromString(REQUEST_ID),
                 UUID.fromString("2136558c-2326-4430-a46d-0793494e9b50"), "d".repeat(64),
                 asOf, asOf.minusDays(30), asOf.minusDays(1),
-                "score-v2-exp2-multi-event-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
+                "score-v2-exp2-multi-performance-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
                 scopes, tickets);
     }
 

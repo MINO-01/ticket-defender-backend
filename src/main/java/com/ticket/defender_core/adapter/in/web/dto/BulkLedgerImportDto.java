@@ -42,6 +42,8 @@ public final class BulkLedgerImportDto {
     }
     /** URL is returned only once to the authorized uploader and is never persisted or listed. */
     public record UploadSession(java.net.URI uploadUrl, OffsetDateTime expiresAt) { }
+    /** 업로드 원본 삭제 상태입니다. 객체 키, 버전 ID, 원본 값은 담지 않습니다. */
+    public record UploadDeletionStatus(boolean v3RawIntakeAccepted, long deletedCount, long failedAfterRetriesCount, int maxAttempts) { }
     public record CompleteUploadRequest() { }
     /** Publication metadata intentionally omits ticket rows, object keys, HMACs and outbox payloads. */
     public record PublicationView(UUID publicationId, UUID importId, String sourceSystem, String sourceBatchId,

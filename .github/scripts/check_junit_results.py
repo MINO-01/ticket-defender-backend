@@ -43,7 +43,7 @@ CORE_SKIPS = {
         2, "Runs the raw-signal source and multi-performance migrations after the MEI chain in isolated MySQL CI"
     ),
     "com.ticket.defender_core.integration.BulkLedgerV3RawIntakeHttpMySqlTest": (
-        3, "Runs the synthetic v3 raw intake path over real HTTP in the isolated MySQL CI job"
+        4, "Runs the synthetic v3 raw intake path over real HTTP in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest": (
         1, "Runs duplicate and fencing checks in the isolated MySQL CI job"
@@ -345,7 +345,7 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.MultiPerformanceRawIntakeMigrationMySqlTest", 2
     ),
     "bulk-ledger-v3-raw-intake-http": (
-        "com.ticket.defender_core.integration.BulkLedgerV3RawIntakeHttpMySqlTest", 3
+        "com.ticket.defender_core.integration.BulkLedgerV3RawIntakeHttpMySqlTest", 4
     ),
     "bulk-ledger-staging-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerStagingMySqlTest", 1

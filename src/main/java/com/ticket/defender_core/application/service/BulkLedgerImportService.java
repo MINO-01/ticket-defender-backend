@@ -186,6 +186,7 @@ public class BulkLedgerImportService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
         if ("v3".equals(job.getSchemaVersion())) rawIntake.requireV3Accepted();
+        requireUploadNotExpired(job.getId());
         if (job.getDeclaredFileBytes() > uploadMaximumBytes) throw new CaseApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BULK_UPLOAD_TOO_LARGE");
         java.time.Instant expires = now.atOffset(ZoneOffset.UTC).toInstant().plus(uploadTtl);
         String key = objectKey(job.getId());
@@ -210,6 +211,7 @@ public class BulkLedgerImportService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
         if ("v3".equals(job.getSchemaVersion())) rawIntake.requireV3Accepted();
+        requireUploadNotExpired(job.getId());
         try {
             BulkLedgerUploadStorage.VerifiedObject object = uploadStorage.verify(objectKey(job.getId()), null, uploadMaximumBytes);
             if (object.byteSize() != job.getDeclaredFileBytes() || !job.getDeclaredObjectSha256().equals(object.sha256()))
@@ -330,6 +332,11 @@ public class BulkLedgerImportService {
     }
 
     private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }
+
+    /** 정리 작업이 원본을 지운 업로드는 다시 올리거나 완료할 수 없습니다. 새 작업으로 등록해야 합니다. */
+    private void requireUploadNotExpired(UUID importId) {
+        if (uploadDeletions.retentionExpired(importId)) throw conflict(BulkLedgerUploadDeletionService.UPLOAD_OBJECT_EXPIRED);
+    }
 
     private List<AuthorizedScope> authorizeScopes(List<NormalizedScope> input, Set<AdminRole> requiredRoles) {
         List<AuthorizedScope> result = new ArrayList<>();

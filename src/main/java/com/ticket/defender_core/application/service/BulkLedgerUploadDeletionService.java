@@ -20,6 +20,8 @@ import java.util.UUID;
 @Service
 public class BulkLedgerUploadDeletionService {
     static final int MAX_ATTEMPTS = 3;
+    /** 정리 작업이 원본을 지운 미처리 업로드의 확정 실패 코드입니다. */
+    public static final String UPLOAD_OBJECT_EXPIRED = "UPLOAD_OBJECT_EXPIRED";
     private static final Logger log = LoggerFactory.getLogger(BulkLedgerUploadDeletionService.class);
     private final JdbcTemplate jdbc;
     private final BulkLedgerUploadStorage storage;
@@ -79,6 +81,15 @@ public class BulkLedgerUploadDeletionService {
                 order by j.created_at,j.id limit 100
                 """, (rs, n) -> new Expired(UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2))), Timestamp.valueOf(cutoff));
         for (Expired job : expired) deleteUpload(job.importId(), job.tenantId(), Reason.RETENTION_EXPIRED);
+    }
+
+    /** 보존 한도 초과로 정리 작업이 원본을 지운 업로드인지 삭제 기록으로 판정합니다. 이런 업로드는 다시 처리할 수 없습니다. */
+    public boolean retentionExpired(UUID importId) {
+        Integer expired = jdbc.queryForObject("""
+                select count(*) from td_bulk_import_upload_deletions
+                where import_id=? and status='DELETED' and trigger_reason='RETENTION_EXPIRED'
+                """, Integer.class, importId.toString());
+        return expired != null && expired > 0;
     }
 
     public Summary summary(UUID tenantId) {

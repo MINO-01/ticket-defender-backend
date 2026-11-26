@@ -60,6 +60,12 @@ public class BulkLedgerImportWorker {
         boolean stagingReady = false;
         boolean stagingFinal = false;
         boolean v3 = "v3".equals(lease.schemaVersion());
+        if (deletions != null && deletions.retentionExpired(importId)) {
+            // 원본이 이미 지워져 재시도해도 성공할 수 없으므로 기존 거절 전이로 확정 실패를 남깁니다.
+            transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),
+                    new BulkLedgerCsvValidationException(0, BulkLedgerUploadDeletionService.UPLOAD_OBJECT_EXPIRED)));
+            return;
+        }
         if (v3 && (rawIntake == null || signalHashers == null || !rawIntake.v3Accepted())) {
             // v3 원본 수신이 닫혀 있으면 원본을 읽지 않고 확정 거절한 뒤 업로드 객체를 지웁니다.
             transactions.executeWithoutResult(status -> rejected(importId, lease.fence(),

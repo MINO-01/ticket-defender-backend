@@ -69,7 +69,7 @@ paths:
       responses:
         '201': { description: one-time upload URL and expiry, headers: { Cache-Control: { schema: { example: no-store } } }, content: { application/json: { schema: { $ref: '#/components/schemas/UploadSession' } } } }
         '404': { description: RESOURCE_NOT_FOUND for a foreign job }
-        '409': { description: disabled synthetic scope or invalid state }
+        '409': { description: disabled synthetic scope, invalid state, or UPLOAD_OBJECT_EXPIRED after retention cleanup }
         '422': { description: declared file exceeds the configured private-upload limit }
         '503': { description: private object storage unavailable or disabled }
   /api/v1/admin/ledger-imports/{importId}/complete-upload:
@@ -80,7 +80,7 @@ paths:
       responses:
         '200': { description: UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, REJECTED, or FAILED_RETRYABLE job; response is no-store }
         '404': { description: RESOURCE_NOT_FOUND for a foreign job }
-        '409': { description: duplicate completion, expired session, cancellation, or unavailable synthetic scope }
+        '409': { description: duplicate completion, expired session, cancellation, unavailable synthetic scope, or UPLOAD_OBJECT_EXPIRED after retention cleanup }
         '422': { description: version, size, or SHA-256 mismatch }
         '503': { description: private object storage unavailable }
   /api/v1/admin/ledger-imports/{importId}/publish:

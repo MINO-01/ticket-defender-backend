@@ -8,6 +8,7 @@ import com.ticket.defender_core.adapter.out.persistence.TenantEventRepository;
 import com.ticket.defender_core.adapter.out.persistence.TenantRepository;
 import com.ticket.defender_core.adapter.out.persistence.VerifiedPerformanceRepository;
 import com.ticket.defender_core.application.service.BulkLedgerImportWorker;
+import com.ticket.defender_core.application.service.BulkLedgerUploadDeletionService;
 import com.ticket.defender_core.application.service.BulkLedgerUploadStorage;
 import com.ticket.defender_core.domain.AccessRecordStatus;
 import com.ticket.defender_core.domain.AdminMembershipEntity;
@@ -98,6 +99,7 @@ class BulkLedgerV3RawIntakeHttpMySqlTest {
     @Autowired private SyntheticReservationImportTenantRepository syntheticTenants;
     @Autowired private VerifiedPerformanceRepository performances;
     @Autowired private BulkLedgerImportWorker worker;
+    @Autowired private BulkLedgerUploadDeletionService deletions;
     @Autowired private MemoryUploadStorage storage;
     @Autowired private JdbcTemplate jdbc;
     @MockitoBean(name = "adminJwtDecoder") private JwtDecoder decoder;
@@ -224,6 +226,28 @@ class BulkLedgerV3RawIntakeHttpMySqlTest {
         assertThat(status.get("failedAfterRetriesCount").asLong()).isEqualTo(1);
         assertThat(status.get("maxAttempts").asInt()).isEqualTo(3);
         storage.failDeletes = false;
+    }
+
+    @Test
+    void retentionCleanupMakesAnUnprocessedUploadFailWithAFinalCode() throws Exception {
+        Fixture fixture = fixture();
+        UUID performance = performance(fixture);
+        UUID importId = upload(fixture, HEADER + "\n" + row(fixture.event(), performance, "res-x", "tkt-x", "acct-x", "", "192.0.2.71", "", "", "", "", "", "", "", "", ""),
+                Map.of(performance, 1L), "v3-retention");
+        jdbc.update("update td_bulk_import_jobs set created_at=date_sub(utc_timestamp(6), interval 25 hour) where id=?", importId.toString());
+
+        deletions.cleanupExpired();
+
+        assertThat(storage.objects).doesNotContainKey(key(importId));
+        assertThat(jdbc.queryForMap("select status,trigger_reason from td_bulk_import_upload_deletions where import_id=?", importId.toString()))
+                .containsEntry("status", "DELETED").containsEntry("trigger_reason", "RETENTION_EXPIRED");
+        HttpResponse<String> completeAgain = post("/" + importId + "/complete-upload", "{}", null, fixture.subject());
+        assertThat(completeAgain.statusCode()).isEqualTo(409);
+        assertThat(completeAgain.body()).contains("UPLOAD_OBJECT_EXPIRED");
+
+        worker.process(importId);
+        assertThat(jdbc.queryForObject("select status from td_bulk_import_jobs where id=?", String.class, importId.toString())).isEqualTo("REJECTED");
+        assertThat(get("/" + importId + "/errors", fixture.subject()).body()).contains("UPLOAD_OBJECT_EXPIRED");
     }
 
     private void assertNoRawAnywhere(CapturedOutput output, String responses, String... extra) {

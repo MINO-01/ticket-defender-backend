@@ -41,8 +41,13 @@
 - 최대 3회 시도하고 결과를 `td_bulk_import_upload_deletions`에 기록한다. 삭제 실패는 작업 상태 전이를
   바꾸지 않는다. 재시도 가능 실패(`FAILED_RETRYABLE`)에서는 원본이 다시 필요하므로 지우지 않는다.
 - 정리 작업은 보존 한도를 넘긴 미처리, 만료, 삭제 실패 업로드를 다시 지운다. 보존 한도를 넘겨 지워진
-  미처리 업로드는 처리할 수 없다. 기존 상태 전이를 바꾸지 않았으므로 그 작업은 저장소 조회 실패로
-  재시도 가능 실패 상태에 머물며, 운영자가 취소한 뒤 새로 등록해야 한다.
+  미처리 업로드는 처리할 수 없으므로 확정 실패로 보인다. 판정은 삭제 기록(`RETENTION_EXPIRED`, `DELETED`)
+  기준이며, 업로드 세션과 업로드 완료 요청은 `409 UPLOAD_OBJECT_EXPIRED`로 거절하고, worker가 다시 집어 든
+  작업은 원본을 읽지 않고 기존 거절 전이로 `REJECTED`가 되며 오류 목록에 `UPLOAD_OBJECT_EXPIRED`가 남는다.
+  새 업로드가 필요하면 새 작업으로 등록한다.
+- 시작 시 점검 객체는 고정 키(`bulk-ledger-private/_delete-permission-probe/probe.txt`) 하나만 쓴다. 점검 전에
+  이전 실행이 남긴 버전을 먼저 지우고, 점검 후 그 키의 버전과 delete marker가 하나도 남지 않아야 성공으로 본다.
+  버전 삭제 권한이 없으면 지울 수 없지만 키가 늘어나지는 않으며, 수명 주기 규칙이 남은 버전을 정리한다.
 - 같은 정책을 v1, v2 업로드에도 적용한다.
 - 파일 SHA-256, 바이트 수, 행 수는 `td_bulk_import_jobs`에 계속 남아 출처 증명에 쓰인다.
 - 3회 시도 후에도 지우지 못한 건수는 `GET /api/v1/admin/ledger-imports/upload-deletions/status`의

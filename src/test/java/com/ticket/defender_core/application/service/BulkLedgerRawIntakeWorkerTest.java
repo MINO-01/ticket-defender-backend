@@ -59,6 +59,31 @@ class BulkLedgerRawIntakeWorkerTest {
     }
 
     @Test
+    void retentionExpiredUploadIsRejectedWithAFinalCodeInsteadOfBeingRetried() {
+        Fixture fixture = fixture("v2", v2Csv(), false);
+        when(fixture.deletions().retentionExpired(fixture.job().getId())).thenReturn(true);
+
+        fixture.worker().process(fixture.job().getId());
+
+        assertThat(fixture.job().getStatus()).isEqualTo(BulkLedgerImportJob.Status.REJECTED);
+        verify(fixture.storage(), never()).openVersion(anyString(), anyString());
+        verify(fixture.deletions(), never()).deleteUpload(any(), any(), any());
+        ArgumentCaptor<BulkLedgerImportError> error = ArgumentCaptor.forClass(BulkLedgerImportError.class);
+        verify(fixture.errors()).save(error.capture());
+        assertThat(error.getValue().getCode()).isEqualTo("UPLOAD_OBJECT_EXPIRED");
+    }
+
+    @Test
+    void retentionExpiryIsReadOnlyFromSuccessfulRetentionDeletions() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        UUID importId = UUID.randomUUID();
+        when(jdbc.queryForObject(contains("trigger_reason='RETENTION_EXPIRED'"), eq(Integer.class), eq(importId.toString()))).thenReturn(1);
+        var service = new BulkLedgerUploadDeletionService(jdbc, mock(BulkLedgerUploadStorage.class), policy(false, false, true), false);
+        assertThat(service.retentionExpired(importId)).isTrue();
+        assertThat(service.retentionExpired(UUID.randomUUID())).isFalse();
+    }
+
+    @Test
     void acceptedV3StagesOnlyTokensAndDeletesTheUploadAfterStaging() {
         Fixture fixture = fixture("v3", v3Csv(), true);
 

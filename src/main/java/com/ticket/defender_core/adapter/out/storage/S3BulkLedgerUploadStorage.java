@@ -100,22 +100,31 @@ public final class S3BulkLedgerUploadStorage implements BulkLedgerUploadStorage 
         } catch (Exception failure) { throw new Unavailable("Upload object deletion failed"); }
     }
 
+    /**
+     * 시작 시 버전 삭제 권한 점검입니다. 점검 객체는 매번 같은 고정 키를 쓰므로 실행마다 새 객체가 쌓이지 않습니다.
+     * 이전 실행이 남긴 버전도 먼저 지우고, 삭제 후 그 키의 버전과 delete marker가 하나도 남지 않아야 성공입니다.
+     * delete marker만 남는 경우(버전 삭제 권한 없음)는 실패로 봅니다.
+     */
     @Override public boolean verifyDeletePermission() {
-        String key = "bulk-ledger-private/_delete-permission-probe/" + java.util.UUID.randomUUID() + ".txt";
+        String key = DELETE_PROBE_KEY;
         try {
+            deleteAllVersions(key);
             byte[] probe = "td-delete-probe".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
             reader.putObject(PutObjectRequest.builder().bucket(bucket).key(key).contentType("text/plain").contentLength((long) probe.length).build(),
                     RequestBody.fromBytes(probe));
             deleteAllVersions(key);
-            try {
-                reader.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
-                return false;
-            } catch (software.amazon.awssdk.services.s3.model.S3Exception missing) {
-                return missing.statusCode() == 404;
-            }
+            return !hasAnyVersion(key);
         } catch (Exception unverified) {
             return false;
         }
+    }
+
+    static final String DELETE_PROBE_KEY = "bulk-ledger-private/_delete-permission-probe/probe.txt";
+
+    private boolean hasAnyVersion(String key) {
+        var page = reader.listObjectVersions(software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest.builder().bucket(bucket).prefix(key).build());
+        return page.versions().stream().anyMatch(version -> key.equals(version.key()))
+                || page.deleteMarkers().stream().anyMatch(marker -> key.equals(marker.key()));
     }
 
     private void deleteVersion(String key, String versionId) {

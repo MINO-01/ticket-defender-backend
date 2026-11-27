@@ -15,9 +15,11 @@ import org.springframework.web.client.ResourceAccessException;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -35,11 +37,14 @@ public class BulkLedgerTrack1OutboxConsumer {
     private final Track1PurchaseLimitAnalysisService analysis;
     private final PurchaseLimitPolicyRepository policies;
     private final boolean enabled;
+    private final boolean cancelledTicketTransferEnabled;
 
     public BulkLedgerTrack1OutboxConsumer(JdbcTemplate jdbc, TransactionTemplate tx, SyntheticReservationImportGate gate,
                                           Track1PurchaseLimitAnalysisService analysis, PurchaseLimitPolicyRepository policies,
-                                          @Value("${ticket-defender.bulk-ledger-track1.enabled:false}") boolean enabled) {
+                                          @Value("${ticket-defender.bulk-ledger-track1.enabled:false}") boolean enabled,
+                                          @Value("${ticket-defender.bulk-ledger-upload.cancelled-ticket-transfer.enabled:false}") boolean cancelledTicketTransferEnabled) {
         this.jdbc = jdbc; this.tx = tx; this.gate = gate; this.analysis = analysis; this.policies = policies; this.enabled = enabled;
+        this.cancelledTicketTransferEnabled = cancelledTicketTransferEnabled;
     }
 
     @Scheduled(fixedDelayString = "${ticket-defender.bulk-ledger-track1.worker-delay:PT30S}")
@@ -56,6 +61,8 @@ public class BulkLedgerTrack1OutboxConsumer {
             if (input == null) return; // input() persisted a fail-closed BLOCKED result.
             Track1PurchaseLimitAnalysisResponse response = analysis.analyzeTrustedLedgerInput(input.request());
             tx.executeWithoutResult(ignored -> complete(claim, input, response));
+        } catch (InvalidInput failure) {
+            tx.executeWithoutResult(ignored -> block(claim, failure.code()));
         } catch (Retryable failure) {
             tx.executeWithoutResult(ignored -> retry(claim, failure.code()));
         } catch (ResourceAccessException | HttpServerErrorException unavailable) {
@@ -109,14 +116,17 @@ public class BulkLedgerTrack1OutboxConsumer {
         List<Ticket> tickets = tickets(lineage, claim.versionId());
         if (tickets.isEmpty()) return blockedInput(claim, "NO_EFFECTIVE_TICKETS");
         if (tickets.size() >= MAX_TICKETS) return blockedInput(claim, "DATA_INPUT_TOO_LARGE");
-        if (tickets.stream().anyMatch(t -> !validQuantityUnit(t.unit()) || t.account() == null || t.signalMissing()))
+        if (tickets.stream().anyMatch(t -> !validQuantityUnit(t.unit()) || t.account() == null
+                || (!cancelledTicketTransferEnabled || !isCancelled(t)) && t.signalMissing()))
             return blockedInput(claim, "LEDGER_SIGNAL_OR_STATUS_INCOMPLETE");
         String externalEvent = jdbc.queryForObject("select external_event_ref from events where id=? and tenant_id=?", String.class,
                 claim.eventId().toString(), claim.tenantId().toString());
         UUID requestId = UUID.randomUUID();
         Decision decision = decide(version, tickets, policies.findByTenantIdAndEventIdOrderByPerformanceIdAsc(claim.tenantId(), claim.eventId()), claim.performanceId());
         if (decision.payload().isEmpty()) return blockedInput(claim, "NO_EFFECTIVE_TICKETS_AFTER_NETTING");
-        List<Track1PurchaseLimitAnalysisRequest.Ticket> payload = decision.payload().stream().map(t ->
+        List<Ticket> activePayload = activePayload(decision.payload(), cancelledTicketTransferEnabled);
+        if (activePayload.isEmpty()) return blockedInput(claim, "NO_EFFECTIVE_ACTIVE_TICKETS");
+        List<Track1PurchaseLimitAnalysisRequest.Ticket> payload = activePayload.stream().map(t ->
                 new Track1PurchaseLimitAnalysisRequest.Ticket(t.account(), t.reservation(), externalEvent, claim.performanceId(),
                         t.purchasedAt().atOffset(ZoneOffset.UTC), t.quantity(), t.payment(), t.address(), t.device(), t.ip(),
                         Track1PurchaseLimitAnalysisRequest.QuantityInputType.INDIVIDUAL_TICKET, t.ticket(),
@@ -132,6 +142,15 @@ public class BulkLedgerTrack1OutboxConsumer {
                 decision.complete() ? version.asOf().atOffset(ZoneOffset.UTC) : null,
                 decision.complete() ? Track1PurchaseLimitAnalysisRequest.CancellationHandling.NETTED : Track1PurchaseLimitAnalysisRequest.CancellationHandling.NOT_CONFIRMED,
                 Track1PurchaseLimitAnalysisRequest.DuplicateHandling.DEDUPLICATED, decision.reason());
+        List<Track1PurchaseLimitAnalysisRequest.CancelledTicket> cancelled = List.of();
+        if (cancelledTicketTransferEnabled) {
+            Set<String> keyVersions = activePayload.stream().map(Ticket::keyVersion).collect(java.util.stream.Collectors.toSet());
+            if (keyVersions.size() != 1 || keyVersions.contains(null) || keyVersions.contains(""))
+                return blockedInput(claim, "CANCELLED_TICKET_HMAC_CONTRACT_MISMATCH");
+            cancelled = cancelledTickets(lineage, keyVersions.iterator().next(), externalEvent, claim.performanceId());
+            if (activePayload.size() + cancelled.size() > MAX_TICKETS)
+                return blockedInput(claim, "DATA_INPUT_TOO_LARGE");
+        }
         UUID run = UUID.randomUUID();
         Integer previousAttempts = jdbc.queryForObject("select attempt_count from td_bulk_ledger_track1_analysis_jobs where outbox_id=? for update",
                 Integer.class, claim.outboxId().toString());
@@ -151,7 +170,46 @@ public class BulkLedgerTrack1OutboxConsumer {
                 policyConfirmed ? decision.policy().getPolicyVersion() : null, decision.reason(), decision.excludedRows(), claim.outboxId().toString());
         jdbc.update("update td_bulk_ledger_track1_analysis_jobs set status='PROCESSING',attempt_count=attempt_count+1,run_id=?,updated_at=utc_timestamp(6) where outbox_id=?",
                 run.toString(), claim.outboxId().toString());
-        return new Input(run, new Track1PurchaseLimitAnalysisRequest(requestId.toString(), List.of(scope), payload));
+        return new Input(run, new Track1PurchaseLimitAnalysisRequest(requestId.toString(), List.of(scope), payload, cancelled));
+    }
+
+    private List<Track1PurchaseLimitAnalysisRequest.CancelledTicket> cancelledTickets(List<UUID> lineage,
+            String keyVersion, String eventId, UUID performanceId) {
+        String marks = String.join(",", java.util.Collections.nCopies(lineage.size(), "?"));
+        String sql = """
+            with ranked as (
+              select tv.*,v.revision_no,row_number() over(partition by tv.ticket_reference_hmac order by v.revision_no desc) rn
+              from td_bulk_ledger_ticket_versions tv join td_bulk_ledger_versions v on v.id=tv.version_id
+              where tv.version_id in (%s)
+            )
+            select r.ticket_reference_hmac,r.account_reference_hmac,r.hmac_key_version,r.seat_zone,r.seat_row,r.seat_number,r.cancelled_at
+            from ranked r where r.rn=1 and r.ticket_status in ('CANCELLED','REFUNDED')
+              and r.cancelled_at is not null and r.hmac_key_version=?
+            order by r.ticket_reference_hmac limit %d
+            """.formatted(marks, MAX_TICKETS + 1);
+        ArrayList<Object> args = new ArrayList<>();
+        lineage.forEach(id -> args.add(id.toString()));
+        args.add(keyVersion);
+        List<Track1PurchaseLimitAnalysisRequest.CancelledTicket> result = jdbc.query(sql, (rs, n) -> {
+            String ticketHmac = rs.getString(1), accountHmac = rs.getString(2), rowKey = rs.getString(3);
+            Timestamp cancelledAt = rs.getTimestamp(7);
+            if (ticketHmac == null || !ticketHmac.matches("[0-9a-f]{64}") || accountHmac == null
+                    || !accountHmac.matches("[0-9a-f]{64}") || !keyVersion.equals(rowKey) || cancelledAt == null)
+                throw new InvalidInput("CANCELLED_TICKET_IDENTITY_INVALID");
+            return new Track1PurchaseLimitAnalysisRequest.CancelledTicket(accountHmac, ticketHmac, eventId,
+                    performanceId, rs.getString(4), rs.getString(5), rs.getString(6),
+                    cancelledAt.toLocalDateTime().atOffset(ZoneOffset.UTC));
+        }, args.toArray());
+        if (result.size() > MAX_TICKETS) throw new InvalidInput("CANCELLED_TICKET_LIMIT_EXCEEDED");
+        return result;
+    }
+
+    private static boolean isCancelled(Ticket ticket) {
+        return "CANCELLED".equals(ticket.status()) || "REFUNDED".equals(ticket.status());
+    }
+
+    static List<Ticket> activePayload(List<Ticket> payload, boolean cancelledTicketTransferEnabled) {
+        return cancelledTicketTransferEnabled ? payload.stream().filter(ticket -> !isCancelled(ticket)).toList() : payload;
     }
 
     private Version publishedVersion(Claim claim) {
@@ -318,5 +376,6 @@ public class BulkLedgerTrack1OutboxConsumer {
         static Decision incomplete(PurchaseLimitPolicy policy, List<Ticket> ledger, String reason) { return new Decision(policy, false, ledger, 0, null, reason); }
     }
     private record Input(UUID runId,Track1PurchaseLimitAnalysisRequest request){}
+    private static final class InvalidInput extends RuntimeException { private final String code; private InvalidInput(String code){this.code=code;} String code(){return code;} }
     private static final class Retryable extends RuntimeException { private final String code; private Retryable(String code){this.code=code;} String code(){return code;} }
 }

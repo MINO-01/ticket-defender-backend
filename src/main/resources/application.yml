@@ -45,6 +45,8 @@ ticket-defender:
     max-bytes: ${BULK_LEDGER_UPLOAD_MAX_BYTES:1073741824}
     upload-ttl: ${BULK_LEDGER_UPLOAD_TTL:PT10M}
     batch-size: ${BULK_LEDGER_UPLOAD_BATCH_SIZE:1000}
+    cancelled-ticket-transfer:
+      enabled: ${BULK_LEDGER_CANCELLED_TICKET_TRANSFER_ENABLED:false}
     # v3 원본 신호 수신은 기본 비활성화입니다. 켜려면 정리 작업도 켜야 하며 시작 시 저장소 버전 삭제를 확인합니다.
     v3-raw-intake:
       enabled: ${BULK_LEDGER_V3_RAW_INTAKE_ENABLED:false}

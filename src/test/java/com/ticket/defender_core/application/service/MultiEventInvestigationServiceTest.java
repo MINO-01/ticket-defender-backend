@@ -255,7 +255,7 @@ class MultiEventInvestigationServiceTest {
         String artifactId = "mei-fixed-artifact";
         String idempotencyKey = MultiEventInvestigationService.dataJobIdempotencyKey(RUN_ID);
         var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 5, "RUNNING", null,
-                artifactId, "s3-version-1", "a".repeat(64), 50_001L, 1);
+                artifactId, "s3-version-1", "a".repeat(64), 50_001L, 0, 1);
         AtomicReference<String> updateSql = new AtomicReference<>();
         doAnswer(invocation -> {
             java.util.function.Consumer<TransactionStatus> callback = invocation.getArgument(0);
@@ -281,7 +281,7 @@ class MultiEventInvestigationServiceTest {
     void dataRetryQueueFullDoesNotIncrementAttemptsBeforeAcceptance() {
         UUID dataJobId = UUID.fromString("00000000-0000-4000-8000-000000000040");
         var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 6, "RUNNING", dataJobId,
-                "mei-fixed-artifact", "s3-version-1", "a".repeat(64), 50_001L, 1);
+                "mei-fixed-artifact", "s3-version-1", "a".repeat(64), 50_001L, 0, 1);
         var queueFull = org.springframework.web.client.HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS,
                 "Too Many Requests", new HttpHeaders(),
                 "{\"detail\":{\"code\":\"MULTI_EVENT_JOB_QUEUE_FULL\"}}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -298,7 +298,7 @@ class MultiEventInvestigationServiceTest {
     void acceptedDataRetryIncrementsAttemptsOnlyWithFencedPendingTransition() {
         UUID dataJobId = UUID.fromString("00000000-0000-4000-8000-000000000040");
         var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 6, "RUNNING", dataJobId,
-                "mei-fixed-artifact", "s3-version-1", "a".repeat(64), 50_001L, 1);
+                "mei-fixed-artifact", "s3-version-1", "a".repeat(64), 50_001L, 0, 1);
         AtomicReference<String> updateSql = new AtomicReference<>();
         when(data.retryMultiEventJob(dataJobId)).thenReturn(
                 new MultiEventAnalysisDto.ArtifactAccepted(dataJobId, "QUEUED", false));

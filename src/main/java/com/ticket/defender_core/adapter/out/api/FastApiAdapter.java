@@ -176,6 +176,7 @@ public class FastApiAdapter {
                 || request.tickets() == null || request.tickets().isEmpty()) {
             throw new FastApiResponseContractException("Invalid multi-event request");
         }
+        validateMultiEventCancelledTickets(request);
         try {
             MultiEventAnalysisDto.Response response = restClient.post()
                     .uri(requirePermittedFastApiBaseUrl() + MULTI_EVENT_ANALYSIS_PATH)
@@ -204,7 +205,14 @@ public class FastApiAdapter {
                 || manifest.objectVersion() == null || manifest.objectVersion().isBlank() || manifest.objectVersion().length() > 255
                 || manifest.analysisId() == null || manifest.tenantId() == null
                 || manifest.recordCount() < 1 || manifest.recordCount() > 400_000
-                || !"multi-event-exp2-ndjson-v1".equals(manifest.inputFormatVersion())
+                || manifest.cancelledTicketRecordCount() < 0
+                || manifest.cancelledTicketRecordCount() >= manifest.recordCount()
+                || !("multi-event-exp2-ndjson-v1".equals(manifest.inputFormatVersion())
+                    || "multi-event-exp2-ndjson-v2".equals(manifest.inputFormatVersion()))
+                || ("multi-event-exp2-ndjson-v1".equals(manifest.inputFormatVersion())
+                    && manifest.cancelledTicketRecordCount() != 0)
+                || ("multi-event-exp2-ndjson-v2".equals(manifest.inputFormatVersion())
+                    && manifest.cancelledTicketRecordCount() == 0)
                 || manifest.ledgerScopes() == null || manifest.ledgerScopes().size() < 2
                 || manifest.ledgerScopes().size() > 500
                 || manifest.sha256() == null || !manifest.sha256().matches("[0-9a-f]{64}")
@@ -227,6 +235,47 @@ public class FastApiAdapter {
                     .distinct().count() != manifest.ledgerScopes().size())
             throw new FastApiResponseContractException("Invalid multi-event artifact manifest");
         return bulkPost(MULTI_EVENT_JOB_PATH, request, idempotencyKey, MultiEventAnalysisDto.ArtifactAccepted.class);
+    }
+
+    private static void validateMultiEventCancelledTickets(MultiEventAnalysisDto.Request request) {
+        if (request.cancelledTickets() == null || request.cancelledTickets().isEmpty()) return;
+        if (request.tickets().stream().anyMatch(ticket -> ticket == null)
+                || request.ledgerScopes().stream().anyMatch(scope -> scope == null)) {
+            throw new FastApiResponseContractException("Invalid cancelled ticket contract scope");
+        }
+        Set<String> scopes = request.ledgerScopes().stream().map(scope -> scope.eventId() + "|"
+                + scope.performanceId() + "|" + scope.ledgerVersionId()).collect(java.util.stream.Collectors.toSet());
+        Set<String> rowOrdinals = request.tickets().stream().filter(ticket -> ticket.sourceRowOrdinal() != null)
+                .map(ticket -> ticket.eventId() + "|" + ticket.performanceId() + "|" + ticket.ledgerVersionId()
+                        + "|" + ticket.sourceRowOrdinal()).collect(java.util.stream.Collectors.toSet());
+        Set<String> cancelledIdentities = new java.util.HashSet<>();
+        var activeIdentity = request.tickets().getFirst();
+        for (var cancelled : request.cancelledTickets()) {
+            if (cancelled == null || cancelled.accountHmac() == null || !cancelled.accountHmac().matches("[0-9a-f]{64}")
+                    || cancelled.ticketHmac() == null || !cancelled.ticketHmac().matches("[0-9a-f]{64}")
+                    || cancelled.eventId() == null || cancelled.performanceId() == null || cancelled.ledgerVersionId() == null
+                    || cancelled.sourceRowOrdinal() < 1 || cancelled.sourceRowOrdinal() > 400_000
+                    || cancelled.supplierNamespace() == null || !cancelled.supplierNamespace().equals(activeIdentity.supplierNamespace())
+                    || !"TRACK1_CONNECTION".equals(cancelled.hmacPurpose())
+                    || cancelled.hmacKeyVersion() == null || !cancelled.hmacKeyVersion().equals(activeIdentity.hmacKeyVersion())
+                    || cancelled.sourceVersion() == null || cancelled.sourceVersion().isBlank()
+                    || cancelled.eventId().length() > 128 || cancelled.supplierNamespace().isBlank()
+                    || cancelled.supplierNamespace().length() > 64 || cancelled.hmacKeyVersion().isBlank()
+                    || cancelled.hmacKeyVersion().length() > 128 || cancelled.sourceVersion().length() > 128
+                    || cancelled.cancelledAt() == null
+                    || cancelled.seatZone() != null && (cancelled.seatZone().isBlank() || cancelled.seatZone().length() > 64)
+                    || cancelled.seatRow() != null && (cancelled.seatRow().isBlank() || cancelled.seatRow().length() > 64)
+                    || cancelled.seatNumber() != null && (cancelled.seatNumber().isBlank() || cancelled.seatNumber().length() > 64)) {
+                throw new FastApiResponseContractException("Invalid cancelled ticket evidence");
+            }
+            String scopeKey = cancelled.eventId() + "|" + cancelled.performanceId() + "|" + cancelled.ledgerVersionId();
+            String ordinalKey = scopeKey + "|" + cancelled.sourceRowOrdinal();
+            String identityKey = scopeKey + "|" + cancelled.accountHmac() + "|" + cancelled.ticketHmac();
+            if (!scopes.contains(scopeKey) || rowOrdinals.contains(ordinalKey)
+                    || !cancelledIdentities.add(identityKey)) {
+                throw new FastApiResponseContractException("Cancelled ticket scope or identity is duplicated");
+            }
+        }
     }
     public MultiEventAnalysisDto.ArtifactStatus multiEventJobStatus(UUID jobId) {
         return bulkGet(MULTI_EVENT_JOB_PATH + "/" + jobId, MultiEventAnalysisDto.ArtifactStatus.class);

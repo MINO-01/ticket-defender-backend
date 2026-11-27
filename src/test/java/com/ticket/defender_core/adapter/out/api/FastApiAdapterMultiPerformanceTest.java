@@ -6,6 +6,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -27,6 +28,63 @@ class FastApiAdapterMultiPerformanceTest {
     private static final String SCOPES = """
             [{"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000001","ledgerVersionId":"00000000-0000-4000-8000-000000000011","sourceBatchId":"batch-a"},
              {"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000002","ledgerVersionId":"00000000-0000-4000-8000-000000000012","sourceBatchId":"batch-b"}]""";
+
+    @Test
+    void defaultRequestOmitsCancellationContractAndEnabledContractSerializesSeparateRows() throws Exception {
+        var mapper = JsonMapper.builder().build();
+        var existing = request(true);
+        String oldBody = mapper.writeValueAsString(existing);
+        assertThat(oldBody).doesNotContain("cancelledTickets");
+
+        var first = existing.ledgerScopes().getFirst();
+        var cancelled = new MultiEventAnalysisDto.CancelledTicket("c".repeat(64), "d".repeat(64),
+                first.eventId(), first.performanceId(), first.ledgerVersionId(), "supplier-a", "TRACK1_CONNECTION",
+                "key-v1", "source-v1", 3, "BALCONY", "R1", "12", OffsetDateTime.parse("2026-11-20T10:00:00Z"));
+        var enabled = new MultiEventAnalysisDto.Request(existing.analysisId(), existing.tenantId(),
+                existing.ledgerVersionSetDigest(), existing.analysisAsOf(), existing.analysisStartAt(),
+                existing.analysisEndAt(), existing.scoreVersion(), existing.projectionVersion(),
+                existing.ledgerScopes(), existing.tickets(), List.of(cancelled));
+        String enabledBody = mapper.writeValueAsString(enabled);
+        assertThat(enabledBody).contains("cancelledTickets", "accountHmac", "ticketHmac", "cancelledAt")
+                .doesNotContain("rawTicketNumber");
+    }
+
+    @Test
+    void multiEventAdapterAcceptsSeparatePseudonymousCancellationEvidence() {
+        var existing = request(true);
+        var scope = existing.ledgerScopes().getFirst();
+        var cancelled = new MultiEventAnalysisDto.CancelledTicket("e".repeat(64), "f".repeat(64),
+                scope.eventId(), scope.performanceId(), scope.ledgerVersionId(), "supplier-a", "TRACK1_CONNECTION",
+                "key-v1", "source-v1", 3, "BALCONY", "R1", "12",
+                OffsetDateTime.parse("2026-11-20T10:00:00Z"));
+        var withCancellation = new MultiEventAnalysisDto.Request(existing.analysisId(), existing.tenantId(),
+                existing.ledgerVersionSetDigest(), existing.analysisAsOf(), existing.analysisStartAt(),
+                existing.analysisEndAt(), existing.scoreVersion(), existing.projectionVersion(),
+                existing.ledgerScopes(), existing.tickets(), List.of(cancelled));
+
+        var response = call(response("[\"refund_account_hash\"]", relation("refund_account_hash"),
+                2, 0.3333333333333333), withCancellation);
+
+        assertThat(response.candidates()).hasSize(1);
+    }
+
+    @Test
+    void zeroCountArtifactManifestPreservesV1SerializationAndV2CarriesCancellationCount() throws Exception {
+        var mapper = JsonMapper.builder().build();
+        var scopes = List.of(
+                new MultiEventAnalysisDto.ArtifactLedgerScope("event-a", UUID.randomUUID(), PERFORMANCE_ONE, VERSION_ONE, "batch-a", null),
+                new MultiEventAnalysisDto.ArtifactLedgerScope("event-a", UUID.randomUUID(), PERFORMANCE_TWO, VERSION_TWO, "batch-b", null));
+        var v1 = manifest(OffsetDateTime.parse("2026-11-25T00:00:00Z"), scopes,
+                "score-v2-exp2-multi-performance-recurrence");
+        assertThat(mapper.writeValueAsString(v1)).doesNotContain("cancelledTicketRecordCount");
+        var v2 = new MultiEventAnalysisDto.ArtifactManifest(v1.artifactId(), v1.objectKey(), v1.objectVersion(),
+                v1.sha256(), v1.recordCount(), 1, "multi-event-exp2-ndjson-v2", v1.analysisId(), v1.tenantId(),
+                v1.supplierNamespace(), v1.hmacPurpose(), v1.hmacKeyVersion(), v1.ledgerVersionSetDigest(),
+                v1.analysisAsOf(), v1.analysisStartAt(), v1.analysisEndAt(), v1.scoreVersion(),
+                v1.projectionVersion(), v1.ledgerScopes());
+        assertThat(mapper.writeValueAsString(v2)).contains("\"cancelledTicketRecordCount\":1")
+                .contains("multi-event-exp2-ndjson-v2");
+    }
 
     @Test
     void oneEventTwoPerformancesWithCoclusterAndPaymentAndIpWindowScoreSignalsIsAccepted() {

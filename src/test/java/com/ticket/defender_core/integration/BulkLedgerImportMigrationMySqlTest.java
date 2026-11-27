@@ -9,6 +9,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 import java.sql.Connection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -30,6 +31,7 @@ class BulkLedgerImportMigrationMySqlTest {
             jdbc.execute("drop table if exists td_bulk_import_supplier_scopes");
             jdbc.execute("drop table if exists td_bulk_import_staging_rows"); jdbc.execute("drop table if exists td_bulk_import_errors"); jdbc.execute("drop table if exists td_bulk_import_scopes"); jdbc.execute("drop table if exists td_bulk_import_jobs");
             jdbc.execute("set foreign_key_checks=1");
+            dropSupplierPerformanceColumnsFromGeneratedCurrentSchema(jdbc);
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl02-staging-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl03-candidate-migration.sql"));
@@ -92,6 +94,21 @@ class BulkLedgerImportMigrationMySqlTest {
         assertThat(definition.get("character_set_name")).isEqualTo("ascii");
         assertThat(definition.get("collation_name")).isEqualTo("ascii_bin");
         assertThat(((Number) definition.get("character_maximum_length")).intValue()).isEqualTo(36);
+    }
+
+    private static void dropSupplierPerformanceColumnsFromGeneratedCurrentSchema(JdbcTemplate jdbc) {
+        Integer checkCount = jdbc.queryForObject("select count(*) from information_schema.table_constraints "
+                + "where table_schema=database() and table_name='verified_performances' "
+                + "and constraint_name='chk_verified_performance_supplier_limit' and constraint_type='CHECK'", Integer.class);
+        if (checkCount != null && checkCount > 0)
+            jdbc.execute("alter table verified_performances drop check chk_verified_performance_supplier_limit");
+        for (String column : List.of("performance_starts_at", "supplier_per_account_limit")) {
+            Integer columnCount = jdbc.queryForObject("select count(*) from information_schema.columns "
+                    + "where table_schema=database() and table_name='verified_performances' and column_name=?",
+                    Integer.class, column);
+            if (columnCount != null && columnCount > 0)
+                jdbc.execute("alter table verified_performances drop column " + column);
+        }
     }
 
     private static String job(JdbcTemplate jdbc, String tenant, String member, String source, String batch, String mode, long rows) {

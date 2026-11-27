@@ -34,7 +34,7 @@ class FastApiAdapterMultiPerformanceTest {
         var mapper = JsonMapper.builder().build();
         var existing = request(true);
         String oldBody = mapper.writeValueAsString(existing);
-        assertThat(oldBody).doesNotContain("cancelledTickets");
+        assertThat(oldBody).doesNotContain("cancelledTickets", "seatZone", "seatRow", "seatNumber", "reservedAt", "paidAt", "accountCreatedAt");
 
         var first = existing.ledgerScopes().getFirst();
         var cancelled = new MultiEventAnalysisDto.CancelledTicket("c".repeat(64), "d".repeat(64),
@@ -47,6 +47,27 @@ class FastApiAdapterMultiPerformanceTest {
         String enabledBody = mapper.writeValueAsString(enabled);
         assertThat(enabledBody).contains("cancelledTickets", "accountHmac", "ticketHmac", "cancelledAt")
                 .doesNotContain("rawTicketNumber");
+    }
+
+    @Test
+    void activeTicketV3SeatAndTimeFieldsUseTheOptionalCamelCaseContract() throws Exception {
+        var mapper = JsonMapper.builder().build();
+        var base = ticket("a", "1", PERFORMANCE_ONE, VERSION_ONE, 1L,
+                OffsetDateTime.parse("2026-11-25T00:00:00Z"));
+        var enriched = new MultiEventAnalysisDto.Ticket(base.accountId(), base.reservationNo(), base.eventId(),
+                base.performanceId(), base.ledgerVersionId(), base.sourceRowOrdinal(), base.supplierNamespace(),
+                base.hmacPurpose(), base.hmacKeyVersion(), base.purchasedAt(), base.effectiveTicketQuantity(),
+                base.confirmedPurchaseLimit(), base.quantityPolicySnapshotId(), base.quantityPolicyVersion(),
+                base.quantitySourceVersion(), base.paymentHash(), base.addressHash(), base.deviceIdHash(),
+                base.ipHash(), base.refundAccountHash(), base.phoneHash(), base.ipNetworkType(),
+                base.quantityStatus(), base.quantityReason(), base.sourceVersion(), "BALCONY", "R1", "12",
+                OffsetDateTime.parse("2026-11-20T09:00:00Z"), OffsetDateTime.parse("2026-11-20T09:05:00Z"),
+                OffsetDateTime.parse("2024-01-03T00:00:00Z"));
+
+        String body = mapper.writeValueAsString(enriched);
+
+        assertThat(body).contains("\"seatZone\":\"BALCONY\"", "\"seatRow\":\"R1\"", "\"seatNumber\":\"12\"")
+                .contains("\"reservedAt\"", "\"paidAt\"", "\"accountCreatedAt\"");
     }
 
     @Test

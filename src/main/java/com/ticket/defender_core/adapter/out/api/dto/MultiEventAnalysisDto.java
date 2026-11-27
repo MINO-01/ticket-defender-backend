@@ -39,7 +39,27 @@ public final class MultiEventAnalysisDto {
                          Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit, UUID quantityPolicySnapshotId,
                          String quantityPolicyVersion, String quantitySourceVersion, String paymentHash, String addressHash, String deviceIdHash,
                          String ipHash, String refundAccountHash, String phoneHash, String ipNetworkType,
-                         String quantityStatus, String quantityReason, String sourceVersion) { }
+                         String quantityStatus, String quantityReason, String sourceVersion,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String seatZone,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String seatRow,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String seatNumber,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime reservedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime paidAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime accountCreatedAt) {
+        public Ticket(String accountId, String reservationNo, String eventId, UUID performanceId, UUID ledgerVersionId,
+                      Long sourceRowOrdinal, String supplierNamespace, String hmacPurpose, String hmacKeyVersion,
+                      OffsetDateTime purchasedAt, Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit,
+                      UUID quantityPolicySnapshotId, String quantityPolicyVersion, String quantitySourceVersion,
+                      String paymentHash, String addressHash, String deviceIdHash, String ipHash,
+                      String refundAccountHash, String phoneHash, String ipNetworkType, String quantityStatus,
+                      String quantityReason, String sourceVersion) {
+            this(accountId, reservationNo, eventId, performanceId, ledgerVersionId, sourceRowOrdinal,
+                    supplierNamespace, hmacPurpose, hmacKeyVersion, purchasedAt, effectiveTicketQuantity,
+                    confirmedPurchaseLimit, quantityPolicySnapshotId, quantityPolicyVersion, quantitySourceVersion,
+                    paymentHash, addressHash, deviceIdHash, ipHash, refundAccountHash, phoneHash, ipNetworkType,
+                    quantityStatus, quantityReason, sourceVersion, null, null, null, null, null, null);
+        }
+    }
     /** Separate pseudonymous cancellation evidence; never participates in the active ticket analysis list. */
     public record CancelledTicket(String accountHmac, String ticketHmac, String eventId, UUID performanceId,
                                   UUID ledgerVersionId, String supplierNamespace, String hmacPurpose,

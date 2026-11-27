@@ -230,16 +230,22 @@ public class BulkLedgerCandidatePreparationService {
 
     private void writeTickets(UUID versionId, UUID tenantId, List<Row> rows) {
         jdbc.batchUpdate("""
-                insert into td_bulk_ledger_ticket_versions(id,version_id,tenant_id,ticket_reference_hmac,reservation_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id)
-                values(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                insert into td_bulk_ledger_ticket_versions(id,version_id,tenant_id,ticket_reference_hmac,reservation_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id,
+                    seat_zone,seat_row,seat_number,reserved_at,paid_at,cancelled_at,account_created_at)
+                values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 on duplicate key update reservation_reference_hmac=values(reservation_reference_hmac), account_reference_hmac=values(account_reference_hmac),
                     hmac_key_version=values(hmac_key_version), purchased_at=values(purchased_at), ticket_quantity=values(ticket_quantity),
-                    quantity_unit=values(quantity_unit), ticket_status=values(ticket_status), source_version=values(source_version), source_event_id=values(source_event_id)
+                    quantity_unit=values(quantity_unit), ticket_status=values(ticket_status), source_version=values(source_version), source_event_id=values(source_event_id),
+                    seat_zone=values(seat_zone), seat_row=values(seat_row), seat_number=values(seat_number), reserved_at=values(reserved_at),
+                    paid_at=values(paid_at), cancelled_at=values(cancelled_at), account_created_at=values(account_created_at)
                 """, rows, PAGE_SIZE, (statement, row) -> {
                     statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, versionId.toString()); statement.setString(3, tenantId.toString());
                     statement.setString(4, row.ticket()); statement.setString(5, row.reservation()); statement.setString(6, row.account()); statement.setString(7, row.keyVersion());
                     statement.setTimestamp(8, Timestamp.valueOf(row.purchasedAt())); statement.setInt(9, row.quantity()); statement.setString(10, row.unit());
                     statement.setString(11, row.status()); statement.setString(12, row.sourceVersion()); statement.setString(13, row.eventId());
+                    statement.setString(14, row.seatZone()); statement.setString(15, row.seatRow()); statement.setString(16, row.seatNumber());
+                    timestampOrNull(statement, 17, row.reservedAt()); timestampOrNull(statement, 18, row.paidAt());
+                    timestampOrNull(statement, 19, row.cancelledAt()); timestampOrNull(statement, 20, row.accountCreatedAt());
                 });
     }
 
@@ -252,7 +258,8 @@ public class BulkLedgerCandidatePreparationService {
 
     private List<Row> snapshotPage(BulkLedgerImportJob job, BulkLedgerImportScope scope, long afterRow) {
         return jdbc.query("""
-                select source_row_no,reservation_reference_hmac,ticket_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id,source_changed_at,source_sequence,change_action,row_digest
+                select source_row_no,reservation_reference_hmac,ticket_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id,source_changed_at,source_sequence,change_action,row_digest,
+                    seat_zone,seat_row,seat_number,reserved_at,paid_at,cancelled_at,account_created_at
                 from td_bulk_import_staging_rows
                 where import_id=? and tenant_id=? and event_id=? and performance_id=? and source_row_no > ?
                 order by source_row_no limit ?
@@ -261,7 +268,8 @@ public class BulkLedgerCandidatePreparationService {
 
     private List<Row> changePage(BulkLedgerImportJob job, BulkLedgerImportScope scope, long afterSequence, long afterRow) {
         return jdbc.query("""
-                select source_row_no,reservation_reference_hmac,ticket_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id,source_changed_at,source_sequence,change_action,row_digest
+                select source_row_no,reservation_reference_hmac,ticket_reference_hmac,account_reference_hmac,hmac_key_version,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,source_event_id,source_changed_at,source_sequence,change_action,row_digest,
+                    seat_zone,seat_row,seat_number,reserved_at,paid_at,cancelled_at,account_created_at
                 from td_bulk_import_staging_rows
                 where import_id=? and tenant_id=? and event_id=? and performance_id=?
                   and (source_sequence > ? or (source_sequence = ? and source_row_no > ?))
@@ -273,7 +281,15 @@ public class BulkLedgerCandidatePreparationService {
         Timestamp changed = rs.getTimestamp(12);
         Long sequence = (Long) rs.getObject(13);
         return new Row(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getTimestamp(6).toLocalDateTime(),
-                rs.getInt(7), rs.getString(8), rs.getString(9), rs.getString(10), rs.getString(11), changed == null ? null : changed.toLocalDateTime(), sequence, rs.getString(14), rs.getString(15));
+                rs.getInt(7), rs.getString(8), rs.getString(9), rs.getString(10), rs.getString(11), changed == null ? null : changed.toLocalDateTime(),
+                sequence, rs.getString(14), rs.getString(15), rs.getString(16), rs.getString(17), rs.getString(18),
+                localDateTime(rs.getTimestamp(19)), localDateTime(rs.getTimestamp(20)), localDateTime(rs.getTimestamp(21)), localDateTime(rs.getTimestamp(22)));
+    }
+
+    private static java.time.LocalDateTime localDateTime(Timestamp value) { return value == null ? null : value.toLocalDateTime(); }
+    private static void timestampOrNull(java.sql.PreparedStatement statement, int index, java.time.LocalDateTime value) throws java.sql.SQLException {
+        if (value == null) statement.setNull(index, java.sql.Types.TIMESTAMP);
+        else statement.setTimestamp(index, Timestamp.valueOf(value));
     }
 
     private long scopeRowCount(BulkLedgerImportJob job, BulkLedgerImportScope scope) {
@@ -359,7 +375,9 @@ public class BulkLedgerCandidatePreparationService {
     private record Event(String digest, UUID candidateId, String versionStatus) { }
     private record Lease(UUID candidateId, long fence) { }
     private record Row(long rowNo, String reservation, String ticket, String account, String keyVersion, java.time.LocalDateTime purchasedAt, int quantity,
-                       String unit, String status, String sourceVersion, String eventId, java.time.LocalDateTime changedAt, Long sequence, String action, String digest) { }
+                       String unit, String status, String sourceVersion, String eventId, java.time.LocalDateTime changedAt, Long sequence, String action, String digest,
+                       String seatZone, String seatRow, String seatNumber, java.time.LocalDateTime reservedAt, java.time.LocalDateTime paidAt,
+                       java.time.LocalDateTime cancelledAt, java.time.LocalDateTime accountCreatedAt) { }
     private static final class CandidateRejected extends RuntimeException { private CandidateRejected(String code) { this.code = code; } private final String code; }
     private static final class CandidateLeaseLost extends RuntimeException { }
 }

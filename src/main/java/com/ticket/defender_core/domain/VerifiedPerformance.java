@@ -51,6 +51,12 @@ public class VerifiedPerformance {
     @Column(name = "verification_basis", nullable = false, length = 512)
     private String verificationBasis;
 
+    @Column(name = "performance_starts_at")
+    private LocalDateTime performanceStartsAt;
+
+    @Column(name = "supplier_per_account_limit")
+    private Integer supplierPerAccountLimit;
+
     @Column(name = "source_version", nullable = false, length = 128)
     private String sourceVersion;
 
@@ -94,6 +100,20 @@ public class VerifiedPerformance {
         this.verifiedAt = Objects.requireNonNull(verifiedAt);
         this.status = Status.ACTIVE;
         this.revision = 1;
+    }
+
+    public void registerSupplierStartTime(LocalDateTime startsAt) {
+        Objects.requireNonNull(startsAt);
+        if (performanceStartsAt != null && !performanceStartsAt.equals(startsAt))
+            throw new IllegalArgumentException("supplier performance start time conflicts with the registered value");
+        performanceStartsAt = startsAt;
+    }
+
+    public void registerSupplierAccountLimit(Integer limit) {
+        if (limit != null && limit < 1) throw new IllegalArgumentException("supplier account limit must be positive");
+        if (supplierPerAccountLimit != null && !supplierPerAccountLimit.equals(limit))
+            throw new IllegalArgumentException("supplier account limit conflicts with the registered value");
+        supplierPerAccountLimit = limit;
     }
 
     public void revise(String verificationBasis, String sourceVersion, UUID actorMembershipId, LocalDateTime now) {

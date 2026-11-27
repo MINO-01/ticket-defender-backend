@@ -14,7 +14,15 @@ public final class BulkLedgerImportDto {
 
     public record RegisterRequest(String schemaVersion, String sourceSystem, String sourceBatchId, String mode,
                                   String format, String declaredObjectSha256, Long declaredFileBytes,
-                                  Long declaredRowCount, Boolean completeSnapshot, List<ScopeRequest> scopes) { }
+                                  Long declaredRowCount, Boolean completeSnapshot, List<ScopeRequest> scopes,
+                                  String scopeKeyType, List<SupplierScopeRequest> supplierScopes) {
+        public RegisterRequest(String schemaVersion, String sourceSystem, String sourceBatchId, String mode,
+                String format, String declaredObjectSha256, Long declaredFileBytes, Long declaredRowCount,
+                Boolean completeSnapshot, List<ScopeRequest> scopes) {
+            this(schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256, declaredFileBytes,
+                    declaredRowCount, completeSnapshot, scopes, "TD_UUID", null);
+        }
+    }
     public record ScopeRequest(UUID eventId, UUID performanceId, OffsetDateTime scopeAsOf, Long declaredRowCount,
                                String cursorStart, String cursorEnd, Long sourceSequenceStart, Long sourceSequenceEnd) {
         public ScopeRequest(UUID eventId, UUID performanceId, OffsetDateTime scopeAsOf, Long declaredRowCount,
@@ -22,6 +30,13 @@ public final class BulkLedgerImportDto {
             this(eventId, performanceId, scopeAsOf, declaredRowCount, cursorStart, cursorEnd, null, null);
         }
     }
+    public record SupplierScopeRequest(String sourceEventCode, String sourcePerformanceCode, String eventTitle,
+            OffsetDateTime performanceStartsAt, Integer perAccountLimit, OffsetDateTime scopeAsOf,
+            Long declaredRowCount, String cursorStart, String cursorEnd, Long sourceSequenceStart,
+            Long sourceSequenceEnd) { }
+    public record SupplierScope(String sourceEventCode, String sourcePerformanceCode, String eventTitle,
+            OffsetDateTime performanceStartsAt, Integer perAccountLimit, long declaredRowCount,
+            UUID eventId, UUID performanceId, boolean eventCreated, boolean performanceCreated) { }
     public record Scope(UUID eventId, UUID performanceId, OffsetDateTime scopeAsOf, long declaredRowCount,
                         String cursorStart, String cursorEnd, Long sourceSequenceStart, Long sourceSequenceEnd) {
         public static Scope from(BulkLedgerImportScope value) {
@@ -34,7 +49,19 @@ public final class BulkLedgerImportDto {
                        long declaredFileBytes, long declaredRowCount, boolean completeSnapshot,
                        BulkLedgerImportJob.Status status, long processedRowCount, long acceptedRowCount,
                        long rejectedRowCount, List<Scope> scopes, OffsetDateTime createdAt, OffsetDateTime updatedAt,
-                       OffsetDateTime cancelledAt) { }
+                       OffsetDateTime cancelledAt, String scopeKeyType, List<SupplierScope> supplierScopes) {
+        public View(UUID importId, String schemaVersion, String sourceSystem, String sourceBatchId,
+                BulkLedgerImportJob.Mode mode, BulkLedgerImportJob.Format format, String declaredObjectSha256,
+                long declaredFileBytes, long declaredRowCount, boolean completeSnapshot,
+                BulkLedgerImportJob.Status status, long processedRowCount, long acceptedRowCount,
+                long rejectedRowCount, List<Scope> scopes, OffsetDateTime createdAt, OffsetDateTime updatedAt,
+                OffsetDateTime cancelledAt) {
+            this(importId, schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256,
+                    declaredFileBytes, declaredRowCount, completeSnapshot, status, processedRowCount,
+                    acceptedRowCount, rejectedRowCount, scopes, createdAt, updatedAt, cancelledAt,
+                    "TD_UUID", List.of());
+        }
+    }
     public record Error(long sequenceNo, String code, OffsetDateTime createdAt) {
         public static Error from(BulkLedgerImportError value) {
             return new Error(value.getSequenceNo(), value.getCode(), offset(value.getCreatedAt()));

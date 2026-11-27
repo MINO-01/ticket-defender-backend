@@ -45,6 +45,12 @@ class InvestigationReferenceCipherTest {
         RuntimeException unavailable = assertThrows(RuntimeException.class,
                 () -> cipher.decrypt(IMPORT, TENANT, EVENT, PERFORMANCE, 1, "t", "r", "a", oldVersion));
         assertTrue(unavailable.getMessage().contains("INVESTIGATION_REVEAL_KEY_VERSION_UNAVAILABLE"));
+
+        byte[] changedNonce = encrypted.nonce();
+        changedNonce[0] ^= 1;
+        var nonceTampered = new InvestigationReferenceCipher.Encrypted(encrypted.keyVersion(), changedNonce, encrypted.ciphertext());
+        assertThrows(RuntimeException.class,
+                () -> cipher.decrypt(IMPORT, TENANT, EVENT, PERFORMANCE, 1, "t", "r", "a", nonceTampered));
     }
 
     @Test

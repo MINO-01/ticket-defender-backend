@@ -20,6 +20,8 @@ CREATE TABLE td_investigation_reference_ciphertexts (
     UNIQUE KEY uk_td_investigation_reference_import_row (import_id, source_row_no),
     KEY idx_td_investigation_reference_member (tenant_id, event_id, performance_id, ledger_version_id, account_reference_hmac),
     KEY idx_td_investigation_reference_ticket (ledger_version_id, ticket_reference_hmac),
+    CONSTRAINT fk_td_investigation_reference_tenant FOREIGN KEY (tenant_id)
+        REFERENCES tenants (id) ON DELETE CASCADE,
     CONSTRAINT fk_td_investigation_reference_job FOREIGN KEY (import_id, tenant_id)
         REFERENCES td_bulk_import_jobs (id, tenant_id) ON DELETE CASCADE,
     CONSTRAINT fk_td_investigation_reference_event FOREIGN KEY (tenant_id, event_id)
@@ -46,6 +48,8 @@ CREATE TABLE td_investigation_reference_access_audit (
     PRIMARY KEY (id),
     KEY idx_td_investigation_access_audit_event (tenant_id, event_id, accessed_at),
     KEY idx_td_investigation_access_audit_actor (tenant_id, actor_subject, accessed_at),
+    CONSTRAINT fk_td_investigation_access_audit_tenant FOREIGN KEY (tenant_id)
+        REFERENCES tenants (id) ON DELETE CASCADE,
     CONSTRAINT fk_td_investigation_access_audit_event FOREIGN KEY (tenant_id, event_id)
         REFERENCES events (tenant_id, id) ON DELETE CASCADE,
     CONSTRAINT chk_td_investigation_access_audit_values CHECK (

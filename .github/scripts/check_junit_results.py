@@ -52,7 +52,7 @@ CORE_SKIPS = {
         6, "Runs candidate generation, recovery and change-feed checks in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerPublicationMySqlTest": (
-        6, "Runs atomic publication, candidate-path, rollback and concurrency checks in the isolated MySQL CI job"
+        7, "Runs atomic publication, candidate-path, rollback, concurrency and PR 7 ciphertext cleanup checks in the isolated MySQL CI job"
     ),
     "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest": (
         1, "Runs the 50,000-row upload and staging path in the isolated MinIO and MySQL CI job"
@@ -354,7 +354,7 @@ MYSQL_SUITES = {
         "com.ticket.defender_core.integration.BulkLedgerCandidatePreparationMySqlTest", 6
     ),
     "bulk-ledger-publication-mysql": (
-        "com.ticket.defender_core.integration.BulkLedgerPublicationMySqlTest", 6
+        "com.ticket.defender_core.integration.BulkLedgerPublicationMySqlTest", 7
     ),
     "bulk-ledger-staging-minio-mysql": (
         "com.ticket.defender_core.integration.BulkLedgerStagingMinioMySqlTest", 1

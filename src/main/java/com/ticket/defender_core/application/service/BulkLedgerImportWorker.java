@@ -30,7 +30,7 @@ public class BulkLedgerImportWorker {
     private final BulkLedgerImportErrorRepository errors;
     private final SyntheticReservationImportGate gate;
     private final BulkLedgerUploadStorage storage;
-    private final BulkLedgerCsvStagingParser parser = new BulkLedgerCsvStagingParser();
+    private final BulkLedgerCsvStagingParser parser;
     private final BulkLedgerStagingWriter staging;
     private final BulkLedgerCandidatePreparationService candidates;
     private final TransactionTemplate transactions;
@@ -42,16 +42,26 @@ public class BulkLedgerImportWorker {
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
             BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions) {
-        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, null, null, null);
+        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, null, null, null,
+                new BulkLedgerCsvStagingParser());
+    }
+
+    public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
+            SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
+            BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions,
+            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers, BulkLedgerUploadDeletionService deletions) {
+        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, rawIntake, signalHashers, deletions,
+                new BulkLedgerCsvStagingParser());
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
             BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions,
-            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers, BulkLedgerUploadDeletionService deletions) {
+            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers,
+            BulkLedgerUploadDeletionService deletions, BulkLedgerCsvStagingParser parser) {
         this.jobs = jobs; this.scopes = scopes; this.errors = errors; this.gate = gate; this.storage = storage; this.staging = staging; this.candidates = candidates; this.transactions = transactions;
-        this.rawIntake = rawIntake; this.signalHashers = signalHashers; this.deletions = deletions;
+        this.rawIntake = rawIntake; this.signalHashers = signalHashers; this.deletions = deletions; this.parser = parser;
     }
 
     public void process(UUID importId) {
@@ -85,7 +95,7 @@ public class BulkLedgerImportWorker {
             BulkLedgerStagingWriter.Session stagingSession = staging.open(importId, lease.tenantId(), lease.fence());
             BulkLedgerCsvStagingParser.Result result;
             try (InputStream source = storage.openVersion(objectKey(importId), lease.objectVersion())) {
-                result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account,
+                result = parser.parse(importId, source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account,
                         rawSignals, stagingSession::accept);
             }
             stagingSession.finish();
@@ -156,6 +166,7 @@ public class BulkLedgerImportWorker {
     }
     private void rejected(UUID importId, long fence, BulkLedgerCsvValidationException error) {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow();
+        staging.deleteEncryptedForImport(importId);
         long processed = Math.max(0, error.rowNumber() - 2); long rejected = processed > 0 ? 1 : 0;
         job.reject(fence, processed, rejected, LocalDateTime.now(ZoneOffset.UTC)); jobs.saveAndFlush(job);
         // Error rows intentionally contain only a row number and bounded code, never a source value.

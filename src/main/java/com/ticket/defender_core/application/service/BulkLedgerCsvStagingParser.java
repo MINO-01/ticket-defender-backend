@@ -5,6 +5,8 @@ import com.ticket.defender_core.domain.BulkLedgerImportScope;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -24,8 +26,10 @@ import java.util.UUID;
 
 /**
  * Bounded, forward-only CSV parser. UTF-8 BOM is accepted once; all other malformed input is rejected.
- * It deliberately sends one row at a time to its consumer and never retains the source CSV or plain identifiers.
+ * It sends one row at a time to its consumer and never retains the source CSV or plain identifiers. If PR 7 is enabled,
+ * the three approved references are immediately encrypted and only their ciphertext leaves this parser.
  */
+@Component
 public final class BulkLedgerCsvStagingParser {
     private static final int MAX_FIELD_LENGTH = 512;
     private static final int MAX_RECORD_CHARS = 8 * 1024;
@@ -42,7 +46,17 @@ public final class BulkLedgerCsvStagingParser {
                             String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
                             int ticketQuantity, String quantityUnit, String ticketStatus, String sourceVersion,
                             String sourceEventId, LocalDateTime sourceChangedAt, Long sourceSequence,
-                            String changeAction, String rowDigest, RawSignals signals) {
+                            String changeAction, String rowDigest, RawSignals signals,
+                            InvestigationReferenceCipher.Encrypted encryptedReferences) {
+        public ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
+                         String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
+                         int ticketQuantity, String quantityUnit, String ticketStatus, String sourceVersion,
+                         String sourceEventId, LocalDateTime sourceChangedAt, Long sourceSequence,
+                         String changeAction, String rowDigest, RawSignals signals) {
+            this(rowNumber, eventId, performanceId, reservationToken, ticketToken, accountToken, keyVersion, purchasedAt,
+                    ticketQuantity, quantityUnit, ticketStatus, sourceVersion, sourceEventId, sourceChangedAt, sourceSequence,
+                    changeAction, rowDigest, signals, null);
+        }
         public ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                          String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
                          int ticketQuantity, String quantityUnit, String ticketStatus, String sourceVersion,
@@ -50,13 +64,13 @@ public final class BulkLedgerCsvStagingParser {
                          String changeAction, String rowDigest) {
             this(rowNumber, eventId, performanceId, reservationToken, ticketToken, accountToken, keyVersion, purchasedAt,
                     ticketQuantity, quantityUnit, ticketStatus, sourceVersion, sourceEventId, sourceChangedAt, sourceSequence,
-                    changeAction, rowDigest, null);
+                    changeAction, rowDigest, null, null);
         }
         public ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                          String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
                          int ticketQuantity, String sourceEventId, LocalDateTime sourceChangedAt, String changeAction, String rowDigest) {
             this(rowNumber, eventId, performanceId, reservationToken, ticketToken, accountToken, keyVersion, purchasedAt,
-                    ticketQuantity, null, null, null, sourceEventId, sourceChangedAt, null, changeAction, rowDigest, null);
+                    ticketQuantity, null, null, null, sourceEventId, sourceChangedAt, null, changeAction, rowDigest, null, null);
         }
     }
     /** v3 행의 HMAC 토큰과 출처 표시입니다. 원본 값은 담지 않습니다. */
@@ -65,6 +79,15 @@ public final class BulkLedgerCsvStagingParser {
                              String ipNetworkType, String ipNetworkTypeSource) { }
     public record Result(long rows) { }
     @FunctionalInterface public interface RowConsumer { void accept(ParsedRow row); }
+
+    private final InvestigationReferenceCipher referenceCipher;
+
+    public BulkLedgerCsvStagingParser() { this.referenceCipher = null; }
+
+    @Autowired
+    public BulkLedgerCsvStagingParser(InvestigationReferenceCipher referenceCipher) {
+        this.referenceCipher = referenceCipher;
+    }
 
     public Result parse(InputStream input, BulkLedgerImportJob.Mode mode, UUID tenantId,
                         List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
@@ -81,6 +104,13 @@ public final class BulkLedgerCsvStagingParser {
     }
 
     public Result parse(InputStream input, String schemaVersion, BulkLedgerImportJob.Mode mode, UUID tenantId,
+                        List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
+                        TenantPurposeReferenceHasher ticketHasher, TenantPurposeReferenceHasher accountHasher,
+                        BulkLedgerRawSignalHashers signalHashers, RowConsumer consumer) {
+        return parse(null, input, schemaVersion, mode, tenantId, scopes, reservationHasher, ticketHasher, accountHasher, signalHashers, consumer);
+    }
+
+    public Result parse(UUID importId, InputStream input, String schemaVersion, BulkLedgerImportJob.Mode mode, UUID tenantId,
                         List<BulkLedgerImportScope> scopes, TenantPurposeReferenceHasher reservationHasher,
                         TenantPurposeReferenceHasher ticketHasher, TenantPurposeReferenceHasher accountHasher,
                         BulkLedgerRawSignalHashers signalHashers, RowConsumer consumer) {
@@ -140,6 +170,9 @@ public final class BulkLedgerCsvStagingParser {
                 RawSignals signals = v3 ? signals(record, indexes, rowNumber, tenantId, signalHashers) : null;
                 String reservationToken = reservationHasher.hash(tenantId, reservation), ticketToken = ticketHasher.hash(tenantId, ticket);
                 String accountToken = account == null ? null : accountHasher.hash(tenantId, account);
+                InvestigationReferenceCipher.Encrypted encryptedReferences = referenceCipher == null || importId == null ? null
+                        : referenceCipher.encrypt(importId, tenantId, event, performance, rowNumber, ticketToken,
+                                reservationToken, accountToken, account, reservation, ticket);
                 String digest = v3
                         ? CandidatePipelineSupport.sha256("BULK_CSV_V3", event.toString(), performance.toString(), reservationToken, ticketToken,
                                 String.valueOf(accountToken), reservationHasher.keyVersion(), purchasedAt.toString(), Integer.toString(quantity),
@@ -158,7 +191,7 @@ public final class BulkLedgerCsvStagingParser {
                                 String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(changeAction));
                 consumer.accept(new ParsedRow(rowNumber, event, performance, reservationToken, ticketToken, accountToken,
                         reservationHasher.keyVersion(), purchasedAt, quantity, quantityUnit, ticketStatus, sourceVersion,
-                        sourceEventId, sourceChangedAt, sourceSequence, changeAction, digest, signals));
+                        sourceEventId, sourceChangedAt, sourceSequence, changeAction, digest, signals, encryptedReferences));
             }
             for (BulkLedgerImportScope scope : scopes)
                 if (scopeRows.getOrDefault(key(scope.getEventId(), scope.getPerformanceId()), 0L) != scope.getDeclaredRowCount())

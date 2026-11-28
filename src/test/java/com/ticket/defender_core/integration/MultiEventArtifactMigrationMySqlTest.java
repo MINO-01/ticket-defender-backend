@@ -17,6 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MultiEventArtifactMigrationMySqlTest {
     private static final String[] MIGRATIONS = {
             "bulk-ledger-score-v2-exp2-signal-migration.sql",
+            // E2 retention metadata depends on v3 staging and the exp2-extended signal table.
+            "bulk-ledger-exp3-resource-retention-migration.sql",
             "multi-event-investigation-migration.sql",
             "multi-event-quantity-snapshot-migration.sql",
             "multi-event-source-binding-migration.sql",
@@ -47,10 +49,13 @@ class MultiEventArtifactMigrationMySqlTest {
         assertThat(count(jdbc, "evidence_snapshots")).isEqualTo(snapshotRowsBeforeW11);
 
         assertColumns(jdbc, "td_bulk_ledger_track1_ticket_signals",
-                "refund_account_hmac", "phone_hmac", "ip_network_type");
+                "refund_account_hmac", "phone_hmac", "ip_network_type",
+                "device_observed_at", "refund_account_observed_at");
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "refund_account_hmac");
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "phone_hmac");
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "ip_network_type");
+        assertColumns(jdbc, "td_bulk_import_staging_rows", "device_observed_at", "refund_account_observed_at");
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.tables where table_schema=database() and table_name='td_exp3_resource_retention_policies'", Integer.class)).isEqualTo(1);
         assertColumns(jdbc, "td_multi_event_investigation_runs", "data_job_id", "artifact_id",
                 "artifact_object_version", "artifact_sha256", "artifact_record_count", "artifact_cancelled_ticket_count",
                 "exp3_quantity_artifact_id", "exp3_quantity_artifact_object_version", "exp3_quantity_artifact_sha256",

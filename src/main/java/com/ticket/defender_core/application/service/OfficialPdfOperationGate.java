@@ -131,6 +131,7 @@ public class OfficialPdfOperationGate {
                     && evidenceAfter(source.getFanReportId(), source.getEvidenceId(), registeredAt);
             case LISTING_CANDIDATE_MATCH -> fanReportAfter(target, source.getFanReportId(), registeredAt)
                     && evidenceAfter(source.getFanReportId(), source.getEvidenceId(), registeredAt);
+            case MULTI_EVENT_CANDIDATE -> notBefore(source.getMultiEventCompletedAt(), registeredAt);
         };
     }
 

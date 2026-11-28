@@ -49,6 +49,7 @@ public class CaseService {
     private final CaseWriteService writer;
     private final CaseRepository cases;
     private final CaseSourceReferenceRepository sources;
+    private final MultiEventCaseSourceVerifier multiEventCandidates;
     private final ListingCandidateMatchRunRepository candidateRuns;
     private final CandidateRunApplicability candidateApplicability;
     private final Track1CandidateLinkService track1CandidateLinks;
@@ -58,12 +59,23 @@ public class CaseService {
 
     public CaseDto.View create(CaseDto.Create input, String key) {
         if (input == null || input.eventId() == null || input.type() == null) throw invalid();
+        if (size(input.graphClusters()) + size(input.fanReportIds()) + size(input.evidenceIds())
+                + size(input.candidateRunIds()) + size(input.multiEventCandidates()) > 30) throw invalid();
         if ((input.graphClusters() != null && input.graphClusters().stream().anyMatch(Objects::isNull))
                 || (input.fanReportIds() != null && input.fanReportIds().stream().anyMatch(Objects::isNull))
                 || (input.evidenceIds() != null && input.evidenceIds().stream().anyMatch(Objects::isNull))
-                || (input.candidateRunIds() != null && input.candidateRunIds().stream().anyMatch(Objects::isNull)))
+                || (input.candidateRunIds() != null && input.candidateRunIds().stream().anyMatch(Objects::isNull))
+                || (input.multiEventCandidates() != null
+                && input.multiEventCandidates().stream().anyMatch(Objects::isNull)))
             throw invalid();
         AdminActor actor = access.requireEventAccess(input.eventId(), CREATE_ROLES);
+        if (input.multiEventCandidates() != null) {
+            input.multiEventCandidates().forEach(source -> {
+                if (source == null) throw invalid();
+                multiEventCandidates.requireCreatable(actor.tenantId(), input.eventId(),
+                        source.runId(), source.candidateId());
+            });
+        }
         UUID memberId = memberships.actor(actor).getId();
         Prepared prepared = prepare(key, canonical(input));
         CaseDto.View replay = replay(actor.tenantId(), actor.eventId(), memberId,
@@ -145,8 +157,14 @@ public class CaseService {
 
     @Transactional(readOnly = true)
     public List<CaseDto.Source> sources(UUID caseId) {
-        authorizedForView(caseId);
-        return sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId).stream()
+        Case target = authorizedForView(caseId);
+        List<com.ticket.defender_core.domain.CaseSourceReference> sourceRows =
+                sources.findByCaseIdOrderByLinkedAtAscIdAsc(caseId);
+        sourceRows.stream().filter(source -> source.getSourceType()
+                == com.ticket.defender_core.domain.CaseSourceReference.Type.MULTI_EVENT_CANDIDATE)
+                .forEach(source -> multiEventCandidates.requireReadable(target,
+                        source.getMultiEventRunId(), source.getMultiEventCandidateId()));
+        return sourceRows.stream()
                 .map(source -> CaseDto.Source.from(source, source.getSourceType()
                         == com.ticket.defender_core.domain.CaseSourceReference.Type.LISTING_CANDIDATE_MATCH
                         ? candidateRuns.findById(source.getListingCandidateMatchRunId())
@@ -208,7 +226,13 @@ public class CaseService {
                 : input.evidenceIds().stream().sorted().toList();
         List<UUID> candidates = input.candidateRunIds() == null ? null
                 : input.candidateRunIds().stream().sorted().toList();
-        return new CaseDto.Create(input.eventId(), input.type(), graph, reports, assets, candidates,
+        List<CaseDto.MultiEventCandidate> multiEvent = input.multiEventCandidates() == null ? null
+                : input.multiEventCandidates().stream()
+                .sorted(Comparator.comparing(CaseDto.MultiEventCandidate::runId,
+                        Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(CaseDto.MultiEventCandidate::candidateId,
+                                Comparator.nullsFirst(String::compareTo))).toList();
+        return new CaseDto.Create(input.eventId(), input.type(), graph, reports, assets, candidates, multiEvent,
                 input.reason(), input.relatedCaseId(), input.relationReason());
     }
 
@@ -240,6 +264,10 @@ public class CaseService {
     private static void page(int page, int size) {
         if (page < 0 || size < 1 || size > 100 || (long) page * size > Integer.MAX_VALUE)
             throw new CaseApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
+    }
+
+    private static int size(List<?> values) {
+        return values == null ? 0 : values.size();
     }
 
     private static CaseApiException notFound() {

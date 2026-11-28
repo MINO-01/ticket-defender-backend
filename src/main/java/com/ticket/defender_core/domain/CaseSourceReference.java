@@ -26,7 +26,8 @@ import java.util.UUID;
 }, uniqueConstraints = @UniqueConstraint(name = "uk_case_sources_case_key",
         columnNames = {"case_id", "source_key_digest"}))
 public class CaseSourceReference {
-    public enum Type { STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET, LISTING_CANDIDATE_MATCH }
+    public enum Type { STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET, LISTING_CANDIDATE_MATCH,
+        MULTI_EVENT_CANDIDATE }
 
     @Id @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "id", length = 36, nullable = false)
     private UUID id;
@@ -96,6 +97,12 @@ public class CaseSourceReference {
     private Integer candidateCount;
     @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "candidate_id", length = 36)
     private UUID candidateId;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "multi_event_run_id", length = 36)
+    private UUID multiEventRunId;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(name = "multi_event_candidate_id", length = 70)
+    private String multiEventCandidateId;
+    @Column(name = "multi_event_completed_at")
+    private LocalDateTime multiEventCompletedAt;
     @Column(name = "linked_at", nullable = false)
     private LocalDateTime linkedAt;
 
@@ -165,6 +172,16 @@ public class CaseSourceReference {
         ref.candidateReason = run.getReason().name();
         ref.candidateCount = run.getCandidateCount();
         ref.candidateId = run.getCandidateId();
+        return ref;
+    }
+
+    public static CaseSourceReference multiEventCandidate(Case target, String digest, UUID runId,
+            String candidateId, LocalDateTime completedAt, LocalDateTime now) {
+        CaseSourceReference ref = new CaseSourceReference(target.getId(), target.getTenantId(),
+                target.getEventId(), Type.MULTI_EVENT_CANDIDATE, digest, now);
+        ref.multiEventRunId = runId;
+        ref.multiEventCandidateId = candidateId;
+        ref.multiEventCompletedAt = completedAt;
         return ref;
     }
 }

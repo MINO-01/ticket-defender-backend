@@ -42,6 +42,31 @@ class CaseOpenApiContractTest {
         verifyLocalReferences(document, document);
     }
 
+    @Test
+    void multiEventCandidateCaseSourceIsExplicitAndRunsInTheOrderedMysqlSuite() throws IOException {
+        Map<?, ?> document;
+        try (var input = Files.newInputStream(SPEC)) {
+            document = (Map<?, ?>) new Yaml().load(input);
+        }
+        Map<?, ?> schemas = (Map<?, ?>) ((Map<?, ?>) document.get("components")).get("schemas");
+        Map<?, ?> create = (Map<?, ?>) schemas.get("CreateCase");
+        Map<?, ?> createProperties = (Map<?, ?>) create.get("properties");
+        assertThat(createProperties.keySet().stream().map(Object::toString).toList())
+                .contains("multiEventCandidates");
+        Map<?, ?> source = (Map<?, ?>) schemas.get("CaseSource");
+        Map<?, ?> sourceProperties = (Map<?, ?>) source.get("properties");
+        assertThat(sourceProperties.get("sourceType").toString()).contains("MULTI_EVENT_CANDIDATE");
+        assertThat(sourceProperties.keySet().stream().map(Object::toString).toList())
+                .contains("multiEventRunId", "multiEventCandidateId", "multiEventCompletedAt");
+
+        String migrationTest = Files.readString(Path.of(
+                "src/test/java/com/ticket/defender_core/integration/MultiEventArtifactMigrationMySqlTest.java"));
+        assertThat(migrationTest).contains("case-w11-multi-event-candidate-source-migration.sql");
+        String suite = Files.readString(Path.of(".github/scripts/run_ci_suite.sh"));
+        assertThat(suite.indexOf("run_test multi-event-artifact-migration"))
+                .isLessThan(suite.indexOf("run_test case-w10-candidate-source-schema"));
+    }
+
     private static void verifyLocalReferences(Object value, Map<?, ?> document) {
         if (value instanceof Map<?, ?> map) {
             if (map.get("$ref") instanceof String reference) {

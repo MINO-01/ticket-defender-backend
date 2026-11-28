@@ -75,8 +75,7 @@ class MultiEventMultiPerformanceTest {
 
         assertThat(accepted.status()).isEqualTo("PENDING");
         assertThat(updates.getFirst()).contains("score_version").doesNotContain("multi-event-recurrence");
-        assertThat(updateArguments.getFirst()).hasSize(1);
-        assertThat((Object[]) updateArguments.getFirst()[0])
+        assertThat(updateArguments.getFirst())
                 .contains(MultiEventInvestigationService.SCORE_VERSION);
         assertThat(updates.stream().filter(sql -> sql.contains("td_multi_event_investigation_scopes"))).hasSize(2);
     }

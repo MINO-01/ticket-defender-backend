@@ -113,6 +113,42 @@ class MultiEventMultiPerformanceTest {
     }
 
     @Test
+    void exp3CandidateAcceptsSinglePerformanceRebookingEvidenceWithoutLegacyRelationshipRows() {
+        var score = new MultiEventAnalysisDto.ScoreBreakdown(.30,.68,.25,.50,0.0,.051,"NEUTRAL_NO_POLICY","UNKNOWN");
+        var reason = new MultiEventAnalysisDto.EvidenceReason("REBOOK_CHAIN",2,List.of(PERFORMANCE_A.toString()),1);
+        var candidate = new MultiEventAnalysisDto.CandidateSummary("multi-"+"d".repeat(64),"LOW",
+                MultiEventInvestigationService.EXP3_SCORE_VERSION,MultiEventInvestigationService.EXP3_PROJECTION_VERSION,
+                2,1,1,0,List.of(scopeA()),List.of("REBOOK_CHAIN"),List.of(),List.of(),List.of(),score,
+                "multi-"+"d".repeat(64),null,0,score.score(),List.of(reason));
+        var scopes=Map.of("event-1|"+PERFORMANCE_A+"|"+VERSION_A+"|batch-a",scopeA());
+
+        assertThatCode(() -> service.validateCandidateSummary(candidate,scopes,MultiEventInvestigationService.EXP3_SCORE_VERSION))
+                .doesNotThrowAnyException();
+        assertThat(MultiEventInvestigationService.relationshipSignalsConsistent(Set.of(),candidate)).isTrue();
+    }
+
+    @Test
+    void exp3MemberEvidenceAllowsHighQuantityWithoutPeerRelationships() {
+        var candidateReason = new MultiEventAnalysisDto.EvidenceReason("HIGH_QUANTITY",1,
+                List.of(PERFORMANCE_A.toString(),PERFORMANCE_B.toString()),1);
+        var memberReason = new MultiEventAnalysisDto.MemberEvidenceReason("HIGH_QUANTITY",0,
+                List.of(PERFORMANCE_A.toString(),PERFORMANCE_B.toString()));
+
+        assertThatCode(() -> service.validateMemberEvidence(List.of(memberReason),List.of(candidateReason),2,List.of(scopeA(),scopeB())))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void exp3ModelOptionFailsClosedUntilAllInputFlagsAreEnabled() {
+        var options=service.availableModels(EVENT);
+
+        assertThat(options).hasSize(2);
+        assertThat(options.get(0).enabled()).isTrue();
+        assertThat(options.get(1).scoreVersion()).isEqualTo(MultiEventInvestigationService.EXP3_SCORE_VERSION);
+        assertThat(options.get(1).enabled()).isFalse();
+    }
+
+    @Test
     void candidateSummaryRejectsRecurrenceComputedFromEventCountAndUnknownSignals() {
         // 회차 2개, event 1개에서 event 수로 계산한 R(0)은 사전 등록 정의와 다릅니다.
         var eventBased = candidate(1, 2, List.of("device_id_hash"), List.of(), 0.0);

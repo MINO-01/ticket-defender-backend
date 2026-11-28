@@ -67,6 +67,9 @@ public class MultiEventInvestigationService {
         """;
     /** 회차 수로 R을 계산하는 다회차 후보 모델입니다. */
     public static final String SCORE_VERSION="score-v2-exp2-multi-performance-recurrence";
+    public static final String EXP3_SCORE_VERSION="score-v3-exp3-continuity";
+    public static final String EXP3_PROJECTION_VERSION="projection-v3-exp3-continuity-ipwindow-2offset";
+    static final String EXP2_PROJECTION_VERSION="projection-v2.2-exp2-ipwindow-softhub";
     /** event 수로 R을 계산하던 퇴역 모델입니다. 저장된 실행은 읽기만 하고 다시 실행하지 않습니다. */
     public static final String RETIRED_SCORE_VERSION="score-v2-exp2-multi-event-recurrence";
     static final String COCLUSTER="stable_account_cocluster";
@@ -75,9 +78,12 @@ public class MultiEventInvestigationService {
     static final Set<String> IP_NETWORK_TYPES=Set.of("RESIDENTIAL","CORPORATE_EDU","DATACENTER_PROXY","UNKNOWN","MOBILE_CGNAT");
     static final Set<String> EXP2_SIGNALS=Set.of("refund_account_hash","phone_hash","device_id_hash","address_hash","payment_hash",
             "ip_window:RESIDENTIAL","ip_window:CORPORATE_EDU","ip_window:DATACENTER_PROXY","ip_window:UNKNOWN","ip_window:MOBILE_CGNAT");
+    static final Set<String> EXP3_SIGNALS=Set.of("refund_account_hash","phone_hash","device_id_hash","address_hash","payment_hash",
+            "ip_window:RESIDENTIAL","ip_window:CORPORATE_EDU","ip_window:DATACENTER_PROXY","ip_window:UNKNOWN","ip_window:MOBILE_CGNAT",
+            "REBOOK_CHAIN","RESOURCE_CONTINUITY");
     private static final Set<String> EVIDENCE_REASON_CODES=Set.of("SHARED_REFUND_ACCOUNT","SHARED_PHONE","SHARED_DEVICE",
-            "SHARED_ADDRESS","IP_SAME_WINDOW","REPEATED_PERFORMANCES");
-    static final Set<String> UNAVAILABLE_SIGNALS=Set.of("refund_account_hash","phone_hash","device_id_hash","address_hash","payment_hash","ip_window");
+            "SHARED_ADDRESS","IP_SAME_WINDOW","REPEATED_PERFORMANCES","REBOOK_CHAIN","RESOURCE_CONTINUITY","HIGH_QUANTITY");
+    static final Set<String> UNAVAILABLE_SIGNALS=Set.of("refund_account_hash","phone_hash","device_id_hash","address_hash","payment_hash","ip_window","E2_RESOURCE_RETENTION_UNVERIFIED");
     static final int IP_WINDOW_SECONDS=600;
     /**
      * Data의 {@code ip_window_token}과 같은 600초 구간입니다. Data는 UTC 구매 시각의 정수 epoch 초를 600으로 나눈 몫을 쓰며,
@@ -92,7 +98,7 @@ public class MultiEventInvestigationService {
 
     private final JdbcTemplate jdbc; private final TransactionTemplate tx; private final CandidatePipelineAccess access; private final FastApiAdapter data;
     private final BulkLedgerUploadStorage storage;
-    private final boolean enabled; private final boolean cancelledTicketTransferEnabled; private final boolean exp3QuantityEvidenceEnabled;
+    private final boolean enabled; private final boolean cancelledTicketTransferEnabled; private final boolean exp3QuantityEvidenceEnabled; private final boolean exp3ModelEnabled;
     private final Set<String> approvedSupplierNamespaces; private final ObjectMapper json=JsonMapper.builder().build();
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long maxArtifactBytes=DEFAULT_MAX_ARTIFACT_BYTES;
     @Autowired
@@ -101,27 +107,29 @@ public class MultiEventInvestigationService {
             @Value("${ticket-defender.multi-event-investigation.enabled:false}") boolean enabled,
             @Value("${ticket-defender.multi-event-investigation.approved-supplier-namespaces:}") String approvedSupplierNamespaces,
             @Value("${ticket-defender.bulk-ledger-upload.cancelled-ticket-transfer.enabled:false}") boolean cancelledTicketTransferEnabled,
-            @Value("${ticket-defender.multi-event-investigation.exp3-quantity-evidence.enabled:false}") boolean exp3QuantityEvidenceEnabled){
+            @Value("${ticket-defender.multi-event-investigation.exp3-quantity-evidence.enabled:false}") boolean exp3QuantityEvidenceEnabled,
+            @Value("${ticket-defender.multi-event-investigation.exp3.enabled:false}") boolean exp3ModelEnabled){
         this.jdbc=jdbc;this.tx=tx;this.access=access;this.data=data;this.storage=storage;this.enabled=enabled;
         this.cancelledTicketTransferEnabled=cancelledTicketTransferEnabled;
         this.exp3QuantityEvidenceEnabled=exp3QuantityEvidenceEnabled;
+        this.exp3ModelEnabled=exp3ModelEnabled;
         this.approvedSupplierNamespaces=approvedSupplierNamespaces==null?Set.of():java.util.Arrays.stream(approvedSupplierNamespaces.split(","))
                 .map(String::trim).filter(value->!value.isEmpty()).collect(Collectors.toUnmodifiableSet());
     }
 
     MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             boolean enabled,String approvedSupplierNamespaces){
-        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,false,false);
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,false,false,false);
     }
 
     MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             boolean enabled,String approvedSupplierNamespaces,boolean cancelledTicketTransferEnabled){
-        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,cancelledTicketTransferEnabled,false);
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,cancelledTicketTransferEnabled,false,false);
     }
 
     MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             boolean enabled,String approvedSupplierNamespaces,boolean cancelledTicketTransferEnabled,boolean exp3QuantityEvidenceEnabled){
-        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,cancelledTicketTransferEnabled,exp3QuantityEvidenceEnabled);
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,cancelledTicketTransferEnabled,exp3QuantityEvidenceEnabled,false);
     }
 
     @Scheduled(fixedDelayString="${ticket-defender.multi-event-investigation.worker-delay:PT30S}") public void scheduled(){if(enabled){expireExhaustedLeases();consumeOne();}}
@@ -130,7 +138,7 @@ public class MultiEventInvestigationService {
         Claim claim=tx.execute(x->claim());
         if(claim==null)return;
         try {
-            if(!SCORE_VERSION.equals(runInput(claim).scoreVersion())) throw new Blocked("SCORE_VERSION_RETIRED");
+            if(!Set.of(SCORE_VERSION,EXP3_SCORE_VERSION).contains(runInput(claim).scoreVersion())) throw new Blocked("SCORE_VERSION_RETIRED");
             if(claim.dataJobId()==null){
                 if(claim.artifactId()==null) prepareArtifact(claim);
                 else registerArtifact(claim);
@@ -181,20 +189,44 @@ public class MultiEventInvestigationService {
         if(!approvedSupplierNamespaces.contains(supplier)) throw incomplete("MULTI_EVENT_SUPPLIER_NOT_APPROVED");
         if(scopes.stream().anyMatch(scope->scope.sourceBatchId()==null||scope.sourceBatchId().isBlank())) throw incomplete("MULTI_EVENT_SOURCE_BATCH_UNAVAILABLE");
         IdentityContract contract=identity(scopes); if(contract==null) throw incomplete("MULTI_EVENT_IDENTITY_CONTRACT_UNAVAILABLE");
+        String scoreVersion=input.scoreVersion()==null?SCORE_VERSION:input.scoreVersion();
+        String projectionVersion=projectionVersion(scoreVersion);
+        if(projectionVersion==null)throw invalid();
+        if(EXP3_SCORE_VERSION.equals(scoreVersion)){
+            if(!exp3ModelEnabled)throw incomplete("EXP3_ANALYSIS_DISABLED");
+            if(!cancelledTicketTransferEnabled||!exp3QuantityEvidenceEnabled)
+                throw incomplete("EXP3_INPUT_CONTRACT_DISABLED");
+        }
         String canonical=canonicalLedgerVersionRows(scopes);
         String ledgerDigest=CandidatePipelineSupport.sha256("MEI_LEDGER_VERSION_SET",canonical);
         String policySnapshotSet=scopes.stream().sorted(Comparator.comparing((Scope s)->s.eventId().toString()).thenComparing(s->s.performanceId().toString())).map(s->s.eventId()+"|"+s.performanceId()+"|"+(s.policySnapshotId()==null?"UNAVAILABLE":s.policySnapshotId())).reduce((a,b)->a+"\n"+b).orElse("");
-        String requestDigest=CandidatePipelineSupport.sha256("MEI_REQUEST",ledgerDigest,policySnapshotSet,supplier,contract.purpose(),contract.keyVersion(),input.analysisStartAt().toInstant().toString(),input.analysisEndAt().toInstant().toString(),SCORE_VERSION,"projection-v2.2-exp2-ipwindow-softhub");
+        String requestDigest=CandidatePipelineSupport.sha256("MEI_REQUEST",ledgerDigest,policySnapshotSet,supplier,contract.purpose(),contract.keyVersion(),input.analysisStartAt().toInstant().toString(),input.analysisEndAt().toInstant().toString(),scoreVersion,projectionVersion);
         String keyDigest=CandidatePipelineSupport.sha256("MEI_IDEMPOTENCY",first.tenantId().toString(),first.membershipId().toString(),idempotencyKey);
         OffsetDateTime analysisAsOf=OffsetDateTime.now(ZoneOffset.UTC);
         return tx.execute(status->{
             List<Existing> existing=jdbc.query("select id,request_digest,status from td_multi_event_investigation_runs where tenant_id=? and requester_membership_id=? and idempotency_key_digest=?",(rs,n)->new Existing(uuid(rs.getString(1)),rs.getString(2),rs.getString(3)),first.tenantId().toString(),first.membershipId().toString(),keyDigest);
             if(!existing.isEmpty()) { Existing replay=existing.getFirst(); if(!requestDigest.equals(replay.requestDigest())) throw incomplete("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST"); return new Accepted(replay.id(),true,replay.status()); }
             UUID run=UUID.randomUUID();
-            jdbc.update("insert into td_multi_event_investigation_runs(id,tenant_id,requester_membership_id,idempotency_key_digest,request_digest,ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at,status,created_at,updated_at) values(?,?,?,?,?,?,?,'TRACK1_CONNECTION',?,'score-v2-exp2-multi-performance-recurrence','projection-v2.2-exp2-ipwindow-softhub',?,?,?,'PENDING',utc_timestamp(6),utc_timestamp(6))",run.toString(),first.tenantId().toString(),first.membershipId().toString(),keyDigest,requestDigest,ledgerDigest,supplier,contract.keyVersion(),java.sql.Timestamp.from(analysisAsOf.toInstant()),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
+            jdbc.update("insert into td_multi_event_investigation_runs(id,tenant_id,requester_membership_id,idempotency_key_digest,request_digest,ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at,status,created_at,updated_at) values(?,?,?,?,?,?,?,'TRACK1_CONNECTION',?,?,?,?,?,?,'PENDING',utc_timestamp(6),utc_timestamp(6))",run.toString(),first.tenantId().toString(),first.membershipId().toString(),keyDigest,requestDigest,ledgerDigest,supplier,contract.keyVersion(),scoreVersion,projectionVersion,java.sql.Timestamp.from(analysisAsOf.toInstant()),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
             for(Scope value:scopes) jdbc.update("insert into td_multi_event_investigation_scopes(run_id,tenant_id,event_id,performance_id,ledger_version_id,external_event_ref,source_batch_id,policy_snapshot_id) values(?,?,?,?,?,?,?,?)",run.toString(),first.tenantId().toString(),value.eventId().toString(),value.performanceId().toString(),value.versionId().toString(),value.externalEventRef(),value.sourceBatchId(),value.policySnapshotId()==null?null:value.policySnapshotId().toString());
             return new Accepted(run,false,"PENDING");
         });
+    }
+
+    public List<ModelOption> availableModels(UUID eventId){
+        access.event(eventId,ROLES);
+        boolean multiEventAvailable=enabled;
+        boolean exp3Available=multiEventAvailable&&exp3ModelEnabled&&cancelledTicketTransferEnabled&&exp3QuantityEvidenceEnabled;
+        return List.of(
+                new ModelOption(SCORE_VERSION,EXP2_PROJECTION_VERSION,multiEventAvailable,multiEventAvailable?null:"MULTI_EVENT_DISABLED"),
+                new ModelOption(EXP3_SCORE_VERSION,EXP3_PROJECTION_VERSION,exp3Available,
+                        exp3Available?null:!exp3ModelEnabled?"EXP3_ANALYSIS_DISABLED":"EXP3_INPUT_CONTRACT_DISABLED"));
+    }
+
+    private static String projectionVersion(String scoreVersion){
+        if(SCORE_VERSION.equals(scoreVersion))return EXP2_PROJECTION_VERSION;
+        if(EXP3_SCORE_VERSION.equals(scoreVersion))return EXP3_PROJECTION_VERSION;
+        return null;
     }
 
     public Page<Run> list(UUID eventId,int page,int pageSize){
@@ -1003,7 +1035,7 @@ public class MultiEventInvestigationService {
             for(var candidate:page.records()) {
                 if(candidate==null||candidate.candidateId()==null||!seenCandidates.add(candidate.candidateId()))
                     throw new FastApiResponseContractException("Data returned a duplicate or invalid candidate page row");
-                validateCandidateSummary(candidate,fixedScopes);
+                validateCandidateSummary(candidate,fixedScopes,input.scoreVersion());
                 CandidateBudget budget=budgets.get(candidate.candidateId());
                 if(budget==null||budget.memberCount()!=candidate.distinctAccountCount())
                     throw new FastApiResponseContractException("Data candidate changed after row-budget preflight");
@@ -1053,7 +1085,7 @@ public class MultiEventInvestigationService {
             for(var candidate:page.records()) {
                 if(candidate==null||candidate.candidateId()==null||budgets.containsKey(candidate.candidateId()))
                     throw new FastApiResponseContractException("Data returned a duplicate or invalid candidate during preflight");
-                validateCandidateSummary(candidate,fixedScopes);
+                validateCandidateSummary(candidate,fixedScopes,input.scoreVersion());
                 if(candidate.distinctAccountCount()>MAX_IMPORTED_MEMBER_ROWS-memberRows)
                     throw new Blocked("MULTI_EVENT_CANDIDATE_MEMBER_ROW_BUDGET_EXCEEDED");
                 memberRows+=candidate.distinctAccountCount();
@@ -1202,13 +1234,20 @@ public class MultiEventInvestigationService {
 
     void validateCandidateSummary(MultiEventAnalysisDto.CandidateSummary candidate,
             Map<String,MultiEventAnalysisDto.LedgerScope> fixedScopes) {
+        validateCandidateSummary(candidate,fixedScopes,SCORE_VERSION);
+    }
+
+    void validateCandidateSummary(MultiEventAnalysisDto.CandidateSummary candidate,
+            Map<String,MultiEventAnalysisDto.LedgerScope> fixedScopes,String expectedScoreVersion) {
+        boolean exp3=EXP3_SCORE_VERSION.equals(expectedScoreVersion);
+        String expectedProjection=projectionVersion(expectedScoreVersion);
         if(candidate.candidateId()==null||!candidate.candidateId().matches("multi-[a-f0-9]{64}")
-                ||!SCORE_VERSION.equals(candidate.scoreVersion())
-                ||!"projection-v2.2-exp2-ipwindow-softhub".equals(candidate.projectionVersion())
+                ||!expectedScoreVersion.equals(candidate.scoreVersion())
+                ||!Objects.equals(expectedProjection,candidate.projectionVersion())
                 ||!Set.of("HIGH","MEDIUM","LOW").contains(candidate.priorityBand())
                 ||candidate.distinctAccountCount()<2||candidate.distinctAccountCount()>50_000
-                ||candidate.distinctEventCount()<1||candidate.distinctPerformanceCount()<2
-                ||candidate.verifiedRelationshipCount()<1||candidate.sourceScopes()==null||candidate.sourceScopes().size()<2
+                ||candidate.distinctEventCount()<1||candidate.distinctPerformanceCount()<(exp3?1:2)
+                ||candidate.verifiedRelationshipCount()<(exp3?0:1)||candidate.sourceScopes()==null||candidate.sourceScopes().size()<(exp3?1:2)
                 ||candidate.familyId()==null||!candidate.familyId().matches("multi-[a-f0-9]{64}")
                 ||candidate.parentCandidateId()!=null&&!candidate.parentCandidateId().matches("multi-[a-f0-9]{64}")
                 ||candidate.parentCandidateId()!=null&&candidate.parentCandidateId().equals(candidate.candidateId())
@@ -1223,13 +1262,14 @@ public class MultiEventInvestigationService {
         if(events!=candidate.distinctEventCount()||performances!=candidate.distinctPerformanceCount())
             throw new FastApiResponseContractException("Data candidate counts do not match its fixed source scopes");
         // 점수 구성 신호는 exp2 신호 10종이며 결제와 망 유형별 IP 시간창을 포함합니다.
-        if(candidate.availableSignals().isEmpty()||candidate.availableSignals().stream().anyMatch(s->!EXP2_SIGNALS.contains(s))
+        Set<String> allowedSignals=exp3?EXP3_SIGNALS:EXP2_SIGNALS;
+        if(candidate.availableSignals().isEmpty()||candidate.availableSignals().stream().anyMatch(s->!allowedSignals.contains(s))
                 ||candidate.availableSignals().size()!=Set.copyOf(candidate.availableSignals()).size()
-                ||candidate.excludedSignals().stream().anyMatch(s->!EXP2_SIGNALS.contains(s))
+                ||candidate.excludedSignals().stream().anyMatch(s->!allowedSignals.contains(s))
                 ||candidate.unavailableSignals().stream().anyMatch(s->!UNAVAILABLE_SIGNALS.contains(s))
                 ||candidate.unavailableSignals().stream().anyMatch(candidate.availableSignals()::contains))
             throw new FastApiResponseContractException("Data candidate signal lists are invalid");
-        validateReasonSummary(candidate.reasons(),candidate.distinctAccountCount(),candidate.distinctPerformanceCount(),candidate.sourceScopes(),candidate.availableSignals());
+        validateReasonSummary(candidate.reasons(),candidate.distinctAccountCount(),candidate.distinctPerformanceCount(),candidate.sourceScopes(),candidate.availableSignals(),expectedScoreVersion);
         var score=candidate.scoreBreakdown();
         double[] parts={score.L(),score.G(),score.B(),score.Q(),score.R(),score.score()};
         for(double value:parts)if(!Double.isFinite(value)||value<0||value>1)
@@ -1237,9 +1277,11 @@ public class MultiEventInvestigationService {
         if(candidate.familyScore()+1e-9<score.score())throw new FastApiResponseContractException("Data family score is below an individual candidate score");
         // 사전 등록 정의: R = min((서로 다른 회차 수 - 1) / 3, 1)
         double expectedRecurrence=Math.min((candidate.distinctPerformanceCount()-1)/3.0,1.0);
-        double expectedBehavior=.5*score.Q()+.5*expectedRecurrence;
+        double expectedBehavior=.5*score.Q()+.5*score.R();
         double expectedScore=Math.round(score.L()*score.G()*score.B()*10_000.0)/10_000.0;
-        if(Math.abs(score.R()-expectedRecurrence)>1e-9||Math.abs(score.B()-expectedBehavior)>1e-9
+        boolean directResourceContinuity=exp3&&candidate.availableSignals().contains("RESOURCE_CONTINUITY");
+        if((!directResourceContinuity&&Math.abs(score.R()-expectedRecurrence)>1e-9)
+                ||Math.abs(score.B()-expectedBehavior)>1e-9
                 ||Math.abs(score.score()-expectedScore)>1e-9
                 ||!Set.of("VERIFIED","NEUTRAL_NO_POLICY").contains(score.quantityStatus()))
             throw new FastApiResponseContractException("Data candidate score breakdown is inconsistent");
@@ -1249,6 +1291,12 @@ public class MultiEventInvestigationService {
 
     void validateReasonSummary(List<MultiEventAnalysisDto.EvidenceReason> reasons,int memberCount,int performanceCount,
             List<MultiEventAnalysisDto.LedgerScope> scopes,List<String> availableSignals){
+        validateReasonSummary(reasons,memberCount,performanceCount,scopes,availableSignals,SCORE_VERSION);
+    }
+
+    void validateReasonSummary(List<MultiEventAnalysisDto.EvidenceReason> reasons,int memberCount,int performanceCount,
+            List<MultiEventAnalysisDto.LedgerScope> scopes,List<String> availableSignals,String scoreVersion){
+        boolean exp3=EXP3_SCORE_VERSION.equals(scoreVersion);
         if(reasons==null||reasons.size()>10)throw new FastApiResponseContractException("Data returned invalid candidate reason rows");
         Set<String> availablePerformances=scopes.stream().map(scope->scope.performanceId().toString()).collect(Collectors.toSet());
         Set<String> seenCodes=new HashSet<>();Set<Integer> ranks=new HashSet<>();
@@ -1269,6 +1317,9 @@ public class MultiEventInvestigationService {
                 case "REPEATED_PERFORMANCES"->reason.count()==memberCount
                         &&new HashSet<>(reason.performances()).equals(availablePerformances)
                         &&reason.performances().size()==performanceCount;
+                case "REBOOK_CHAIN"->exp3&&availableSignals.contains("REBOOK_CHAIN");
+                case "RESOURCE_CONTINUITY"->exp3&&availableSignals.contains("RESOURCE_CONTINUITY");
+                case "HIGH_QUANTITY"->exp3&&reason.performances().size()>=2;
                 default->false;
             };
             if(!supported)throw new FastApiResponseContractException("Data returned a candidate reason inconsistent with its fixed scope");
@@ -1276,6 +1327,9 @@ public class MultiEventInvestigationService {
         if(ranks.size()!=reasons.size())throw new FastApiResponseContractException("Data candidate reason ranks are incomplete");
         for(int rank=1;rank<=reasons.size();rank++)if(!ranks.contains(rank))
             throw new FastApiResponseContractException("Data candidate reason ranks are not contiguous");
+        if(exp3&&availableSignals.contains("REBOOK_CHAIN")
+                &&seenCodes.stream().noneMatch("REBOOK_CHAIN"::equals))
+            throw new FastApiResponseContractException("Data rebooking signal has no candidate evidence reason");
     }
 
     void validateMemberEvidence(List<MultiEventAnalysisDto.MemberEvidenceReason> reasons,
@@ -1297,6 +1351,9 @@ public class MultiEventInvestigationService {
             if("REPEATED_PERFORMANCES".equals(reason.code())){
                 if(reason.peerCount()!=0||reason.performances().size()<2)
                     throw new FastApiResponseContractException("Data returned invalid member recurrence evidence");
+            }else if("HIGH_QUANTITY".equals(reason.code())){
+                if(reason.peerCount()!=0||reason.performances().size()<2)
+                    throw new FastApiResponseContractException("Data returned invalid high-quantity evidence");
             }else if(reason.peerCount()<1||reason.performances().isEmpty()){
                 throw new FastApiResponseContractException("Data returned an empty shared-signal member reason");
             }
@@ -1370,7 +1427,9 @@ public class MultiEventInvestigationService {
             for(String account:page.records())if(account==null||!account.matches("[0-9a-f]{64}")||!local.add(account))
                 throw new FastApiResponseContractException("Data returned an invalid or duplicate account reference");
             if(!page.records().isEmpty()){
-                validateAccountsExist(page.records(),candidate.sourceScopes(),input);
+                boolean rebookingCandidate=EXP3_SCORE_VERSION.equals(input.scoreVersion())
+                        &&candidate.reasons().stream().anyMatch(reason->"REBOOK_CHAIN".equals(reason.code()));
+                validateAccountsExist(page.records(),candidate.sourceScopes(),input,rebookingCandidate);
                 tx.executeWithoutResult(status->{
                     requireLease(claim);
                     jdbc.batchUpdate("insert into td_multi_event_investigation_members(run_id,candidate_id,account_reference_hmac) values(?,?,?)",
@@ -1385,9 +1444,14 @@ public class MultiEventInvestigationService {
         return stored;
     }
 
-    private void validateAccountsExist(List<String> accounts,List<MultiEventAnalysisDto.LedgerScope> sourceScopes,RunInput input) {
+    private void validateAccountsExist(List<String> accounts,List<MultiEventAnalysisDto.LedgerScope> sourceScopes,RunInput input,
+            boolean allowVerifiedRebookingParticipants) {
         String scopesJson=write(sourceScopes.stream().map(scope->Map.of("performanceId",scope.performanceId().toString(),"ledgerVersionId",scope.ledgerVersionId().toString())).toList());
         String accountsJson=write(accounts);
+        String membershipCondition=allowVerifiedRebookingParticipants
+                ?"((r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<?) or "
+                    +"(r.ticket_status in ('CANCELLED','REFUNDED') and r.cancelled_at>=? and r.cancelled_at<? and r.hmac_key_version=?))"
+                :"(r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<?)";
         String sql="""
             with recursive selected_scopes as (
               select performance_id,ledger_version_id from json_table(?, '$[*]' columns(
@@ -1401,15 +1465,22 @@ public class MultiEventInvestigationService {
                 and p.generation_no=l.generation_no and p.revision_no=l.revision_no-1
             ), ranked as (
               select l.performance_id,tv.ticket_reference_hmac,tv.account_reference_hmac,tv.ticket_status,tv.purchased_at,
+                     tv.cancelled_at,tv.hmac_key_version,
                      row_number() over(partition by l.performance_id,tv.ticket_reference_hmac order by l.revision_no desc) rn
               from td_bulk_ledger_ticket_versions tv join lineage l on l.id=tv.version_id
             )
             select count(*) from json_table(?, '$[*]' columns(account_reference_hmac char(64) path '$')) expected
             where exists(select 1 from ranked r where r.account_reference_hmac=expected.account_reference_hmac and r.rn=1
-              and r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<?)
-            """;
-        Integer found=jdbc.queryForObject(sql,Integer.class,scopesJson,accountsJson,
-                java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
+              and %s)
+            """.formatted(membershipCondition);
+        List<Object> args=new ArrayList<>(List.of(scopesJson,accountsJson,
+                java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant())));
+        if(allowVerifiedRebookingParticipants){
+            args.add(java.sql.Timestamp.from(input.analysisStartAt().toInstant()));
+            args.add(java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
+            args.add(input.keyVersion());
+        }
+        Integer found=jdbc.queryForObject(sql,Integer.class,args.toArray());
         if(found==null||found!=accounts.size())throw new FastApiResponseContractException("Data candidate member is not present in its fixed ledger source");
     }
 
@@ -1475,7 +1546,8 @@ public class MultiEventInvestigationService {
      * 강한 신호 반복 관계는 구성원이 그 신호를 실제로 공유했다는 뜻이므로 점수 구성 신호에 반드시 들어 있어야 합니다.
      */
     static boolean relationshipSignalsConsistent(Set<String> relationshipTypes,MultiEventAnalysisDto.CandidateSummary candidate) {
-        if(relationshipTypes.isEmpty()||!RELATIONSHIP_TYPES.containsAll(relationshipTypes))return false;
+        if(relationshipTypes.isEmpty())return candidate.verifiedRelationshipCount()==0;
+        if(!RELATIONSHIP_TYPES.containsAll(relationshipTypes))return false;
         return relationshipTypes.stream().filter(STRONG_SIGNALS::contains).allMatch(candidate.availableSignals()::contains);
     }
 
@@ -1504,6 +1576,19 @@ public class MultiEventInvestigationService {
     /** 점수 구성 신호마다 구성원 두 명 이상이 출처 회차 하나 이상에서 실제로 공유했는지 확인합니다. */
     private void verifyAvailableSignals(Claim claim,MultiEventAnalysisDto.CandidateSummary candidate,RunInput input) {
         for(String signal:candidate.availableSignals()) {
+            if(EXP3_SCORE_VERSION.equals(input.scoreVersion())&&"REBOOK_CHAIN".equals(signal)){
+                if(candidate.reasons().stream().noneMatch(reason->"REBOOK_CHAIN".equals(reason.code())))
+                    throw new FastApiResponseContractException("Data rebooking signal is missing its source evidence reason");
+                continue;
+            }
+            if(EXP3_SCORE_VERSION.equals(input.scoreVersion())&&"RESOURCE_CONTINUITY".equals(signal)){
+                long sharedResourceReasons=candidate.reasons().stream().map(MultiEventAnalysisDto.EvidenceReason::code)
+                        .filter(Set.of("SHARED_REFUND_ACCOUNT","SHARED_PHONE","SHARED_DEVICE","SHARED_ADDRESS")::contains)
+                        .distinct().count();
+                if(sharedResourceReasons<2&&candidate.scoreBreakdown().Q()<.95)
+                    throw new FastApiResponseContractException("Data resource-continuity signal does not meet its direct-resource or verified-Q condition");
+                continue;
+            }
             boolean shared=false;
             for(var scope:candidate.sourceScopes()) {
                 if(signalSharedByMembers(claim,candidate,signal,scope,input)) { shared=true; break; }
@@ -1764,7 +1849,12 @@ public class MultiEventInvestigationService {
     private static Long nullableLong(java.sql.ResultSet rs,int index)throws java.sql.SQLException{long value=rs.getLong(index);return rs.wasNull()?null:value;}
     private static CaseApiException invalid(){return new CaseApiException(HttpStatus.BAD_REQUEST,"INVALID_MULTI_EVENT_INVESTIGATION_REQUEST");} private static CaseApiException incomplete(String code){return new CaseApiException(HttpStatus.CONFLICT,code);}private static CaseApiException notFound(){return new CaseApiException(HttpStatus.NOT_FOUND,"RESOURCE_NOT_FOUND");}
     public record PerformanceSelection(UUID eventId,List<UUID> performanceIds){}
-    public record CreateRequest(List<UUID> eventIds,List<PerformanceSelection> performanceSelections,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt){}
+    public record CreateRequest(List<UUID> eventIds,List<PerformanceSelection> performanceSelections,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt,String scoreVersion){
+        public CreateRequest(List<UUID> eventIds,List<PerformanceSelection> performanceSelections,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt){
+            this(eventIds,performanceSelections,analysisStartAt,analysisEndAt,null);
+        }
+    }
+    public record ModelOption(String scoreVersion,String projectionVersion,boolean enabled,String disabledReason){}
     public record Accepted(UUID runId,boolean existing,String status){}
     public record Run(UUID id,String status,String failureCode,String ledgerVersionSetDigest,String scoreVersion,String projectionVersion,String algorithmVersion,OffsetDateTime analysisAsOf,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt,OffsetDateTime createdAt,OffsetDateTime updatedAt,OffsetDateTime completedAt){}
     public record Scope(UUID eventId,UUID performanceId,UUID versionId,String externalEventRef,String sourceBatchId,String supplierNamespace,UUID policySnapshotId){}

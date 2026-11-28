@@ -21,6 +21,7 @@ class MultiEventArtifactMigrationMySqlTest {
             "multi-event-quantity-snapshot-migration.sql",
             "multi-event-source-binding-migration.sql",
             "multi-event-artifact-job-migration.sql",
+            "multi-event-exp3-quantity-evidence-migration.sql",
             "investigation-target-reveal-migration.sql"
     };
 
@@ -42,9 +43,12 @@ class MultiEventArtifactMigrationMySqlTest {
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "phone_hmac");
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "ip_network_type");
         assertColumns(jdbc, "td_multi_event_investigation_runs", "data_job_id", "artifact_id",
-                "artifact_object_version", "artifact_sha256", "artifact_record_count", "artifact_cancelled_ticket_count");
+                "artifact_object_version", "artifact_sha256", "artifact_record_count", "artifact_cancelled_ticket_count",
+                "exp3_quantity_artifact_id", "exp3_quantity_artifact_object_version", "exp3_quantity_artifact_sha256",
+                "exp3_quantity_artifact_record_count");
         assertCheck(jdbc, "chk_mei_artifact_binding");
         assertCheck(jdbc, "chk_mei_cancelled_artifact_count");
+        assertCheck(jdbc, "chk_mei_exp3_quantity_artifact_binding");
         assertCheck(jdbc, "chk_mei_run_state");
         assertConstraint(jdbc, "td_multi_event_investigation_scopes", "fk_mei_scope_version_identity", "FOREIGN KEY");
         assertConstraint(jdbc, "td_multi_event_investigation_scopes", "fk_mei_scope_policy_snapshot_version", "FOREIGN KEY");
@@ -55,6 +59,8 @@ class MultiEventArtifactMigrationMySqlTest {
         assertThat(runCheck).contains("DATA_PENDING", "RUNNING", "LEASE_OWNER", "LEASE_UNTIL");
         String artifactCheck = checkClause(jdbc, "chk_mei_artifact_binding").toUpperCase(java.util.Locale.ROOT);
         assertThat(artifactCheck).contains("ARTIFACT_RECORD_COUNT", "400000", "DATA_JOB_ID");
+        String quantityArtifactCheck = checkClause(jdbc, "chk_mei_exp3_quantity_artifact_binding").toUpperCase(java.util.Locale.ROOT);
+        assertThat(quantityArtifactCheck).contains("EXP3_QUANTITY_ARTIFACT_RECORD_COUNT", "1200500", "ARTIFACT_ID");
 
         assertColumns(jdbc, "td_investigation_reference_ciphertexts", "reference_ciphertext", "nonce",
                 "encryption_key_version", "ledger_version_id");

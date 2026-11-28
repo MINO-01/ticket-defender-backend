@@ -84,7 +84,7 @@ class FastApiAdapterMultiPerformanceTest {
                 "supplier-a", "event-a", performance, ledgerVersion, "TRACK1_CONNECTION", "key-v1",
                 "source-v1", asOf, start, asOf, true, "COMPLETE", "NETTED", "DEDUPLICATED",
                 "LATEST_REVISION_PER_TICKET_REFERENCE", true, "CONFIRMED", UUID.randomUUID(),
-                "policy-v1", "source-v1", 4, 1, 2, 1, 1, 3, 4);
+                "policy-v1", "source-v1", 4, 1, 2, 1, 1, 3, 4, "COMPLETE", 1, 0);
         var evidence = new MultiEventAnalysisDto.Exp3AccountQuantityEvidenceRecord(
                 "EXP3_ACCOUNT_QUANTITY_EVIDENCE", "exp3-quantity-evidence-v1", analysis, tenant,
                 "supplier-a", "event-a", performance, ledgerVersion, "TRACK1_CONNECTION", "key-v1",
@@ -92,12 +92,20 @@ class FastApiAdapterMultiPerformanceTest {
 
         String manifestJson = mapper.writeValueAsString(manifest);
         String evidenceJson = mapper.writeValueAsString(evidence);
+        var event = new MultiEventAnalysisDto.Exp3RebookingEventRecord(
+                "EXP3_REBOOKING_EVENT", "exp3-quantity-evidence-v1", analysis, tenant, "supplier-a",
+                "event-a", performance, ledgerVersion, "TRACK1_CONNECTION", "key-v1", "a".repeat(64),
+                "b".repeat(64), "source-v1", asOf, start, asOf, "RESERVATION", null, "BALCONY", "R1", "12");
+        String eventJson = mapper.writeValueAsString(event);
 
         assertThat(manifestJson).contains("EXP3_QUANTITY_SCOPE_MANIFEST", "exp3-quantity-evidence-v1",
                 "expectedTicketUnitRowCount", "expectedOrderLineTicketQuantity", "confirmedPurchaseLimit");
         assertThat(evidenceJson).contains("EXP3_ACCOUNT_QUANTITY_EVIDENCE", "accountHmac",
                 "ticketUnitRowCount", "orderLineTicketQuantity", "actualTicketQuantity")
                 .doesNotContain("accountId", "reservationNo", "ticketReference");
+        assertThat(eventJson).contains("EXP3_REBOOKING_EVENT", "ticketHmac", "eventType", "eventAt",
+                "analysisStartAt", "analysisEndAt")
+                .doesNotContain("reservationNo", "ticketReference");
     }
 
     @Test

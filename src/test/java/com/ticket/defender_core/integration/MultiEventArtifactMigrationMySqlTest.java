@@ -21,7 +21,8 @@ class MultiEventArtifactMigrationMySqlTest {
             "multi-event-quantity-snapshot-migration.sql",
             "multi-event-source-binding-migration.sql",
             "multi-event-artifact-job-migration.sql",
-            "investigation-target-reveal-migration.sql"
+            "investigation-target-reveal-migration.sql",
+            "case-w11-multi-event-candidate-source-migration.sql"
     };
 
     @Test
@@ -30,11 +31,19 @@ class MultiEventArtifactMigrationMySqlTest {
                 System.getenv("TD_ISSUE32_MYSQL_USER"), System.getenv("TD_ISSUE32_MYSQL_PASSWORD"));
         source.setDriverClassName("com.mysql.cj.jdbc.Driver");
         JdbcTemplate jdbc = new JdbcTemplate(source);
+        int sourceRowsBeforeW11 = -1;
+        int snapshotRowsBeforeW11 = -1;
         try (Connection connection = source.getConnection()) {
             for (String migration : MIGRATIONS) {
+                if (migration.equals("case-w11-multi-event-candidate-source-migration.sql")) {
+                    sourceRowsBeforeW11 = count(jdbc, "case_source_references");
+                    snapshotRowsBeforeW11 = count(jdbc, "evidence_snapshots");
+                }
                 ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/" + migration));
             }
         }
+        assertThat(count(jdbc, "case_source_references")).isEqualTo(sourceRowsBeforeW11);
+        assertThat(count(jdbc, "evidence_snapshots")).isEqualTo(snapshotRowsBeforeW11);
 
         assertColumns(jdbc, "td_bulk_ledger_track1_ticket_signals",
                 "refund_account_hmac", "phone_hmac", "ip_network_type");
@@ -69,6 +78,20 @@ class MultiEventArtifactMigrationMySqlTest {
         assertCascade(jdbc, "fk_td_investigation_access_audit_event");
         assertIndex(jdbc, "td_investigation_reference_ciphertexts", "uk_td_investigation_reference_import_row", true);
 
+        assertColumns(jdbc, "case_source_references", "multi_event_run_id", "multi_event_candidate_id",
+                "multi_event_completed_at");
+        assertIndex(jdbc, "td_multi_event_investigation_runs", "uk_mei_run_tenant_id", true);
+        assertIndex(jdbc, "case_source_references", "idx_case_sources_multi_event_run", false);
+        assertConstraint(jdbc, "case_source_references", "fk_case_sources_multi_event_run", "FOREIGN KEY");
+        assertConstraint(jdbc, "case_source_references", "fk_case_sources_multi_event_candidate", "FOREIGN KEY");
+        assertCheck(jdbc, "chk_case_source_shape");
+        assertCheck(jdbc, "chk_evidence_snapshots_schema");
+        String sourceCheck = checkClause(jdbc, "chk_case_source_shape").toUpperCase(java.util.Locale.ROOT);
+        assertThat(sourceCheck).contains("MULTI_EVENT_CANDIDATE", "MULTI_EVENT_RUN_ID",
+                "MULTI_EVENT_CANDIDATE_ID", "MULTI_EVENT_COMPLETED_AT");
+        String snapshotCheck = checkClause(jdbc, "chk_evidence_snapshots_schema").toUpperCase(java.util.Locale.ROOT);
+        assertThat(snapshotCheck).contains("1", "2", "3");
+
         verifyReferenceRowsCascadeOnParentDeletion(jdbc);
     }
 
@@ -78,6 +101,10 @@ class MultiEventArtifactMigrationMySqlTest {
                     + "where table_schema=database() and table_name=? and column_name=?", Integer.class, table, column))
                     .as(table + "." + column).isEqualTo(1);
         }
+    }
+
+    private static int count(JdbcTemplate jdbc, String table) {
+        return jdbc.queryForObject("select count(*) from " + table, Integer.class);
     }
 
     private static void assertNullableColumn(JdbcTemplate jdbc, String table, String column) {

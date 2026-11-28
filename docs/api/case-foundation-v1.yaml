@@ -130,6 +130,13 @@ components:
       properties:
         analysisRequestId: { type: string, format: uuid }
         clusterId: { type: string, maxLength: 191 }
+    MultiEventCandidateSource:
+      type: object
+      required: [runId, candidateId]
+      additionalProperties: false
+      properties:
+        runId: { type: string, format: uuid }
+        candidateId: { type: string, pattern: '^multi-[a-f0-9]{64}$' }
     CreateCase:
       type: object
       required: [eventId, type, reason]
@@ -146,10 +153,18 @@ components:
             Optional, server-rechecked Track 2 candidate executions. Each run must be terminal and CURRENT,
             and its fanReportId/evidenceId must also appear in this request; it never replaces the existing
             GRAPH_CLUSTER, FAN_REPORT, or COMBINED source requirements.
+        multiEventCandidates:
+          type: array
+          maxItems: 30
+          items: { $ref: '#/components/schemas/MultiEventCandidateSource' }
+          description: >-
+            Optional, server-rechecked candidates from a COMPLETED multi-event investigation run. The
+            selected eventId must be in the run scope and the caller must have create access to every event
+            in that run scope. Candidate IDs are opaque analysis IDs, never account or reservation references.
         reason: { type: string, minLength: 3, maxLength: 2000 }
         relatedCaseId: { type: string, format: uuid }
         relationReason: { type: string, minLength: 3, maxLength: 2000 }
-      description: A follow-up requires both relatedCaseId and relationReason. Sources must be verified in the same event. Existing Cases cannot be amended through this create endpoint.
+      description: A follow-up requires both relatedCaseId and relationReason. Existing sources are verified in their event; multi-event candidate sources are rechecked across every event in their completed run scope. Existing Cases cannot be amended through this create endpoint.
     Transition:
       type: object
       required: [toStatus, expectedCaseVersion, reason]
@@ -201,7 +216,7 @@ components:
       description: STORED_CLUSTER_EVIDENCE represents persisted members only; no object key or tenant ID is exposed.
       properties:
         sourceReferenceId: { type: string, format: uuid }
-        sourceType: { type: string, enum: [STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET, LISTING_CANDIDATE_MATCH] }
+        sourceType: { type: string, enum: [STORED_CLUSTER_EVIDENCE, FAN_REPORT, EVIDENCE_ASSET, LISTING_CANDIDATE_MATCH, MULTI_EVENT_CANDIDATE] }
         analysisRequestId: { type: [string, 'null'] }
         clusterId: { type: [string, 'null'] }
         storedMemberCount: { type: [integer, 'null'] }
@@ -228,6 +243,9 @@ components:
         candidateReason: { type: [string, 'null'] }
         candidateCount: { type: [integer, 'null'], minimum: 0 }
         candidateId: { type: [string, 'null'], format: uuid, description: Opaque candidate ID only; never a reservation number or HMAC token. }
+        multiEventRunId: { type: [string, 'null'], format: uuid }
+        multiEventCandidateId: { type: [string, 'null'], pattern: '^multi-[a-f0-9]{64}$' }
+        multiEventCompletedAt: { type: [string, 'null'], format: date-time }
         candidateApplicability: { type: [string, 'null'], enum: [CURRENT, PERFORMANCE_LINK_REPLACED_OR_WITHDRAWN, PERFORMANCE_WITHDRAWN, PERFORMANCE_REVISION_CHANGED, RESERVATION_SOURCE_SUPERSEDED, ANALYSIS_OR_EVIDENCE_CHANGED, NOT_APPLICABLE, null] }
         linkedAt: { type: string, format: date-time }
     ActivityPage:

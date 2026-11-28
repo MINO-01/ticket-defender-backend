@@ -41,6 +41,7 @@ public class CaseSourceVerifier {
     private final ListingContextAnalysisRepository analyses;
     private final CandidateRunApplicability candidateApplicability;
     private final EvidenceObjectStorage storage;
+    private final MultiEventCaseSourceVerifier multiEventCandidates;
 
     public List<CaseSourceReference> verify(Case target, CaseDto.Create input, LocalDateTime now) {
         return verify(target, input, now, null);
@@ -57,15 +58,20 @@ public class CaseSourceVerifier {
         List<UUID> reportIds = input.fanReportIds() == null ? List.of() : input.fanReportIds();
         List<UUID> assetIds = input.evidenceIds() == null ? List.of() : input.evidenceIds();
         List<UUID> candidateIds = input.candidateRunIds() == null ? List.of() : input.candidateRunIds();
-        if (graphInputs.size() + reportIds.size() + assetIds.size() + candidateIds.size() > 30
+        List<CaseDto.MultiEventCandidate> multiEventInputs = input.multiEventCandidates() == null
+                ? List.of() : input.multiEventCandidates();
+        if (graphInputs.size() + reportIds.size() + assetIds.size() + candidateIds.size()
+                + multiEventInputs.size() > 30
                 || graphInputs.stream().anyMatch(Objects::isNull)
                 || reportIds.stream().anyMatch(Objects::isNull)
                 || assetIds.stream().anyMatch(Objects::isNull)
-                || candidateIds.stream().anyMatch(Objects::isNull)) throw invalid();
+                || candidateIds.stream().anyMatch(Objects::isNull)
+                || multiEventInputs.stream().anyMatch(Objects::isNull)) throw invalid();
         if (switch (target.getType()) {
-            case GRAPH_CLUSTER -> graphInputs.isEmpty() || !reportIds.isEmpty() || !assetIds.isEmpty() || !candidateIds.isEmpty();
-            case FAN_REPORT -> !graphInputs.isEmpty() || reportIds.isEmpty();
-            case COMBINED -> graphInputs.isEmpty() || reportIds.isEmpty();
+            case GRAPH_CLUSTER -> (graphInputs.isEmpty() && multiEventInputs.isEmpty())
+                    || !reportIds.isEmpty() || !assetIds.isEmpty() || !candidateIds.isEmpty();
+            case FAN_REPORT -> !graphInputs.isEmpty() || !multiEventInputs.isEmpty() || reportIds.isEmpty();
+            case COMBINED -> (graphInputs.isEmpty() && multiEventInputs.isEmpty()) || reportIds.isEmpty();
         }) throw invalid();
         if (!assetIds.isEmpty() && reportIds.isEmpty()) throw invalid();
 
@@ -149,6 +155,7 @@ public class CaseSourceVerifier {
             unique(keys, digest);
             result.add(CaseSourceReference.candidate(target, digest, run, now));
         }
+        result.addAll(multiEventCandidates.verify(target, multiEventInputs, now));
         return result;
     }
 
@@ -180,7 +187,7 @@ public class CaseSourceVerifier {
         return report;
     }
 
-    private static String digest(Case target, String type, String... parts) {
+    static String digest(Case target, String type, String... parts) {
         StringBuilder canonical = new StringBuilder(type).append('|').append(target.getTenantId())
                 .append('|').append(target.getEventId());
         for (String part : parts) canonical.append('|').append(part.length()).append(':').append(part);
@@ -192,7 +199,7 @@ public class CaseSourceVerifier {
         }
     }
 
-    private static void unique(Set<String> keys, String key) {
+    static void unique(Set<String> keys, String key) {
         if (!keys.add(key)) throw invalid();
     }
 

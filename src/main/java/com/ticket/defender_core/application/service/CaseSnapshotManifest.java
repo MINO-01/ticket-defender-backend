@@ -74,7 +74,8 @@ public class CaseSnapshotManifest {
             return capture(target, references, now, checkedAssets);
         } catch (CaseApiException unavailable) {
             boolean candidateSource = references.stream().anyMatch(reference -> reference.getSourceType()
-                    == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH);
+                    == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH
+                    || reference.getSourceType() == CaseSourceReference.Type.MULTI_EVENT_CANDIDATE);
             if (candidateSource && ("SOURCE_NOT_AVAILABLE".equals(unavailable.code())
                     || "RESOURCE_NOT_FOUND".equals(unavailable.code()))) throw changed();
             throw unavailable;
@@ -97,6 +98,9 @@ public class CaseSnapshotManifest {
                         .map(CaseSourceReference::getEvidenceId).toList(),
                 ordered.stream().filter(ref -> ref.getSourceType() == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH)
                         .map(CaseSourceReference::getListingCandidateMatchRunId).toList(),
+                ordered.stream().filter(ref -> ref.getSourceType() == CaseSourceReference.Type.MULTI_EVENT_CANDIDATE)
+                        .map(ref -> new CaseDto.MultiEventCandidate(ref.getMultiEventRunId(),
+                                ref.getMultiEventCandidateId())).toList(),
                 "Snapshot capture", null, null);
         Map<UUID, String> markers = new HashMap<>();
         if (checkedAssets != null) checkedAssets.forEach((id, asset) -> markers.put(id, asset.checkedMarker()));
@@ -193,11 +197,22 @@ public class CaseSnapshotManifest {
                     item.put("candidateCount", prior.getCandidateCount());
                     item.put("candidateId", prior.getCandidateId() == null ? null : prior.getCandidateId().toString());
                 }
+                case MULTI_EVENT_CANDIDATE -> {
+                    if (!Objects.equals(prior.getMultiEventRunId(), fresh.getMultiEventRunId())
+                            || !Objects.equals(prior.getMultiEventCandidateId(), fresh.getMultiEventCandidateId())
+                            || !Objects.equals(prior.getMultiEventCompletedAt(), fresh.getMultiEventCompletedAt()))
+                        throw changed();
+                    item.put("analysisRunId", prior.getMultiEventRunId().toString());
+                    item.put("candidateId", prior.getMultiEventCandidateId());
+                    item.put("analysisCompletedAt", utc(prior.getMultiEventCompletedAt()));
+                }
             }
             items.add(item);
         }
         Map<String, Object> manifest = new LinkedHashMap<>();
         int schemaVersion = ordered.stream().anyMatch(ref -> ref.getSourceType()
+                == CaseSourceReference.Type.MULTI_EVENT_CANDIDATE) ? 3
+                : ordered.stream().anyMatch(ref -> ref.getSourceType()
                 == CaseSourceReference.Type.LISTING_CANDIDATE_MATCH) ? 2 : 1;
         manifest.put("manifestSchemaVersion", schemaVersion);
         manifest.put("tenantId", target.getTenantId().toString());

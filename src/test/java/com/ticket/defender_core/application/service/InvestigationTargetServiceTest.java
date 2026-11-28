@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -20,10 +21,11 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class InvestigationTargetServiceTest {
@@ -118,6 +120,74 @@ class InvestigationTargetServiceTest {
         assertThat(csv).contains("\"'-synthetic-reservation\"");
         assertThat(csv).contains("\"'@synthetic-ticket\"");
         assertThat(csv.lines().skip(1).findFirst().orElseThrow()).doesNotEndWith(",");
+    }
+
+    @Test
+    void auditRedactsReferencesSuppliedInRevealReason() throws Exception {
+        UUID tenant = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f0");
+        UUID membership = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f1");
+        UUID performance = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f2");
+        UUID jobId = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f3");
+        UUID importId = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f4");
+        String account = "synthetic-account-42";
+        String reservation = "synthetic-reservation-87";
+        String ticket = "synthetic-ticket-19";
+        String ticketHmac = "a".repeat(64);
+        String reservationHmac = "b".repeat(64);
+        String accountHmac = "c".repeat(64);
+        var cipher = cipher();
+        var encrypted = cipher.encrypt(importId, tenant, EVENT, performance, 7, ticketHmac, reservationHmac,
+                accountHmac, account, reservation, ticket);
+
+        CandidatePipelineAccess access = mock(CandidatePipelineAccess.class);
+        AdminAccessService adminAccess = mock(AdminAccessService.class);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        InvestigationTargetService service = new InvestigationTargetService(access, adminAccess, jdbc, cipher);
+        Set<AdminRole> roles = Set.of(AdminRole.TENANT_ADMIN, AdminRole.ANALYST);
+        when(access.event(eq(EVENT), eq(roles)))
+                .thenReturn(new CandidatePipelineAccess.Scope(tenant, EVENT, membership, null));
+        when(adminAccess.authenticatedSubject()).thenReturn("synthetic-admin");
+        when(jdbc.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
+
+        when(jdbc.query(contains("from td_bulk_ledger_track1_bulk_jobs j"), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    RowMapper<?> mapper = invocation.getArgument(1);
+                    var row = mock(java.sql.ResultSet.class);
+                    when(row.getString(1)).thenReturn(UUID.randomUUID().toString());
+                    when(row.getString(2)).thenReturn(importId.toString());
+                    when(row.getString(3)).thenReturn(tenant.toString());
+                    when(row.getString(4)).thenReturn(EVENT.toString());
+                    when(row.getString(5)).thenReturn(performance.toString());
+                    when(row.getLong(6)).thenReturn(7L);
+                    when(row.getString(7)).thenReturn(ticketHmac);
+                    when(row.getString(8)).thenReturn(reservationHmac);
+                    when(row.getString(9)).thenReturn(accountHmac);
+                    when(row.getBytes(10)).thenReturn(encrypted.ciphertext());
+                    when(row.getBytes(11)).thenReturn(encrypted.nonce());
+                    when(row.getString(12)).thenReturn(encrypted.keyVersion());
+                    when(row.getTimestamp(13)).thenReturn(java.sql.Timestamp.valueOf("2026-11-25 10:00:00"));
+                    when(row.getString(14)).thenReturn("ACTIVE");
+                    return List.of(mapper.mapRow(row, 0));
+                });
+
+        AtomicReference<Object[]> auditArguments = new AtomicReference<>();
+        doAnswer(invocation -> {
+            auditArguments.set(invocation.getArguments());
+            return 1;
+        }).when(jdbc).update(contains("insert into td_investigation_reference_access_audit"), any(Object[].class));
+
+        var page = service.revealBulkCluster(EVENT, performance, jobId, "cluster-1", 0, 50,
+                "Review " + account + " / " + reservation + " / " + ticket);
+
+        assertThat(page.items()).singleElement().satisfies(value -> {
+            assertThat(value.accountReference()).isEqualTo(account);
+            assertThat(value.reservationReference()).isEqualTo(reservation);
+            assertThat(value.ticketReference()).isEqualTo(ticket);
+        });
+        assertThat(auditArguments.get()).isNotNull();
+        String auditedReason = (String) auditArguments.get()[9];
+        assertThat(auditedReason).contains("[redacted]").doesNotContain(account, reservation, ticket);
     }
 
     private static InvestigationReferenceCipher cipher() {

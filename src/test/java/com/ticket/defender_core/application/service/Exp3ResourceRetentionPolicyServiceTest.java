@@ -40,7 +40,7 @@ class Exp3ResourceRetentionPolicyServiceTest {
         when(jdbc.queryForList(anyString(), eq(String.class), any(), any()))
                 .thenReturn(List.of(eventId.toString()));
         when(jdbc.queryForObject(anyString(), eq(Integer.class), (Object[]) any())).thenReturn(0);
-        when(jdbc.update(anyString(), (Object[]) any())).thenReturn(1);
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
     }
 
     @Test
@@ -55,7 +55,7 @@ class Exp3ResourceRetentionPolicyServiceTest {
         assertThat(result.policyVersion()).isEqualTo("provider-policy-v2");
         assertThat(result.retentionDays()).isEqualTo(30);
         verify(access).event(eventId, Set.of(AdminRole.TENANT_ADMIN));
-        verify(jdbc).update(anyString(), (Object[]) any());
+        verify(jdbc).update(anyString(), any(Object[].class));
     }
 
     @Test

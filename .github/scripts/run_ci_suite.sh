@@ -35,13 +35,13 @@ schema_prefix() {
 
 bl01_suite() {
   migration_prefix
-  schema_prefix
   run_test track1-quantity-migration '*Track1QuantityMigrationMySqlTest'
-  run_test track1-quantity-http '*Track1QuantityHttpMySqlTest'
   run_test bulk-ledger-import-migration '*BulkLedgerImportMigrationMySqlTest'
   run_test bulk-ledger-track1-outbox-migration '*BulkLedgerTrack1OutboxMigrationMySqlTest'
   run_test multi-event-artifact-migration '*MultiEventArtifactMigrationMySqlTest'
   run_test multi-performance-raw-intake-migration '*MultiPerformanceRawIntakeMigrationMySqlTest'
+  schema_prefix
+  run_test track1-quantity-http '*Track1QuantityHttpMySqlTest'
   run_test bulk-ledger-import-http '*BulkLedgerImportHttpMySqlTest'
   run_test bulk-ledger-v3-raw-intake-http '*BulkLedgerV3RawIntakeHttpMySqlTest'
 }

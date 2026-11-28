@@ -41,6 +41,16 @@ class BulkLedgerTrack1OutboxConsumerTest {
     }
 
     @Test
+    void cancellationTransferDefaultsToTheOriginalPayloadAndEnabledModeKeepsOnlyActiveRows() {
+        List<BulkLedgerTrack1OutboxConsumer.Ticket> rows = List.of(
+                ticket("ACTIVE"), ticket("CANCELLED"), ticket("REFUNDED"));
+
+        assertThat(BulkLedgerTrack1OutboxConsumer.activePayload(rows, false)).isSameAs(rows);
+        assertThat(BulkLedgerTrack1OutboxConsumer.activePayload(rows, true))
+                .extracting(BulkLedgerTrack1OutboxConsumer.Ticket::status).containsExactly("ACTIVE");
+    }
+
+    @Test
     void leavesMissingOrConflictingPoliciesUnevaluated() {
         var absent = BulkLedgerTrack1OutboxConsumer.decide(snapshot(true), List.of(ticket("ACTIVE")), List.of(), PERFORMANCE);
         var conflict = BulkLedgerTrack1OutboxConsumer.decide(snapshot(true), List.of(ticket("ACTIVE")),

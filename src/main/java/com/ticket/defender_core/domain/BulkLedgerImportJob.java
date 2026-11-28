@@ -31,6 +31,7 @@ public class BulkLedgerImportJob {
     @Column(name = "idempotency_key_digest", nullable = false, length = 64) private String idempotencyKeyDigest;
     @Column(name = "request_digest", nullable = false, length = 64) private String requestDigest;
     @Column(name = "schema_version", nullable = false, length = 32) private String schemaVersion;
+    @Column(name = "scope_key_type", nullable = false, length = 24) private String scopeKeyType;
     @Column(name = "source_system", nullable = false, length = 64) private String sourceSystem;
     @Column(name = "source_batch_id", nullable = false, length = 128) private String sourceBatchId;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 24) private Mode mode;
@@ -58,10 +59,18 @@ public class BulkLedgerImportJob {
     public BulkLedgerImportJob(UUID tenantId, UUID membershipId, String keyDigest, String requestDigest,
             String schemaVersion, String sourceSystem, String sourceBatchId, Mode mode, Format format,
             String sha256, long bytes, long rows, boolean completeSnapshot, LocalDateTime now) {
+        this(tenantId, membershipId, keyDigest, requestDigest, schemaVersion, sourceSystem, sourceBatchId, mode,
+                format, sha256, bytes, rows, completeSnapshot, "TD_UUID", now);
+    }
+
+    public BulkLedgerImportJob(UUID tenantId, UUID membershipId, String keyDigest, String requestDigest,
+            String schemaVersion, String sourceSystem, String sourceBatchId, Mode mode, Format format,
+            String sha256, long bytes, long rows, boolean completeSnapshot, String scopeKeyType, LocalDateTime now) {
         this.id = UUID.randomUUID();
         this.tenantId = Objects.requireNonNull(tenantId); this.createdByMembershipId = Objects.requireNonNull(membershipId);
         this.idempotencyKeyDigest = required(keyDigest, 64); this.requestDigest = required(requestDigest, 64);
         this.schemaVersion = required(schemaVersion, 32); this.sourceSystem = required(sourceSystem, 64);
+        this.scopeKeyType = required(scopeKeyType, 24);
         this.sourceBatchId = required(sourceBatchId, 128); this.mode = Objects.requireNonNull(mode);
         this.format = Objects.requireNonNull(format); this.declaredObjectSha256 = required(sha256, 64);
         if (bytes < 0 || rows < 0) throw new IllegalArgumentException("negative declared count");

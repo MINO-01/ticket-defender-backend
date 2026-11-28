@@ -9,6 +9,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 import java.sql.Connection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -27,8 +28,10 @@ class BulkLedgerImportMigrationMySqlTest {
             jdbc.execute("drop table if exists td_bulk_ledger_publication_outbox"); jdbc.execute("drop table if exists td_bulk_ledger_publication_history"); jdbc.execute("drop table if exists td_bulk_ledger_publications");
             jdbc.execute("drop table if exists td_bulk_ledger_publication_heads"); jdbc.execute("drop table if exists td_bulk_ledger_change_events"); jdbc.execute("drop table if exists td_bulk_ledger_ticket_versions"); jdbc.execute("drop table if exists td_bulk_ledger_versions"); jdbc.execute("drop table if exists td_bulk_ledger_candidate_imports");
             jdbc.execute("drop table if exists td_bulk_import_upload_deletions");
+            jdbc.execute("drop table if exists td_bulk_import_supplier_scopes");
             jdbc.execute("drop table if exists td_bulk_import_staging_rows"); jdbc.execute("drop table if exists td_bulk_import_errors"); jdbc.execute("drop table if exists td_bulk_import_scopes"); jdbc.execute("drop table if exists td_bulk_import_jobs");
             jdbc.execute("set foreign_key_checks=1");
+            dropSupplierPerformanceColumnsFromGeneratedCurrentSchema(jdbc);
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl01-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl02-staging-migration.sql"));
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl03-candidate-migration.sql"));
@@ -36,11 +39,18 @@ class BulkLedgerImportMigrationMySqlTest {
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-bl05-publication-migration.sql"));
             // v3 원본 신호 스테이징 컬럼과 업로드 삭제 기록은 BL-05 다음에 적용합니다.
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/bulk-ledger-import-v3-raw-signal-migration.sql"));
+            // 코드 기반 범위 등록과 v3 원장 선택 열은 기존 bulk-ledger 스키마 다음에 추가합니다.
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("docs/database/supplier-code-and-v3-fields-migration.sql"));
         }
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "tenant_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_jobs", "created_by_membership_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_import_scopes", "performance_id");
         assertAsciiBinaryUuidColumn(jdbc, "td_bulk_ledger_versions", "performance_id");
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.columns where table_schema=database() and table_name='td_bulk_import_jobs' and column_name='scope_key_type'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.columns where table_schema=database() and table_name='verified_performances' and column_name='supplier_per_account_limit'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.columns where table_schema=database() and table_name='td_bulk_ledger_ticket_versions' and column_name='cancelled_at'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='td_bulk_import_supplier_scopes' and constraint_type='CHECK'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_schema=database() and table_name='verified_performances' and constraint_name='chk_verified_performance_supplier_limit' and constraint_type='CHECK'", Integer.class)).isEqualTo(1);
         String tenant = UUID.randomUUID().toString(), event = UUID.randomUUID().toString(), member = UUID.randomUUID().toString(), performance = UUID.randomUUID().toString();
         jdbc.update("insert into tenants(id,name,status) values(?,?,'ACTIVE')", tenant, "synthetic bulk tenant");
         jdbc.update("insert into events(id,tenant_id,external_event_ref,name,status,public_intake_enabled) values(?,?,?,?,'ACTIVE',b'0')", event, tenant, "bulk-" + event, "synthetic bulk event");
@@ -84,6 +94,21 @@ class BulkLedgerImportMigrationMySqlTest {
         assertThat(definition.get("character_set_name")).isEqualTo("ascii");
         assertThat(definition.get("collation_name")).isEqualTo("ascii_bin");
         assertThat(((Number) definition.get("character_maximum_length")).intValue()).isEqualTo(36);
+    }
+
+    private static void dropSupplierPerformanceColumnsFromGeneratedCurrentSchema(JdbcTemplate jdbc) {
+        Integer checkCount = jdbc.queryForObject("select count(*) from information_schema.table_constraints "
+                + "where table_schema=database() and table_name='verified_performances' "
+                + "and constraint_name='chk_verified_performance_supplier_limit' and constraint_type='CHECK'", Integer.class);
+        if (checkCount != null && checkCount > 0)
+            jdbc.execute("alter table verified_performances drop check chk_verified_performance_supplier_limit");
+        for (String column : List.of("performance_starts_at", "supplier_per_account_limit")) {
+            Integer columnCount = jdbc.queryForObject("select count(*) from information_schema.columns "
+                    + "where table_schema=database() and table_name='verified_performances' and column_name=?",
+                    Integer.class, column);
+            if (columnCount != null && columnCount > 0)
+                jdbc.execute("alter table verified_performances drop column " + column);
+        }
     }
 
     private static String job(JdbcTemplate jdbc, String tenant, String member, String source, String batch, String mode, long rows) {

@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportJobRepository;
 import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportErrorRepository;
 import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportScopeRepository;
+import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportSupplierScopeRepository;
 import com.ticket.defender_core.domain.BulkLedgerImportJob;
 import com.ticket.defender_core.domain.BulkLedgerImportError;
 import com.ticket.defender_core.domain.BulkLedgerImportScope;
@@ -30,7 +31,9 @@ public class BulkLedgerImportWorker {
     private final BulkLedgerImportErrorRepository errors;
     private final SyntheticReservationImportGate gate;
     private final BulkLedgerUploadStorage storage;
-    private final BulkLedgerCsvStagingParser parser = new BulkLedgerCsvStagingParser();
+    private final BulkLedgerCsvStagingParser parser;
+    private final BulkLedgerImportSupplierScopeRepository supplierScopes;
+    private final BulkLedgerSupplierScopeProvisioner supplierScopeProvisioner;
     private final BulkLedgerStagingWriter staging;
     private final BulkLedgerCandidatePreparationService candidates;
     private final TransactionTemplate transactions;
@@ -42,16 +45,28 @@ public class BulkLedgerImportWorker {
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
             BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions) {
-        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, null, null, null);
+        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, null, null, null,
+                new BulkLedgerCsvStagingParser(), null, null);
+    }
+
+    public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
+            SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
+            BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions,
+            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers, BulkLedgerUploadDeletionService deletions) {
+        this(jobs, scopes, errors, gate, storage, staging, candidates, transactions, rawIntake, signalHashers,
+                deletions, new BulkLedgerCsvStagingParser(), null, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public BulkLedgerImportWorker(BulkLedgerImportJobRepository jobs, BulkLedgerImportScopeRepository scopes, BulkLedgerImportErrorRepository errors,
             SyntheticReservationImportGate gate, BulkLedgerUploadStorage storage, BulkLedgerStagingWriter staging,
             BulkLedgerCandidatePreparationService candidates, TransactionTemplate transactions,
-            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers, BulkLedgerUploadDeletionService deletions) {
+            BulkLedgerRawIntakePolicy rawIntake, BulkLedgerRawSignalHasherFactory signalHashers,
+            BulkLedgerUploadDeletionService deletions, BulkLedgerCsvStagingParser parser,
+            BulkLedgerImportSupplierScopeRepository supplierScopes, BulkLedgerSupplierScopeProvisioner supplierScopeProvisioner) {
         this.jobs = jobs; this.scopes = scopes; this.errors = errors; this.gate = gate; this.storage = storage; this.staging = staging; this.candidates = candidates; this.transactions = transactions;
-        this.rawIntake = rawIntake; this.signalHashers = signalHashers; this.deletions = deletions;
+        this.rawIntake = rawIntake; this.signalHashers = signalHashers; this.deletions = deletions; this.parser = parser;
+        this.supplierScopes = supplierScopes; this.supplierScopeProvisioner = supplierScopeProvisioner;
     }
 
     public void process(UUID importId) {
@@ -76,17 +91,51 @@ public class BulkLedgerImportWorker {
         try {
             // Re-read exact object version: a current-object replacement cannot alter the staged source.
             storage.verify(objectKey(importId), lease.objectVersion(), lease.maximumBytes());
-            List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(importId);
             transactions.executeWithoutResult(status -> gate.requireSyntheticScope(lease.tenantId(), LocalDateTime.now(ZoneOffset.UTC)));
             var reservation = gate.referenceHasher(); // intentionally preserves Track 2 reservation contract
             var ticket = gate.referenceHasher("BL02_TICKET_REFERENCE");
             var account = gate.referenceHasher("BL02_ACCOUNT_REFERENCE");
             BulkLedgerRawSignalHashers rawSignals = v3 ? signalHashers.hashers() : null;
+            List<BulkLedgerImportScope> jobScopes;
+            if ("SUPPLIER_CODE".equals(lease.scopeKeyType())) {
+                List<BulkLedgerCsvStagingParser.SupplierScope> pendingScopes = supplierScopes
+                        .findByJobIdOrderBySourceEventCodeAscSourcePerformanceCodeAsc(importId).stream()
+                        .map(scope -> new BulkLedgerCsvStagingParser.SupplierScope(scope.getSourceEventCode(),
+                                scope.getSourcePerformanceCode(), scope.getEventTitle(), scope.getPerformanceStartsAt(),
+                                scope.getPerAccountLimit(), scope.getDeclaredRowCount(),
+                                deterministicScopeId(lease.tenantId(), scope.getSourceEventCode()),
+                                deterministicScopeId(lease.tenantId(), scope.getSourceEventCode() + "#" + scope.getSourcePerformanceCode())))
+                        .toList();
+                BulkLedgerCsvStagingParser.Result preflight;
+                try (InputStream source = storage.openVersion(objectKey(importId), lease.objectVersion())) {
+                    preflight = parser.parseSupplier(source, lease.mode(), lease.tenantId(), pendingScopes, reservation,
+                            ticket, account, rawSignals, ignored -> { });
+                }
+                if (preflight.rows() != lease.declaredRows())
+                    throw new BulkLedgerCsvValidationException(0, "BULK_CSV_DECLARED_ROW_COUNT_MISMATCH");
+                if (supplierScopeProvisioner == null)
+                    throw new BulkLedgerCsvValidationException(0, "BULK_SUPPLIER_SCOPE_RESOLUTION_UNAVAILABLE");
+                supplierScopeProvisioner.resolve(importId, lease.tenantId(), lease.createdByMembershipId());
+                jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(importId);
+            } else {
+                jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(importId);
+            }
             BulkLedgerStagingWriter.Session stagingSession = staging.open(importId, lease.tenantId(), lease.fence());
             BulkLedgerCsvStagingParser.Result result;
             try (InputStream source = storage.openVersion(objectKey(importId), lease.objectVersion())) {
-                result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes, reservation, ticket, account,
-                        rawSignals, stagingSession::accept);
+                if ("SUPPLIER_CODE".equals(lease.scopeKeyType())) {
+                    List<BulkLedgerCsvStagingParser.SupplierScope> resolvedScopes = supplierScopes
+                            .findByJobIdOrderBySourceEventCodeAscSourcePerformanceCodeAsc(importId).stream()
+                            .map(scope -> new BulkLedgerCsvStagingParser.SupplierScope(scope.getSourceEventCode(),
+                                    scope.getSourcePerformanceCode(), scope.getEventTitle(), scope.getPerformanceStartsAt(),
+                                    scope.getPerAccountLimit(), scope.getDeclaredRowCount(), scope.getEventId(), scope.getPerformanceId()))
+                            .toList();
+                    result = parser.parseSupplier(source, lease.mode(), lease.tenantId(), resolvedScopes, reservation,
+                            ticket, account, rawSignals, stagingSession::accept);
+                } else {
+                    result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes,
+                            reservation, ticket, account, rawSignals, stagingSession::accept);
+                }
             }
             stagingSession.finish();
             if (result.rows() != lease.declaredRows()) throw new BulkLedgerCsvValidationException(0, "BULK_CSV_DECLARED_ROW_COUNT_MISMATCH");
@@ -149,7 +198,8 @@ public class BulkLedgerImportWorker {
             job.beginStaging(job.getFenceToken(), now);
         } catch (IllegalStateException notRunnable) { return null; }
         jobs.saveAndFlush(job);
-        return new Lease(job.getTenantId(), job.getSchemaVersion(), job.getMode(), job.getUploadObjectVersion(), job.getDeclaredFileBytes(), job.getDeclaredRowCount(), job.getFenceToken());
+        return new Lease(job.getTenantId(), job.getCreatedByMembershipId(), job.getSchemaVersion(), job.getScopeKeyType(),
+                job.getMode(), job.getUploadObjectVersion(), job.getDeclaredFileBytes(), job.getDeclaredRowCount(), job.getFenceToken());
     }
     private void ready(UUID importId, long fence, long rows) {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow(); job.readyToPublish(fence, rows, rows, 0, LocalDateTime.now(ZoneOffset.UTC)); jobs.saveAndFlush(job);
@@ -169,5 +219,9 @@ public class BulkLedgerImportWorker {
         if (deletions != null) deletions.deleteUpload(importId, tenantId, reason);
     }
     private static String objectKey(UUID id) { return "bulk-ledger-private/" + id + "/upload.csv"; }
-    private record Lease(UUID tenantId, String schemaVersion, BulkLedgerImportJob.Mode mode, String objectVersion, long maximumBytes, long declaredRows, long fence) { }
+    private static UUID deterministicScopeId(UUID tenantId, String value) {
+        return UUID.nameUUIDFromBytes((tenantId + "#" + value).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+    private record Lease(UUID tenantId, UUID createdByMembershipId, String schemaVersion, String scopeKeyType,
+            BulkLedgerImportJob.Mode mode, String objectVersion, long maximumBytes, long declaredRows, long fence) { }
 }

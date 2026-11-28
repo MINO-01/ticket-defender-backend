@@ -5,6 +5,7 @@ import com.ticket.defender_core.adapter.out.persistence.AdminMembershipRepositor
 import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportErrorRepository;
 import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportJobRepository;
 import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportScopeRepository;
+import com.ticket.defender_core.adapter.out.persistence.BulkLedgerImportSupplierScopeRepository;
 import com.ticket.defender_core.adapter.out.persistence.MembershipEventGrantRepository;
 import com.ticket.defender_core.adapter.out.persistence.MembershipRoleRepository;
 import com.ticket.defender_core.adapter.out.persistence.VerifiedPerformanceRepository;
@@ -13,6 +14,7 @@ import com.ticket.defender_core.domain.AdminMembershipEntity;
 import com.ticket.defender_core.domain.BulkLedgerImportError;
 import com.ticket.defender_core.domain.BulkLedgerImportJob;
 import com.ticket.defender_core.domain.BulkLedgerImportScope;
+import com.ticket.defender_core.domain.BulkLedgerImportSupplierScope;
 import com.ticket.defender_core.domain.VerifiedPerformance;
 import com.ticket.defender_core.security.AdminAccessService;
 import com.ticket.defender_core.security.AdminActor;
@@ -57,6 +59,7 @@ public class BulkLedgerImportService {
     private final SyntheticReservationImportGate syntheticGate;
     private final BulkLedgerImportJobRepository jobs;
     private final BulkLedgerImportScopeRepository scopes;
+    private final BulkLedgerImportSupplierScopeRepository supplierScopes;
     private final BulkLedgerImportErrorRepository errors;
     private final BulkLedgerUploadStorage uploadStorage;
     private final BulkLedgerPublicationService publications;
@@ -94,29 +97,45 @@ public class BulkLedgerImportService {
     @Transactional
     public BulkLedgerImportDto.View register(String idempotencyKey, BulkLedgerImportDto.RegisterRequest input) {
         Normalized request = normalize(input);
-        List<AuthorizedScope> authorized = authorizeScopes(request.scopes(), WRITE_ROLES);
         TenantScope actor = tenantScope(WRITE_ROLES);
-        if (!actor.tenantId().equals(authorized.getFirst().tenantId()) || !actor.membershipId().equals(authorized.getFirst().membershipId()))
-            throw notFound();
+        if ("TD_UUID".equals(request.scopeKeyType())) {
+            List<AuthorizedScope> authorized = authorizeScopes(request.scopes(), WRITE_ROLES);
+            if (!actor.tenantId().equals(authorized.getFirst().tenantId()) || !actor.membershipId().equals(authorized.getFirst().membershipId()))
+                throw notFound();
+        }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         // Check before replay too: a disabled or non-isolated environment must not expose this import workflow.
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
         if ("v3".equals(request.schemaVersion())) rawIntake.requireV3Accepted();
         String keyDigest = CandidatePipelineSupport.idempotencyDigest(idempotencyKey);
         var replay = jobs.findByCreatedByMembershipIdAndIdempotencyKeyDigest(actor.membershipId(), keyDigest);
-        if (replay.isPresent()) return replay(replay.get(), request.requestDigest());
+        if (replay.isPresent()) {
+            requireReplayAccess(actor, replay.get());
+            return replay(replay.get(), request.requestDigest());
+        }
         var sameBatch = jobs.findByTenantIdAndSourceSystemAndSourceBatchId(actor.tenantId(), request.sourceSystem(), request.sourceBatchId());
-        if (sameBatch.isPresent()) return replay(sameBatch.get(), request.requestDigest());
+        if (sameBatch.isPresent()) {
+            requireReplayAccess(actor, sameBatch.get());
+            return replay(sameBatch.get(), request.requestDigest());
+        }
 
         BulkLedgerImportJob job = new BulkLedgerImportJob(actor.tenantId(), actor.membershipId(), keyDigest, request.requestDigest(),
                 request.schemaVersion(), request.sourceSystem(), request.sourceBatchId(), request.mode(), request.format(),
-                request.sha256(), request.bytes(), request.rows(), request.completeSnapshot(), now);
+                request.sha256(), request.bytes(), request.rows(), request.completeSnapshot(), request.scopeKeyType(), now);
         try {
             jobs.saveAndFlush(job);
-            scopes.saveAll(request.scopes().stream().map(scope -> new BulkLedgerImportScope(job.getId(), actor.tenantId(),
-                    scope.eventId(), scope.performanceId(), scope.scopeAsOf(), scope.rows(), scope.cursorStart(), scope.cursorEnd(),
-                    scope.sourceSequenceStart(), scope.sourceSequenceEnd())).toList());
-            scopes.flush();
+            if ("TD_UUID".equals(request.scopeKeyType())) {
+                scopes.saveAll(request.scopes().stream().map(scope -> new BulkLedgerImportScope(job.getId(), actor.tenantId(),
+                        scope.eventId(), scope.performanceId(), scope.scopeAsOf(), scope.rows(), scope.cursorStart(), scope.cursorEnd(),
+                        scope.sourceSequenceStart(), scope.sourceSequenceEnd())).toList());
+                scopes.flush();
+            } else {
+                supplierScopes.saveAll(request.supplierScopes().stream().map(scope -> new BulkLedgerImportSupplierScope(job.getId(), actor.tenantId(),
+                        scope.sourceEventCode(), scope.sourcePerformanceCode(), scope.eventTitle(), scope.performanceStartsAt(),
+                        scope.perAccountLimit(), scope.scopeAsOf(), scope.rows(), scope.cursorStart(), scope.cursorEnd(),
+                        scope.sourceSequenceStart(), scope.sourceSequenceEnd())).toList());
+                supplierScopes.flush();
+            }
         } catch (DataIntegrityViolationException concurrent) {
             // The two UNIQUE indexes are the final cross-node protection. Do not turn a collision into a clean job.
             throw conflict("BULK_IMPORT_CONCURRENT_REGISTRATION");
@@ -139,7 +158,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(VIEW_ROLES);
         List<BulkLedgerImportJob> found = jobs.findByTenantIdOrderByCreatedAtDescIdDesc(actor.tenantId());
         Map<UUID, List<BulkLedgerImportScope>> scopeMap = scopes(found);
-        List<BulkLedgerImportDto.View> visible = found.stream().filter(job -> allowed(actor, scopeMap.getOrDefault(job.getId(), List.of())))
+        List<BulkLedgerImportDto.View> visible = found.stream().filter(job -> allowed(actor, job, scopeMap.getOrDefault(job.getId(), List.of())))
                 .map(job -> view(job, scopeMap.getOrDefault(job.getId(), List.of()))).toList();
         int from = Math.min(page * pageSize, visible.size());
         int to = Math.min(from + pageSize, visible.size());
@@ -151,7 +170,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(VIEW_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
         return view(job, jobScopes);
     }
 
@@ -160,7 +179,7 @@ public class BulkLedgerImportService {
         validatePage(page, pageSize);
         TenantScope actor = tenantScope(VIEW_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
-        if (!allowed(actor, scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId()))) throw notFound();
+        if (!allowed(actor, job, scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId()))) throw notFound();
         List<BulkLedgerImportDto.Error> found = errors.findByJobIdOrderBySequenceNoAsc(job.getId()).stream().map(BulkLedgerImportDto.Error::from).toList();
         int from = Math.min(page * pageSize, found.size()); int to = Math.min(from + pageSize, found.size());
         return new BulkLedgerImportDto.Page<>(found.subList(from, to), page, pageSize, to < found.size());
@@ -171,7 +190,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(WRITE_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
         try { job.cancel(LocalDateTime.now(ZoneOffset.UTC)); }
         catch (IllegalStateException invalid) { throw conflict("BULK_IMPORT_STATE_TRANSITION_INVALID"); }
         return view(jobs.saveAndFlush(job), jobScopes);
@@ -182,7 +201,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(WRITE_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
         if ("v3".equals(job.getSchemaVersion())) rawIntake.requireV3Accepted();
@@ -207,7 +226,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(WRITE_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         syntheticGate.requireSyntheticScope(actor.tenantId(), now);
         if ("v3".equals(job.getSchemaVersion())) rawIntake.requireV3Accepted();
@@ -234,7 +253,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(WRITE_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
         var published = publications.publish(importId, actor.tenantId(), actor.membershipId(), CandidatePipelineSupport.idempotencyDigest(idempotencyKey));
         return publicationView(published);
     }
@@ -244,7 +263,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(VIEW_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
         return publicationView(publications.find(importId, actor.tenantId()));
     }
 
@@ -257,7 +276,7 @@ public class BulkLedgerImportService {
         TenantScope actor = tenantScope(WRITE_ROLES);
         BulkLedgerImportJob job = jobs.findByIdAndTenantId(importId, actor.tenantId()).orElseThrow(BulkLedgerImportService::notFound);
         List<BulkLedgerImportScope> jobScopes = scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId());
-        if (!allowed(actor, jobScopes)) throw notFound();
+        if (!allowed(actor, job, jobScopes)) throw notFound();
 
         List<CandidateImport> candidates = jdbc.query("""
                 select id,status,failure_code from td_bulk_ledger_candidate_imports
@@ -370,8 +389,12 @@ public class BulkLedgerImportService {
         return new TenantScope(member.getTenantId(), member.getId(), events);
     }
 
-    private static boolean allowed(TenantScope actor, List<BulkLedgerImportScope> jobScopes) {
-        return !jobScopes.isEmpty() && jobScopes.stream().allMatch(scope -> actor.eventIds().contains(scope.getEventId()));
+    private static boolean allowed(TenantScope actor, BulkLedgerImportJob job, List<BulkLedgerImportScope> jobScopes) {
+        if (!jobScopes.isEmpty()) return jobScopes.stream().allMatch(scope -> actor.eventIds().contains(scope.getEventId()));
+        return "SUPPLIER_CODE".equals(job.getScopeKeyType()) && actor.membershipId().equals(job.getCreatedByMembershipId());
+    }
+    private void requireReplayAccess(TenantScope actor, BulkLedgerImportJob job) {
+        if (!allowed(actor, job, scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId()))) throw notFound();
     }
     private Map<UUID, List<BulkLedgerImportScope>> scopes(List<BulkLedgerImportJob> jobs) {
         if (jobs.isEmpty()) return Map.of();
@@ -380,24 +403,33 @@ public class BulkLedgerImportService {
                 .forEach(scope -> result.computeIfAbsent(scope.getJobId(), ignored -> new ArrayList<>()).add(scope));
         return result;
     }
-    private static BulkLedgerImportDto.View view(BulkLedgerImportJob job, List<BulkLedgerImportScope> scopes) {
+    private BulkLedgerImportDto.View view(BulkLedgerImportJob job, List<BulkLedgerImportScope> scopes) {
         return new BulkLedgerImportDto.View(job.getId(), job.getSchemaVersion(), job.getSourceSystem(), job.getSourceBatchId(),
                 job.getMode(), job.getFormat(), job.getDeclaredObjectSha256(), job.getDeclaredFileBytes(), job.getDeclaredRowCount(),
                 job.isCompleteSnapshot(), job.getStatus(), job.getProcessedRowCount(), job.getAcceptedRowCount(), job.getRejectedRowCount(),
-                scopes.stream().map(BulkLedgerImportDto.Scope::from).toList(), offset(job.getCreatedAt()), offset(job.getUpdatedAt()), offset(job.getCancelledAt()));
+                scopes.stream().map(BulkLedgerImportDto.Scope::from).toList(), offset(job.getCreatedAt()), offset(job.getUpdatedAt()), offset(job.getCancelledAt()),
+                job.getScopeKeyType(), supplierScopes.findByJobIdOrderBySourceEventCodeAscSourcePerformanceCodeAsc(job.getId()).stream()
+                        .map(BulkLedgerImportService::supplierScope).toList());
     }
     private BulkLedgerImportDto.View replay(BulkLedgerImportJob job, String digest) {
         if (!job.getRequestDigest().equals(digest)) throw conflict("BULK_IMPORT_IDEMPOTENCY_CONFLICT");
         return view(job, scopes.findByJobIdOrderByEventIdAscPerformanceIdAsc(job.getId()));
     }
+    private static BulkLedgerImportDto.SupplierScope supplierScope(BulkLedgerImportSupplierScope value) {
+        return new BulkLedgerImportDto.SupplierScope(value.getSourceEventCode(), value.getSourcePerformanceCode(), value.getEventTitle(),
+                offset(value.getPerformanceStartsAt()), value.getPerAccountLimit(), value.getDeclaredRowCount(), value.getEventId(),
+                value.getPerformanceId(), value.isEventCreated(), value.isPerformanceCreated());
+    }
     private static void validatePage(int page, int size) {
         if (page < 0 || size < 1 || size > 100 || (long) page * size > Integer.MAX_VALUE) throw CandidatePipelineSupport.invalid();
     }
     private static Normalized normalize(BulkLedgerImportDto.RegisterRequest request) {
-        if (request == null || request.declaredFileBytes() == null || request.declaredRowCount() == null || request.completeSnapshot() == null || request.scopes() == null || request.scopes().isEmpty())
+        if (request == null || request.declaredFileBytes() == null || request.declaredRowCount() == null || request.completeSnapshot() == null)
             throw CandidatePipelineSupport.invalid();
         String schema = CandidatePipelineSupport.bounded(request.schemaVersion(), 32);
         if (!"v1".equals(schema) && !"v2".equals(schema) && !"v3".equals(schema)) throw CandidatePipelineSupport.invalid();
+        String scopeKeyType = request.scopeKeyType() == null ? "TD_UUID" : CandidatePipelineSupport.bounded(request.scopeKeyType(), 24);
+        if (!"TD_UUID".equals(scopeKeyType) && !"SUPPLIER_CODE".equals(scopeKeyType)) throw CandidatePipelineSupport.invalid();
         String system = CandidatePipelineSupport.bounded(request.sourceSystem(), 64);
         String batch = CandidatePipelineSupport.bounded(request.sourceBatchId(), 128);
         BulkLedgerImportJob.Mode mode = enumValue(BulkLedgerImportJob.Mode.class, request.mode());
@@ -407,32 +439,84 @@ public class BulkLedgerImportService {
             throw CandidatePipelineSupport.invalid();
         if ((mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT) != request.completeSnapshot()) throw CandidatePipelineSupport.invalid();
         List<NormalizedScope> scopes = new ArrayList<>(); Set<String> unique = new HashSet<>(); long total = 0;
-        for (BulkLedgerImportDto.ScopeRequest scope : request.scopes()) {
-            if (scope == null || scope.eventId() == null || scope.performanceId() == null || scope.declaredRowCount() == null || scope.declaredRowCount() < 0)
-                throw CandidatePipelineSupport.invalid();
-            LocalDateTime asOf = scope.scopeAsOf() == null ? null : scope.scopeAsOf().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
-            String start = optional(scope.cursorStart(), 256); String end = optional(scope.cursorEnd(), 256);
-            Long sequenceStart = scope.sourceSequenceStart(), sequenceEnd = scope.sourceSequenceEnd();
-            if ("v1".equals(schema)) {
-                if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT && (asOf == null || start != null || end != null || sequenceStart != null || sequenceEnd != null)) throw CandidatePipelineSupport.invalid();
-                if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED && (asOf != null || start == null || end == null || sequenceStart != null || sequenceEnd != null)) throw CandidatePipelineSupport.invalid();
-            } else if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT) {
-                if (asOf == null || start != null || end == null || sequenceStart != null || sequenceEnd == null || sequenceEnd < 0) throw CandidatePipelineSupport.invalid();
-            } else {
-                if (asOf != null || start == null || end == null || sequenceStart == null || sequenceEnd == null
-                        || sequenceStart < 0 || sequenceEnd < sequenceStart || scope.declaredRowCount() == 0
-                        || sequenceEnd - sequenceStart + 1 != scope.declaredRowCount()) throw CandidatePipelineSupport.invalid();
+        List<NormalizedSupplierScope> supplier = new ArrayList<>();
+        if ("TD_UUID".equals(scopeKeyType)) {
+            if (request.scopes() == null || request.scopes().isEmpty()
+                    || request.supplierScopes() != null && !request.supplierScopes().isEmpty()) throw CandidatePipelineSupport.invalid();
+            for (BulkLedgerImportDto.ScopeRequest scope : request.scopes()) {
+                if (scope == null || scope.eventId() == null || scope.performanceId() == null || scope.declaredRowCount() == null || scope.declaredRowCount() < 0)
+                    throw CandidatePipelineSupport.invalid();
+                LocalDateTime asOf = scope.scopeAsOf() == null ? null : scope.scopeAsOf().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
+                String start = optional(scope.cursorStart(), 256); String end = optional(scope.cursorEnd(), 256);
+                Long sequenceStart = scope.sourceSequenceStart(), sequenceEnd = scope.sourceSequenceEnd();
+                validateScopeWindow(schema, mode, scope.declaredRowCount(), asOf, start, end, sequenceStart, sequenceEnd);
+                if (!unique.add(scope.eventId() + ":" + scope.performanceId())) throw CandidatePipelineSupport.invalid();
+                total = addRows(total, scope.declaredRowCount());
+                scopes.add(new NormalizedScope(scope.eventId(), scope.performanceId(), asOf, scope.declaredRowCount(), start, end, sequenceStart, sequenceEnd));
             }
-            if (!unique.add(scope.eventId() + ":" + scope.performanceId())) throw CandidatePipelineSupport.invalid();
-            try { total = Math.addExact(total, scope.declaredRowCount()); } catch (ArithmeticException overflow) { throw CandidatePipelineSupport.invalid(); }
-            scopes.add(new NormalizedScope(scope.eventId(), scope.performanceId(), asOf, scope.declaredRowCount(), start, end, sequenceStart, sequenceEnd));
+        } else {
+            if (!"v3".equals(schema) || request.scopes() != null && !request.scopes().isEmpty()
+                    || request.supplierScopes() == null || request.supplierScopes().isEmpty()) throw CandidatePipelineSupport.invalid();
+            Map<String, String> eventTitles = new HashMap<>();
+            for (BulkLedgerImportDto.SupplierScopeRequest scope : request.supplierScopes()) {
+                if (scope == null || scope.declaredRowCount() == null || scope.declaredRowCount() < 0
+                        || scope.performanceStartsAt() == null || scope.perAccountLimit() != null && scope.perAccountLimit() < 1)
+                    throw CandidatePipelineSupport.invalid();
+                String eventCode = CandidatePipelineSupport.bounded(scope.sourceEventCode(), 128);
+                String performanceCode = CandidatePipelineSupport.bounded(scope.sourcePerformanceCode(), 128);
+                String title = CandidatePipelineSupport.bounded(scope.eventTitle(), 255);
+                LocalDateTime startsAt = scope.performanceStartsAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
+                LocalDateTime asOf = scope.scopeAsOf() == null ? null : scope.scopeAsOf().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
+                String start = optional(scope.cursorStart(), 256); String end = optional(scope.cursorEnd(), 256);
+                validateScopeWindow(schema, mode, scope.declaredRowCount(), asOf, start, end,
+                        scope.sourceSequenceStart(), scope.sourceSequenceEnd());
+                String codeKey = eventCode.length() + "#" + eventCode + performanceCode;
+                if (!unique.add(codeKey)) throw CandidatePipelineSupport.invalid();
+                String priorTitle = eventTitles.putIfAbsent(eventCode, title);
+                if (priorTitle != null && !priorTitle.equals(title)) throw CandidatePipelineSupport.invalid();
+                total = addRows(total, scope.declaredRowCount());
+                supplier.add(new NormalizedSupplierScope(eventCode, performanceCode, title, startsAt,
+                        scope.perAccountLimit(), asOf, scope.declaredRowCount(), start, end,
+                        scope.sourceSequenceStart(), scope.sourceSequenceEnd()));
+            }
         }
         if (total != request.declaredRowCount()) throw CandidatePipelineSupport.invalid();
-        List<ScopeDigest> digestScopes = scopes.stream().map(scope -> new ScopeDigest(scope.eventId(), scope.performanceId(),
-                scope.scopeAsOf() == null ? null : scope.scopeAsOf().atOffset(ZoneOffset.UTC).toString(),
-                scope.cursorStart(), scope.cursorEnd(), scope.sourceSequenceStart(), scope.sourceSequenceEnd(), scope.rows())).toList();
+        String digest;
+        if ("TD_UUID".equals(scopeKeyType)) {
+            List<ScopeDigest> digestScopes = scopes.stream().map(scope -> new ScopeDigest(scope.eventId(), scope.performanceId(),
+                    scope.scopeAsOf() == null ? null : scope.scopeAsOf().atOffset(ZoneOffset.UTC).toString(),
+                    scope.cursorStart(), scope.cursorEnd(), scope.sourceSequenceStart(), scope.sourceSequenceEnd(), scope.rows())).toList();
+            digest = requestDigest(schema, system, batch, mode.name(), format.name(), sha, request.declaredFileBytes(),
+                    request.declaredRowCount(), request.completeSnapshot(), digestScopes);
+        } else {
+            List<String> canonical = new ArrayList<>(List.of("BL01", schema, scopeKeyType, system, batch, mode.name(),
+                    format.name(), sha, Long.toString(request.declaredFileBytes()), Long.toString(request.declaredRowCount()),
+                    Boolean.toString(request.completeSnapshot())));
+            supplier.stream().sorted(Comparator.comparing(NormalizedSupplierScope::sourceEventCode)
+                            .thenComparing(NormalizedSupplierScope::sourcePerformanceCode))
+                    .forEach(scope -> canonical.addAll(List.of(scope.sourceEventCode(), scope.sourcePerformanceCode(),
+                            scope.eventTitle(), scope.performanceStartsAt().toString(), String.valueOf(scope.perAccountLimit()),
+                            String.valueOf(scope.scopeAsOf()), String.valueOf(scope.cursorStart()), String.valueOf(scope.cursorEnd()),
+                            String.valueOf(scope.sourceSequenceStart()), String.valueOf(scope.sourceSequenceEnd()), Long.toString(scope.rows()))));
+            digest = CandidatePipelineSupport.sha256(canonical.toArray(String[]::new));
+        }
         return new Normalized(schema, system, batch, mode, format, sha, request.declaredFileBytes(), request.declaredRowCount(), request.completeSnapshot(), scopes,
-                requestDigest(schema, system, batch, mode.name(), format.name(), sha, request.declaredFileBytes(), request.declaredRowCount(), request.completeSnapshot(), digestScopes));
+                scopeKeyType, supplier, digest);
+    }
+    private static void validateScopeWindow(String schema, BulkLedgerImportJob.Mode mode, long rows, LocalDateTime asOf,
+            String start, String end, Long sequenceStart, Long sequenceEnd) {
+        if ("v1".equals(schema)) {
+            if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT && (asOf == null || start != null || end != null || sequenceStart != null || sequenceEnd != null)) throw CandidatePipelineSupport.invalid();
+            if (mode == BulkLedgerImportJob.Mode.CHANGE_FEED && (asOf != null || start == null || end == null || sequenceStart != null || sequenceEnd != null)) throw CandidatePipelineSupport.invalid();
+        } else if (mode == BulkLedgerImportJob.Mode.FULL_SNAPSHOT) {
+            if (asOf == null || start != null || end == null || sequenceStart != null || sequenceEnd == null || sequenceEnd < 0) throw CandidatePipelineSupport.invalid();
+        } else if (asOf != null || start == null || end == null || sequenceStart == null || sequenceEnd == null
+                || sequenceStart < 0 || sequenceEnd < sequenceStart || rows == 0
+                || sequenceEnd - sequenceStart + 1 != rows) throw CandidatePipelineSupport.invalid();
+    }
+    private static long addRows(long current, long added) {
+        try { return Math.addExact(current, added); }
+        catch (ArithmeticException overflow) { throw CandidatePipelineSupport.invalid(); }
     }
     private static String optional(String value, int max) {
         if (value == null) return null;
@@ -449,9 +533,12 @@ public class BulkLedgerImportService {
     private static CaseApiException notFound() { return new CaseApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND"); }
     private record Normalized(String schemaVersion, String sourceSystem, String sourceBatchId, BulkLedgerImportJob.Mode mode,
                               BulkLedgerImportJob.Format format, String sha256, long bytes, long rows, boolean completeSnapshot,
-                              List<NormalizedScope> scopes, String requestDigest) { }
+                              List<NormalizedScope> scopes, String scopeKeyType, List<NormalizedSupplierScope> supplierScopes, String requestDigest) { }
     private record NormalizedScope(UUID eventId, UUID performanceId, LocalDateTime scopeAsOf, long rows, String cursorStart, String cursorEnd,
                                    Long sourceSequenceStart, Long sourceSequenceEnd) { }
+    private record NormalizedSupplierScope(String sourceEventCode, String sourcePerformanceCode, String eventTitle,
+            LocalDateTime performanceStartsAt, Integer perAccountLimit, LocalDateTime scopeAsOf, long rows,
+            String cursorStart, String cursorEnd, Long sourceSequenceStart, Long sourceSequenceEnd) { }
     private record AuthorizedScope(UUID tenantId, UUID membershipId) { }
     private record TenantScope(UUID tenantId, UUID membershipId, Set<UUID> eventIds) { }
     private record ScopeKey(UUID eventId, UUID performanceId) { }

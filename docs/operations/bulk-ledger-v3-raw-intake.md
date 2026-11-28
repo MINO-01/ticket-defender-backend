@@ -117,6 +117,20 @@ v3 = v2 필수 열 전부 + 아래 선택 열. 열이 없거나 값이 비면 �
 - 연락처 신호는 수령인 연락처가 있으면 수령인, 없으면 회원 연락처이며 출처(`RECIPIENT`, `MEMBER`)를 기록한다.
 - 같은 원본은 같은 토큰이고, 같은 문자열이라도 신호 종류가 다르면 다른 토큰이다.
 
+### SUPPLIER_CODE 등록 방식
+
+- 등록 요청에서 `scopeKeyType=SUPPLIER_CODE`와 `supplierScopes`를 사용한다. 이 방식은 v3 전용이며 기존 `TD_UUID` 등록의 기본값과 헤더 계약은 유지한다.
+- `supplierScopes`에는 `sourceEventCode`, `sourcePerformanceCode`, `eventTitle`, 오프셋이 있는 `performanceStartsAt`, 선택 `perAccountLimit`, 범위 시점/커서/행 수를 보낸다. 같은 event code에는 같은 제목만 허용한다.
+- CSV에는 `event_id`, `performance_id` 대신 `source_event_code`, `source_performance_code`, `event_title`, `performance_starts_at`가 들어간다. `per_account_limit`은 선택 열이다. CSV의 코드와 메타데이터는 등록 범위와 정확히 일치해야 한다. UUID 열과 코드 열을 섞으면 `BULK_CSV_HEADER_INVALID`, 등록 값과 행 값이 다르면 `BULK_CSV_PERFORMANCE_METADATA_MISMATCH`다.
+- 전체 파일을 먼저 읽기 전용으로 검증한다. 검증이 성공한 뒤에만 테넌트 안에서 이벤트/회차 코드를 조회하거나 생성하고 staging을 수행한다. 오류 파일은 이벤트나 회차를 생성하지 않는다.
+- 동일 테넌트의 이벤트 코드는 `events.external_event_ref`, 해당 이벤트 안의 회차 코드는 `verified_performances.performance_ref`로 매핑한다. 유일 키와 재조회로 동시 생성 경합을 처리한다. 이미 있는 제목, 회차 시작 시각, 확인 한도는 다른 값으로 덮어쓰지 않는다.
+- 자동 생성 회차는 `SUPPLIER_UPLOAD` 출처 및 `ACTIVE` 분석 상태를 갖는다. 자동 생성 이벤트는 공개 제보 접수를 켜지 않는다. 새 이벤트에는 업로드한 관리자만 membership grant를 받으며, 이미 존재하는 이벤트는 업로더가 기존 grant를 가진 경우에만 쓸 수 있다. 관리자 확인이 필요한 공개 보고/발급 흐름은 자동 생성된 이벤트에 대해 별도 확인 상태를 요구해야 한다.
+- `perAccountLimit`이 전달되면 원 공급자 확인 값으로 회차에 보관한다. 없으면 기존 확인 한도 정책을 만들거나 변경하지 않으며 기존 분석의 Q=0.5 대체 규칙을 유지한다. 현재 분석 정책 모델은 구매 한도 주체, 적용 범위, 취소/환불 규칙, 선예매 포함 여부도 요구하므로 숫자 하나만으로 이 의미를 추정해 점수 정책으로 승격하지 않는다.
+- 선택 열 `seat_zone`, `seat_row`, `seat_number`, `reserved_at`, `paid_at`, `cancelled_at`, `account_created_at`은 staging과 게시 원장에 저장하며 HMAC하지 않는다. 좌석은 64자 제한, 날짜는 오프셋이 있는 ISO 8601만 허용한다. 행 단위 원본 값은 API 응답과 로그에 포함하지 않는다.
+- 취소 티켓은 원장 상태와 선택 열로 저장하며, 분석 입력에서는 `cancelledTickets`로 별도 전달할 수 있다. 해당 전달 설정은 기본 off이고, off 상태에서는 기존 exp2 요청 및 입력 파일을 유지한다. 활성 티켓 목록, 구매 수량 및 exp2 점수 계산에는 취소 티켓을 섞지 않는다. Data의 다공연 artifact는 취소 행이 있을 때만 NDJSON v2 envelope와 취소 행 수를 사용한다.
+
+예매처의 열별 제공 근거와 보존 최소화 지침은 `../integration/supplier-data-spec.md`를 따른다.
+
 행 오류 코드(행 번호와 코드만 남는다): `BULK_CSV_IP_INVALID`, `BULK_CSV_IP_NETWORK_TYPE_INVALID`,
 `BULK_CSV_PAYMENT_UNMASKED`, `BULK_CSV_PAYMENT_INCOMPLETE`, `BULK_CSV_REFUND_ACCOUNT_INCOMPLETE`,
 `BULK_CSV_PHONE_INVALID`, `BULK_CSV_ADDRESS_INVALID`. 따옴표 오류 같은 CSV 문법 오류는 모든 버전에서
@@ -142,3 +156,4 @@ v3 = v2 필수 열 전부 + 아래 선택 열. 열이 없거나 값이 비면 �
    `multi-event-artifact-job`) (기존)
 5. `bulk-ledger-track1-signal-source-migration.sql` (신호 출처 컬럼)
 6. `multi-event-multi-performance-migration.sql` (다회차 점수 버전과 후보 CHECK)
+7. `supplier-code-and-v3-fields-migration.sql` (Backend PR 3, 기준 스키마 및 기존 bulk-ledger migrations 뒤에 적용)

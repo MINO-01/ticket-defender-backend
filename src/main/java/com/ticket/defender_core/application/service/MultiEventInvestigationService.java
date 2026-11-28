@@ -27,6 +27,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -89,21 +91,29 @@ public class MultiEventInvestigationService {
 
     private final JdbcTemplate jdbc; private final TransactionTemplate tx; private final CandidatePipelineAccess access; private final FastApiAdapter data;
     private final BulkLedgerUploadStorage storage;
-    private final boolean enabled; private final Set<String> approvedSupplierNamespaces; private final ObjectMapper json=JsonMapper.builder().build();
+    private final boolean enabled; private final boolean cancelledTicketTransferEnabled;
+    private final Set<String> approvedSupplierNamespaces; private final ObjectMapper json=JsonMapper.builder().build();
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long maxArtifactBytes=DEFAULT_MAX_ARTIFACT_BYTES;
     @Autowired
     public MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             BulkLedgerUploadStorage storage,
             @Value("${ticket-defender.multi-event-investigation.enabled:false}") boolean enabled,
-            @Value("${ticket-defender.multi-event-investigation.approved-supplier-namespaces:}") String approvedSupplierNamespaces){
+            @Value("${ticket-defender.multi-event-investigation.approved-supplier-namespaces:}") String approvedSupplierNamespaces,
+            @Value("${ticket-defender.bulk-ledger-upload.cancelled-ticket-transfer.enabled:false}") boolean cancelledTicketTransferEnabled){
         this.jdbc=jdbc;this.tx=tx;this.access=access;this.data=data;this.storage=storage;this.enabled=enabled;
+        this.cancelledTicketTransferEnabled=cancelledTicketTransferEnabled;
         this.approvedSupplierNamespaces=approvedSupplierNamespaces==null?Set.of():java.util.Arrays.stream(approvedSupplierNamespaces.split(","))
                 .map(String::trim).filter(value->!value.isEmpty()).collect(Collectors.toUnmodifiableSet());
     }
 
     MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             boolean enabled,String approvedSupplierNamespaces){
-        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces);
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,false);
+    }
+
+    MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
+            boolean enabled,String approvedSupplierNamespaces,boolean cancelledTicketTransferEnabled){
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,cancelledTicketTransferEnabled);
     }
 
     @Scheduled(fixedDelayString="${ticket-defender.multi-event-investigation.worker-delay:PT30S}") public void scheduled(){if(enabled){expireExhaustedLeases();consumeOne();}}
@@ -279,7 +289,7 @@ public class MultiEventInvestigationService {
     }
     private Claim claim(){
         List<Claim> rows=jdbc.query("""
-            select id,tenant_id,fence_token,status,data_job_id,artifact_id,artifact_object_version,artifact_sha256,artifact_record_count,attempt_count
+            select id,tenant_id,fence_token,status,data_job_id,artifact_id,artifact_object_version,artifact_sha256,artifact_record_count,artifact_cancelled_ticket_count,attempt_count
             from td_multi_event_investigation_runs
             where (data_job_id is not null or attempt_count<3)
               and ((status in ('PENDING','DATA_PENDING','RETRYABLE') and lease_until is null)
@@ -287,7 +297,7 @@ public class MultiEventInvestigationService {
             order by created_at limit 1 for update skip locked
             """,(rs,n)->new Claim(uuid(rs.getString(1)),uuid(rs.getString(2)),rs.getLong(3)+1,rs.getString(4),
                     rs.getString(5)==null?null:uuid(rs.getString(5)),rs.getString(6),rs.getString(7),rs.getString(8),
-                    nullableLong(rs,9),rs.getInt(10)));
+                    nullableLong(rs,9),rs.getInt(10),rs.getInt(11)));
         if(rows.isEmpty())return null;
         Claim claim=rows.getFirst();
         int incrementAttempt=shouldIncrementAttempt(claim.priorStatus(),claim.dataJobId(),claim.artifactId())?1:0;
@@ -315,7 +325,8 @@ public class MultiEventInvestigationService {
         try {
             path=Files.createTempFile("td-mei-", ".ndjson");
             MessageDigest digest=MessageDigest.getInstance("SHA-256");
-            long count=writeArtifactRows(claim,scopes,input,path,digest);
+            ArtifactWriteResult written=writeArtifactRows(claim,scopes,input,path,digest);
+            long count=written.recordCount();
             if(count<1) throw new Blocked("NO_EFFECTIVE_TICKETS");
             long artifactBytes=Files.size(path);
             if(artifactBytes>artifactByteLimit()) throw new Blocked("MULTI_EVENT_ARTIFACT_TOO_LARGE");
@@ -332,11 +343,12 @@ public class MultiEventInvestigationService {
                 requireLease(claim);
                 int changed=jdbc.update("""
                     update td_multi_event_investigation_runs
-                    set artifact_id=?,artifact_object_version=?,artifact_sha256=?,artifact_record_count=?,
+                    set artifact_id=?,artifact_object_version=?,artifact_sha256=?,artifact_record_count=?,artifact_cancelled_ticket_count=?,
                         status='DATA_PENDING',lease_owner=null,lease_until=null,failure_code=null,
                         updated_at=utc_timestamp(6),row_version=row_version+1
                     where id=? and status='RUNNING' and fence_token=? and lease_owner=?
-                    """,artifact,stored.versionId(),stored.sha256(),count,claim.id().toString(),claim.fence(),owner(claim));
+                    """,artifact,stored.versionId(),stored.sha256(),count,written.cancelledTicketRecordCount(),
+                    claim.id().toString(),claim.fence(),owner(claim));
                 if(changed!=1) throw new Blocked("RUN_LEASE_LOST");
             });
         } catch(Blocked e){throw e;}
@@ -345,8 +357,9 @@ public class MultiEventInvestigationService {
         finally {if(path!=null)try{Files.deleteIfExists(path);}catch(Exception ignored){}}
     }
 
-    private long writeArtifactRows(Claim claim,List<Scope> scopes,RunInput input,Path path,MessageDigest digest) throws Exception {
+    private ArtifactWriteResult writeArtifactRows(Claim claim,List<Scope> scopes,RunInput input,Path path,MessageDigest digest) throws Exception {
         long[] total={0},byteTotal={0};
+        int[] cancelledTotal={0};
         try(var output=new BufferedOutputStream(Files.newOutputStream(path))) {
             for(Scope scope:scopes) {
                 long[] ordinal={0};
@@ -374,9 +387,34 @@ public class MultiEventInvestigationService {
                     if(total[0]%10_000==0) heartbeat(claim);
                     } catch(Blocked e){throw e;} catch(Exception e){throw new RuntimeException(e);}
                 });
+                if(cancelledTicketTransferEnabled) {
+                    int cancellationLimit=(int)Math.min((long)MAX_ARTIFACT_TICKETS-total[0]+1,Integer.MAX_VALUE);
+                    jdbc.query(connection->{
+                        PreparedStatement statement=connection.prepareStatement(ARTIFACT_CANCELLED_TICKET_SQL,
+                                ResultSet.TYPE_FORWARD_ONLY,ResultSet.CONCUR_READ_ONLY);
+                        statement.setFetchSize(MYSQL_STREAMING_FETCH_SIZE);
+                        statement.setString(1,scope.versionId().toString());
+                        statement.setTimestamp(2,java.sql.Timestamp.from(input.analysisStartAt().toInstant()));
+                        statement.setTimestamp(3,java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
+                        statement.setString(4,input.keyVersion());
+                        statement.setInt(5,cancellationLimit);
+                        return statement;
+                    },rs->{
+                        try {
+                            if(total[0]>=MAX_ARTIFACT_TICKETS) throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");
+                            MultiEventAnalysisDto.CancelledTicket cancelled=cancelledTicketFromResultSet(rs,scope,input,++ordinal[0]);
+                            byte[] bytes=(json.writeValueAsString(new MultiEventAnalysisDto.ArtifactCancelledTicketRecord(
+                                    "CANCELLED_TICKET",cancelled))+"\n").getBytes(StandardCharsets.UTF_8);
+                            if(bytes.length>artifactByteLimit()-byteTotal[0]) throw new Blocked("MULTI_EVENT_ARTIFACT_TOO_LARGE");
+                            output.write(bytes); digest.update(bytes); total[0]++; cancelledTotal[0]++;
+                            byteTotal[0]+=bytes.length;
+                            if(total[0]%10_000==0) heartbeat(claim);
+                        } catch(Blocked e){throw e;} catch(Exception e){throw new RuntimeException(e);}
+                    });
+                }
             }
         }
-        return total[0];
+        return new ArtifactWriteResult(total[0],cancelledTotal[0]);
     }
 
     private static final String ARTIFACT_TICKET_SQL="""
@@ -386,13 +424,39 @@ public class MultiEventInvestigationService {
         select r.reservation_reference_hmac,r.account_reference_hmac,r.purchased_at,r.hmac_key_version,r.source_version,
                s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.hmac_purpose,s.hmac_key_version,s.source_version,
                ps.snapshot_id,ps.source_version,ps.ledger_complete_snapshot,ps.policy_verification_status,ps.quantity_data_status,ps.data_completeness_reason,ps.cancellation_handling,ps.duplicate_handling,ps.max_tickets_per_account,
-               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version
+               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version,
+               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at
         from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
         left join td_bulk_ledger_track1_policy_snapshots ps on ps.snapshot_id=? and ps.ledger_version_id=?
         left join td_bulk_ledger_track1_bulk_limit_findings lf on lf.job_id=ps.job_id and lf.performance_id=? and lf.account_reference_hmac=r.account_reference_hmac
         where r.rn=1 and r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<?
         order by r.ticket_reference_hmac limit ?
         """;
+
+    private static final String ARTIFACT_CANCELLED_TICKET_SQL="""
+        with recursive l as (select id,base_version_id,generation_no,revision_no from td_bulk_ledger_versions where id=? and status='PUBLISHED'
+          union all select p.id,p.base_version_id,p.generation_no,p.revision_no from td_bulk_ledger_versions p join l on l.base_version_id=p.id where p.status='PUBLISHED' and p.generation_no=l.generation_no and p.revision_no=l.revision_no-1),
+        ranked as (select tv.*,row_number() over(partition by tv.ticket_reference_hmac order by l.revision_no desc) rn from td_bulk_ledger_ticket_versions tv join l on l.id=tv.version_id)
+        select r.ticket_reference_hmac,r.account_reference_hmac,r.hmac_key_version,r.source_version,
+               r.seat_zone,r.seat_row,r.seat_number,r.cancelled_at
+        from ranked r
+        where r.rn=1 and r.ticket_status in ('CANCELLED','REFUNDED') and r.cancelled_at is not null
+          and r.cancelled_at>=? and r.cancelled_at<? and r.hmac_key_version=?
+        order by r.ticket_reference_hmac limit ?
+        """;
+
+    private MultiEventAnalysisDto.CancelledTicket cancelledTicketFromResultSet(ResultSet rs,Scope scope,
+            RunInput input,long ordinal) throws SQLException {
+        String ticketHmac=rs.getString(1),accountHmac=rs.getString(2),keyVersion=rs.getString(3),sourceVersion=rs.getString(4);
+        Timestamp cancelledAt=rs.getTimestamp(8);
+        if(ordinal<1||ordinal>MAX_ARTIFACT_TICKETS||ticketHmac==null||!ticketHmac.matches("[0-9a-f]{64}")
+                ||accountHmac==null||!accountHmac.matches("[0-9a-f]{64}")||!input.keyVersion().equals(keyVersion)
+                ||sourceVersion==null||sourceVersion.isBlank()||cancelledAt==null)
+            throw new Blocked("CANCELLED_TICKET_IDENTITY_INVALID");
+        return new MultiEventAnalysisDto.CancelledTicket(accountHmac,ticketHmac,scope.externalEventRef(),
+                scope.performanceId(),scope.versionId(),input.supplierNamespace(),input.purpose(),keyVersion,sourceVersion,
+                ordinal,rs.getString(5),rs.getString(6),rs.getString(7),cancelledAt.toLocalDateTime().atOffset(ZoneOffset.UTC));
+    }
 
     private MultiEventAnalysisDto.Ticket ticketFromResultSet(ResultSet rs,Scope scope,RunInput input,long ordinal) throws Exception {
         String rowKey=rs.getString(4),rowSource=rs.getString(5),purpose=rs.getString(13),key=rs.getString(14),signalSource=rs.getString(15);
@@ -417,7 +481,8 @@ public class MultiEventInvestigationService {
         return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),ordinal,
                 input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,
                 quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),
-                rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource);
+                rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,
+                rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33));
     }
 
     private void registerArtifact(Claim claim) {
@@ -425,8 +490,10 @@ public class MultiEventInvestigationService {
             throw new Blocked("MULTI_EVENT_ARTIFACT_METADATA_MISSING");
         List<Scope> scopes=scopesForWorker(claim.id());
         RunInput input=runInput(claim);
+        String inputFormat=claim.artifactCancelledTicketCount()>0
+                ?"multi-event-exp2-ndjson-v2":"multi-event-exp2-ndjson-v1";
         var manifest=new MultiEventAnalysisDto.ArtifactManifest(claim.artifactId(),claim.artifactId(),claim.objectVersion(),claim.artifactSha256(),
-                claim.artifactRecordCount(),"multi-event-exp2-ndjson-v1",claim.id(),claim.tenantId(),input.supplierNamespace(),input.purpose(),
+                claim.artifactRecordCount(),claim.artifactCancelledTicketCount(),inputFormat,claim.id(),claim.tenantId(),input.supplierNamespace(),input.purpose(),
                 input.keyVersion(),input.ledgerDigest(),input.analysisAsOf(),input.analysisStartAt(),input.analysisEndAt(),input.scoreVersion(),input.projectionVersion(),
                 scopes.stream().sorted(Comparator.comparing((Scope s)->s.eventId().toString()).thenComparing(s->s.performanceId().toString())).map(s->
                         new MultiEventAnalysisDto.ArtifactLedgerScope(s.externalEventRef(),s.eventId(),s.performanceId(),s.versionId(),s.sourceBatchId(),s.policySnapshotId())).toList());
@@ -1195,9 +1262,33 @@ public class MultiEventInvestigationService {
     private MultiEventAnalysisDto.Request request(Claim claim){
         List<Scope> scopes=scopesForWorker(claim.id()); if(scopes.size()<2)throw new Blocked("FIXED_LEDGER_SCOPE_MISSING");
         RunInput input=jdbc.query("select ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at from td_multi_event_investigation_runs where id=? and tenant_id=?",(rs,n)->new RunInput(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),time(rs,7),time(rs,8),time(rs,9)),claim.id().toString(),claim.tenantId().toString()).stream().findFirst().orElseThrow(()->new Blocked("RUN_MISSING"));
-        List<MultiEventAnalysisDto.Ticket> tickets=new ArrayList<>();for(Scope scope:scopes){int remaining=MAX_JSON_TICKETS-tickets.size();tickets.addAll(tickets(scope,input,remaining+1));if(tickets.size()>MAX_JSON_TICKETS)throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");}
+        List<MultiEventAnalysisDto.Ticket> tickets=new ArrayList<>();
+        List<MultiEventAnalysisDto.CancelledTicket> cancelledTickets=new ArrayList<>();
+        for(Scope scope:scopes){
+            int remaining=MAX_JSON_TICKETS-tickets.size();
+            List<MultiEventAnalysisDto.Ticket> scopedTickets=tickets(scope,input,remaining+1);
+            tickets.addAll(scopedTickets);
+            if(tickets.size()>MAX_JSON_TICKETS)throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");
+            if(cancelledTicketTransferEnabled){
+                int cancellationLimit=MAX_JSON_TICKETS-tickets.size()+1;
+                List<MultiEventAnalysisDto.CancelledTicket> scopedCancelled=cancelledTickets(scope,input,
+                        scopedTickets.size()+1L,cancellationLimit);
+                cancelledTickets.addAll(scopedCancelled);
+                if(tickets.size()+cancelledTickets.size()>MAX_JSON_TICKETS)
+                    throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");
+            }
+        }
         if(tickets.isEmpty())throw new Blocked("NO_EFFECTIVE_TICKETS");
-        return new MultiEventAnalysisDto.Request(claim.id(),claim.tenantId(),input.ledgerDigest(),input.analysisAsOf(),input.analysisStartAt(),input.analysisEndAt(),input.scoreVersion(),input.projectionVersion(),scopes.stream().map(s->new MultiEventAnalysisDto.LedgerScope(s.externalEventRef(),s.performanceId(),s.versionId(),s.sourceBatchId(),s.policySnapshotId())).toList(),tickets);
+        return new MultiEventAnalysisDto.Request(claim.id(),claim.tenantId(),input.ledgerDigest(),input.analysisAsOf(),
+                input.analysisStartAt(),input.analysisEndAt(),input.scoreVersion(),input.projectionVersion(),
+                scopes.stream().map(s->new MultiEventAnalysisDto.LedgerScope(s.externalEventRef(),s.performanceId(),
+                        s.versionId(),s.sourceBatchId(),s.policySnapshotId())).toList(),tickets,cancelledTickets);
+    }
+    private List<MultiEventAnalysisDto.CancelledTicket> cancelledTickets(Scope scope,RunInput input,long firstOrdinal,int limit){
+        if(limit<1)return List.of();
+        return jdbc.query(ARTIFACT_CANCELLED_TICKET_SQL,(rs,n)->cancelledTicketFromResultSet(rs,scope,input,firstOrdinal+n),
+                scope.versionId().toString(),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),
+                java.sql.Timestamp.from(input.analysisEndAt().toInstant()),input.keyVersion(),limit);
     }
     private List<MultiEventAnalysisDto.Ticket> tickets(Scope scope,RunInput input,int limit){return jdbc.query("""
         with recursive l as (select id,base_version_id,generation_no,revision_no from td_bulk_ledger_versions where id=? and status='PUBLISHED'
@@ -1206,7 +1297,8 @@ public class MultiEventInvestigationService {
         select r.reservation_reference_hmac,r.account_reference_hmac,r.purchased_at,r.hmac_key_version,r.source_version,
                s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.hmac_purpose,s.hmac_key_version,s.source_version,
                ps.snapshot_id,ps.source_version,ps.ledger_complete_snapshot,ps.policy_verification_status,ps.quantity_data_status,ps.data_completeness_reason,ps.cancellation_handling,ps.duplicate_handling,ps.max_tickets_per_account,
-               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version
+               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version,
+               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at
         from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
         left join td_bulk_ledger_track1_policy_snapshots ps on ps.snapshot_id=? and ps.ledger_version_id=?
         left join td_bulk_ledger_track1_bulk_limit_findings lf on lf.job_id=ps.job_id and lf.performance_id=? and lf.account_reference_hmac=r.account_reference_hmac
@@ -1226,7 +1318,7 @@ public class MultiEventInvestigationService {
                 else if(policySourceVersion==null||!policySourceVersion.equals(rowSource)||!quantityFound||!policyLimitFound||!findingLimitFound||policyLimit!=findingLimit||snapshotPolicyVersion==null||!snapshotPolicyVersion.equals(rs.getString(27))||effectiveQuantity<1||effectiveQuantity>100||policyLimit<1||policyLimit>100) {quantityStatus="INCOMPLETE";quantityReason="POLICY_QUANTITY_SOURCE_MISMATCH";}
                 else {quantityStatus="COMPLETE";quantityReason="POLICY_SNAPSHOT_AND_QUANTITY_VERIFIED";quantity=(int)effectiveQuantity;confirmedLimit=policyLimit;}
             }
-            java.sql.Timestamp purchased=rs.getTimestamp(3);return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),n+1L,input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource);
+            java.sql.Timestamp purchased=rs.getTimestamp(3);return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),n+1L,input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33));
         },scope.versionId().toString(),scope.versionId().toString(),scope.policySnapshotId()==null?null:scope.policySnapshotId().toString(),scope.versionId().toString(),scope.performanceId().toString(),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()),limit);}
     private void complete(Claim claim,MultiEventAnalysisDto.Response response){
         requireLease(claim);
@@ -1292,10 +1384,12 @@ public class MultiEventInvestigationService {
     record IdentityContract(String purpose,String keyVersion){}
     private record VersionIdentity(UUID versionId,String purpose,String keyVersion){}
     private record Existing(UUID id,String requestDigest,String status){}
+    private record ArtifactWriteResult(long recordCount,int cancelledTicketRecordCount){}
     private record CandidateBudget(int memberCount,long relationshipMemberRows){}
     private record RelationshipImportSummary(int observations,long memberRows){}
     record Claim(UUID id,UUID tenantId,long fence,String priorStatus,UUID dataJobId,String artifactId,
-                         String objectVersion,String artifactSha256,Long artifactRecordCount,int attemptCount){}
+                         String objectVersion,String artifactSha256,Long artifactRecordCount,
+                         int artifactCancelledTicketCount,int attemptCount){}
     private record RunInput(String ledgerDigest,String supplierNamespace,String purpose,String keyVersion,String scoreVersion,String projectionVersion,OffsetDateTime analysisAsOf,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt){}
     private static final class Blocked extends RuntimeException{private final String code;private Blocked(String code){this.code=code;}}
     public record ScopeView(UUID eventId,UUID performanceId,UUID ledgerVersionId,String eventReference,String sourceBatchId){}

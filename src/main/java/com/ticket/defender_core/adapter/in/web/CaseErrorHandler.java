@@ -31,7 +31,7 @@ import java.util.UUID;
         AdminFanReportController.class, AdminAnalysisRunController.class, AdminEventController.class,
         VerifiedPerformanceController.class,
         PerformanceLinkController.class, ReservationImportController.class, ListingCandidateMatchController.class,
-        PurchaseLimitPolicyController.class, Track1QuantityController.class, AdminConsoleController.class,
+        PurchaseLimitPolicyController.class, Exp3ResourceRetentionPolicyController.class, Track1QuantityController.class, AdminConsoleController.class,
         BulkLedgerImportController.class, BulkLedgerTrack1Controller.class, MultiEventInvestigationController.class})
 public class CaseErrorHandler {
     @ExceptionHandler(CaseApiException.class)

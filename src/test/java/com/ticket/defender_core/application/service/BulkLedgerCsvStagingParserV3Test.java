@@ -177,6 +177,46 @@ class BulkLedgerCsvStagingParserV3Test {
     }
 
     @Test
+    void deviceObservationTimestampIsRetainedOnlyWithItsHmacAndNeverAsRawDeviceValue() {
+        String header = HEADER + ",device_reference,device_observed_at";
+        String csv = header + "\n" + base("r1", "t1") + ",synthetic-device-01,2026-11-12T09:30:00Z\n";
+        List<BulkLedgerCsvStagingParser.ParsedRow> rows = new ArrayList<>();
+        parse("v3", csv, 1, rows);
+
+        assertThat(rows).singleElement().satisfies(row -> {
+            assertThat(row.signals().deviceHmac()).matches("[0-9a-f]{64}");
+            assertThat(row.signals().deviceObservedAt()).isEqualTo(LocalDateTime.parse("2026-11-12T09:30:00"));
+            assertThat(row.toString()).doesNotContain("synthetic-device-01");
+        });
+
+        String timestampWithoutDevice = HEADER + ",device_observed_at\n"
+                + base("r2", "t2") + ",2026-11-12T09:30:00Z\n";
+        assertThatThrownBy(() -> parse("v3", timestampWithoutDevice, 1, new ArrayList<>()))
+                .isInstanceOf(BulkLedgerCsvValidationException.class)
+                .hasMessage("BULK_CSV_DEVICE_OBSERVATION_WITHOUT_DEVICE");
+    }
+
+    @Test
+    void refundAccountObservationTimestampRequiresHashedAccount() {
+        String header = HEADER + ",refund_bank_code,refund_account_number,refund_account_observed_at";
+        String csv = header + "\n" + base("r1", "t1") + ",999,000000000001,2026-11-12T09:30:00Z\n";
+        List<BulkLedgerCsvStagingParser.ParsedRow> rows = new ArrayList<>();
+        parse("v3", csv, 1, rows);
+
+        assertThat(rows).singleElement().satisfies(row -> {
+            assertThat(row.signals().refundAccountHmac()).matches("[0-9a-f]{64}");
+            assertThat(row.signals().refundAccountObservedAt()).isEqualTo(LocalDateTime.parse("2026-11-12T09:30:00"));
+            assertThat(row.toString()).doesNotContain("000000000001");
+        });
+
+        String timestampWithoutAccount = HEADER + ",refund_account_observed_at\n"
+                + base("r2", "t2") + ",2026-11-12T09:30:00Z\n";
+        assertThatThrownBy(() -> parse("v3", timestampWithoutAccount, 1, new ArrayList<>()))
+                .isInstanceOf(BulkLedgerCsvValidationException.class)
+                .hasMessage("BULK_CSV_REFUND_ACCOUNT_OBSERVATION_WITHOUT_ACCOUNT");
+    }
+
+    @Test
     void phoneFallsBackToMemberAndNetworkTypeRecordsItsSource() {
         String header = HEADER + ",member_phone,ip_reference,ip_network_type";
         String csv = header + "\n" + base("r1", "t1") + ",000-0000-0003,198.51.100.7,corporate_edu\n"

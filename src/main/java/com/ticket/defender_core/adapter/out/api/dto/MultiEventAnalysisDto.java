@@ -45,7 +45,30 @@ public final class MultiEventAnalysisDto {
                          @JsonInclude(JsonInclude.Include.NON_NULL) String seatNumber,
                          @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime reservedAt,
                          @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime paidAt,
-                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime accountCreatedAt) {
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime accountCreatedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime deviceObservedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountObservedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) UUID refundAccountRetentionApprovalId,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String refundAccountRetentionPolicyVersion,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) Integer refundAccountRetentionDays,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountRetentionEffectiveFrom,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountRetentionEffectiveUntil,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountRetentionApprovedAt) {
+        public Ticket(String accountId, String reservationNo, String eventId, UUID performanceId, UUID ledgerVersionId,
+                      Long sourceRowOrdinal, String supplierNamespace, String hmacPurpose, String hmacKeyVersion,
+                      OffsetDateTime purchasedAt, Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit,
+                      UUID quantityPolicySnapshotId, String quantityPolicyVersion, String quantitySourceVersion,
+                      String paymentHash, String addressHash, String deviceIdHash, String ipHash,
+                      String refundAccountHash, String phoneHash, String ipNetworkType, String quantityStatus,
+                      String quantityReason, String sourceVersion, String seatZone, String seatRow,
+                      String seatNumber, OffsetDateTime reservedAt, OffsetDateTime paidAt, OffsetDateTime accountCreatedAt) {
+            this(accountId, reservationNo, eventId, performanceId, ledgerVersionId, sourceRowOrdinal,
+                    supplierNamespace, hmacPurpose, hmacKeyVersion, purchasedAt, effectiveTicketQuantity,
+                    confirmedPurchaseLimit, quantityPolicySnapshotId, quantityPolicyVersion, quantitySourceVersion,
+                    paymentHash, addressHash, deviceIdHash, ipHash, refundAccountHash, phoneHash, ipNetworkType,
+                    quantityStatus, quantityReason, sourceVersion, seatZone, seatRow, seatNumber, reservedAt,
+                    paidAt, accountCreatedAt, null, null, null, null, null, null, null, null);
+        }
         public Ticket(String accountId, String reservationNo, String eventId, UUID performanceId, UUID ledgerVersionId,
                       Long sourceRowOrdinal, String supplierNamespace, String hmacPurpose, String hmacKeyVersion,
                       OffsetDateTime purchasedAt, Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit,
@@ -57,7 +80,8 @@ public final class MultiEventAnalysisDto {
                     supplierNamespace, hmacPurpose, hmacKeyVersion, purchasedAt, effectiveTicketQuantity,
                     confirmedPurchaseLimit, quantityPolicySnapshotId, quantityPolicyVersion, quantitySourceVersion,
                     paymentHash, addressHash, deviceIdHash, ipHash, refundAccountHash, phoneHash, ipNetworkType,
-                    quantityStatus, quantityReason, sourceVersion, null, null, null, null, null, null);
+                    quantityStatus, quantityReason, sourceVersion, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null);
         }
     }
     /** Separate pseudonymous cancellation evidence; never participates in the active ticket analysis list. */
@@ -76,7 +100,19 @@ public final class MultiEventAnalysisDto {
                                    UUID analysisId, UUID tenantId, String supplierNamespace, String hmacPurpose,
                                    String hmacKeyVersion, String ledgerVersionSetDigest, OffsetDateTime analysisAsOf,
                                    OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt,
-                                   String scoreVersion, String projectionVersion, List<ArtifactLedgerScope> ledgerScopes) {
+                                   String scoreVersion, String projectionVersion, List<ArtifactLedgerScope> ledgerScopes,
+                                   Exp3QuantityEvidenceArtifact exp3QuantityEvidenceArtifact) {
+        public ArtifactManifest(String artifactId, String objectKey, String objectVersion, String sha256,
+                               long recordCount, int cancelledTicketRecordCount, String inputFormatVersion,
+                               UUID analysisId, UUID tenantId, String supplierNamespace, String hmacPurpose,
+                               String hmacKeyVersion, String ledgerVersionSetDigest, OffsetDateTime analysisAsOf,
+                               OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt, String scoreVersion,
+                               String projectionVersion, List<ArtifactLedgerScope> ledgerScopes) {
+            this(artifactId, objectKey, objectVersion, sha256, recordCount, cancelledTicketRecordCount,
+                    inputFormatVersion, analysisId, tenantId, supplierNamespace, hmacPurpose, hmacKeyVersion,
+                    ledgerVersionSetDigest, analysisAsOf, analysisStartAt, analysisEndAt, scoreVersion,
+                    projectionVersion, ledgerScopes, null);
+        }
         public ArtifactManifest(String artifactId, String objectKey, String objectVersion, String sha256,
                                long recordCount, String inputFormatVersion, UUID analysisId, UUID tenantId,
                                String supplierNamespace, String hmacPurpose, String hmacKeyVersion,
@@ -85,10 +121,36 @@ public final class MultiEventAnalysisDto {
                                String scoreVersion, String projectionVersion, List<ArtifactLedgerScope> ledgerScopes) {
             this(artifactId, objectKey, objectVersion, sha256, recordCount, 0, inputFormatVersion, analysisId, tenantId,
                     supplierNamespace, hmacPurpose, hmacKeyVersion, ledgerVersionSetDigest, analysisAsOf,
-                    analysisStartAt, analysisEndAt, scoreVersion, projectionVersion, ledgerScopes);
+                    analysisStartAt, analysisEndAt, scoreVersion, projectionVersion, ledgerScopes, null);
         }
     }
     public record ArtifactCancelledTicketRecord(String recordType, CancelledTicket cancelledTicket) { }
+    public record Exp3QuantityEvidenceArtifact(String contractVersion, String artifactId, String objectKey,
+            String objectVersion, String sha256, long recordCount) { }
+    /** Separate exp3-only quantity scope totals. This sidecar does not alter exp2 scoring. */
+    public record Exp3QuantityScopeManifestRecord(String recordType, String contractVersion, UUID analysisId,
+            UUID tenantId, String supplierNamespace, String eventId, UUID performanceId, UUID ledgerVersionId,
+            String hmacPurpose, String hmacKeyVersion, String sourceVersion, OffsetDateTime sourceAsOf,
+            OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt, boolean ledgerCompleteSnapshot,
+            String quantityDataStatus, String cancellationHandling, String duplicateHandling,
+            String duplicateSelection, boolean duplicateSourceRowsRejected, String policyVerificationStatus,
+            UUID policySnapshotId, String policyVersion, String policySourceVersion, Integer confirmedPurchaseLimit,
+            int expectedAccountCount, int expectedActiveSourceRowCount, int expectedTicketUnitRowCount,
+            int expectedOrderLineRowCount, long expectedOrderLineTicketQuantity, long expectedActualTicketQuantity,
+            String rebookingEvidenceStatus, int expectedReservationEventCount, int expectedCancellationEventCount) { }
+    /** Actual active quantity for one account HMAC and one fixed performance scope. */
+    public record Exp3AccountQuantityEvidenceRecord(String recordType, String contractVersion, UUID analysisId,
+            UUID tenantId, String supplierNamespace, String eventId, UUID performanceId, UUID ledgerVersionId,
+            String hmacPurpose, String hmacKeyVersion, String accountHmac, String sourceVersion,
+            OffsetDateTime sourceAsOf, OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt,
+            int activeSourceRowCount, int ticketUnitRowCount, int orderLineRowCount,
+            long orderLineTicketQuantity, long actualTicketQuantity) { }
+    public record Exp3RebookingEventRecord(String recordType, String contractVersion, UUID analysisId,
+            UUID tenantId, String supplierNamespace, String eventId, UUID performanceId, UUID ledgerVersionId,
+            String hmacPurpose, String hmacKeyVersion, String accountHmac, String ticketHmac,
+            String sourceVersion, OffsetDateTime sourceAsOf, OffsetDateTime analysisStartAt,
+            OffsetDateTime analysisEndAt, String eventType, OffsetDateTime eventAt,
+            String seatZone, String seatRow, String seatNumber) { }
     /** Internal source event ID is separate from the supplier-facing event reference used for graph scope. */
     public record ArtifactLedgerScope(String eventId, UUID sourceEventId, UUID performanceId, UUID ledgerVersionId,
                                       String sourceBatchId, UUID policySnapshotId) { }

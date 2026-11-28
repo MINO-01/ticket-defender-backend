@@ -208,11 +208,26 @@ public class FastApiAdapter {
                 || manifest.cancelledTicketRecordCount() < 0
                 || manifest.cancelledTicketRecordCount() >= manifest.recordCount()
                 || !("multi-event-exp2-ndjson-v1".equals(manifest.inputFormatVersion())
-                    || "multi-event-exp2-ndjson-v2".equals(manifest.inputFormatVersion()))
+                    || "multi-event-exp2-ndjson-v2".equals(manifest.inputFormatVersion())
+                    || "multi-event-exp3-evidence-ndjson-v1".equals(manifest.inputFormatVersion()))
                 || ("multi-event-exp2-ndjson-v1".equals(manifest.inputFormatVersion())
                     && manifest.cancelledTicketRecordCount() != 0)
                 || ("multi-event-exp2-ndjson-v2".equals(manifest.inputFormatVersion())
                     && manifest.cancelledTicketRecordCount() == 0)
+                || ("multi-event-exp3-evidence-ndjson-v1".equals(manifest.inputFormatVersion())
+                    != (manifest.exp3QuantityEvidenceArtifact() != null))
+                || (manifest.exp3QuantityEvidenceArtifact() != null
+                    && (!"exp3-quantity-evidence-v1".equals(manifest.exp3QuantityEvidenceArtifact().contractVersion())
+                        || manifest.exp3QuantityEvidenceArtifact().artifactId() == null
+                        || !manifest.exp3QuantityEvidenceArtifact().artifactId().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+                        || !manifest.exp3QuantityEvidenceArtifact().artifactId().equals(manifest.exp3QuantityEvidenceArtifact().objectKey())
+                        || manifest.exp3QuantityEvidenceArtifact().objectVersion() == null
+                        || manifest.exp3QuantityEvidenceArtifact().objectVersion().isBlank()
+                        || manifest.exp3QuantityEvidenceArtifact().objectVersion().length() > 255
+                        || manifest.exp3QuantityEvidenceArtifact().sha256() == null
+                        || !manifest.exp3QuantityEvidenceArtifact().sha256().matches("[0-9a-f]{64}")
+                        || manifest.exp3QuantityEvidenceArtifact().recordCount() < 1
+                        || manifest.exp3QuantityEvidenceArtifact().recordCount() > 1_200_500))
                 || manifest.ledgerScopes() == null || manifest.ledgerScopes().size() < 2
                 || manifest.ledgerScopes().size() > 500
                 || manifest.sha256() == null || !manifest.sha256().matches("[0-9a-f]{64}")

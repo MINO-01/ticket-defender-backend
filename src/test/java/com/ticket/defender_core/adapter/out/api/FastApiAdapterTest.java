@@ -152,6 +152,38 @@ class FastApiAdapterTest {
     }
 
     @Test
+    void createMultiEventJob_acceptsTheSeparateOptInExp3EvidenceSidecar() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        FastApiAdapter adapter = new FastApiAdapter(builder.build());
+        ReflectionTestUtils.setField(adapter, "fastApiUrl", "https://fastapi.test");
+        setTrack1SharedSecret(adapter, TEST_TRACK1_SHARED_SECRET);
+        var base = artifactManifest(50_001);
+        var sidecar = new MultiEventAnalysisDto.Exp3QuantityEvidenceArtifact(
+                "exp3-quantity-evidence-v1", "mei-test-quantity", "mei-test-quantity", "quantity-version-1",
+                "b".repeat(64), 1_200_500);
+        var manifest = new MultiEventAnalysisDto.ArtifactManifest(base.artifactId(), base.objectKey(), base.objectVersion(),
+                base.sha256(), base.recordCount(), 0, "multi-event-exp3-evidence-ndjson-v1", base.analysisId(),
+                base.tenantId(), base.supplierNamespace(), base.hmacPurpose(), base.hmacKeyVersion(),
+                base.ledgerVersionSetDigest(), base.analysisAsOf(), base.analysisStartAt(), base.analysisEndAt(),
+                base.scoreVersion(), base.projectionVersion(), base.ledgerScopes(), sidecar);
+        var acceptedId = UUID.fromString("00000000-0000-4000-8000-000000000091");
+        server.expect(requestTo("https://fastapi.test/api/v2/multi-event/jobs"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("multi-event-exp3-evidence-ndjson-v1"),
+                        org.hamcrest.Matchers.containsString("exp3QuantityEvidenceArtifact"),
+                        org.hamcrest.Matchers.containsString("exp3-quantity-evidence-v1"),
+                        org.hamcrest.Matchers.containsString("1200500"))))
+                .andRespond(withSuccess("{\"jobId\":\"" + acceptedId + "\",\"status\":\"QUEUED\",\"existing\":false}",
+                        MediaType.APPLICATION_JSON));
+
+        assertThat(adapter.createMultiEventJob(new MultiEventAnalysisDto.ArtifactCreate(manifest), "mei-exp3-test").jobId())
+                .isEqualTo(acceptedId);
+        server.verify();
+    }
+
+    @Test
     void createMultiEventJob_rejectsManifestAboveTheExplicit400kCapBeforeHttp() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

@@ -43,7 +43,7 @@ public final class BulkLedgerCsvStagingParser {
     /** v3 선택 원본 신호 열입니다. 값은 읽는 즉시 정규화하고 HMAC하며 원본은 이 메서드 밖으로 나가지 않습니다. */
     static final Set<String> V3_OPTIONAL = Set.of("device_reference", "ip_reference", "ip_network_type", "delivery_address",
             "recipient_phone", "member_phone", "payment_masked_card", "payment_issuer_code", "payment_method_type",
-            "refund_bank_code", "refund_account_number");
+            "refund_bank_code", "refund_account_number", "device_observed_at", "refund_account_observed_at");
 
     public record ParsedRow(long rowNumber, UUID eventId, UUID performanceId, String reservationToken,
                             String ticketToken, String accountToken, String keyVersion, LocalDateTime purchasedAt,
@@ -103,7 +103,15 @@ public final class BulkLedgerCsvStagingParser {
     /** v3 행의 HMAC 토큰과 출처 표시입니다. 원본 값은 담지 않습니다. */
     public record RawSignals(String paymentHmac, String addressHmac, String deviceHmac, String ipHmac,
                              String refundAccountHmac, String phoneHmac, String phoneSource,
-                             String ipNetworkType, String ipNetworkTypeSource) { }
+                             String ipNetworkType, String ipNetworkTypeSource, LocalDateTime deviceObservedAt,
+                             LocalDateTime refundAccountObservedAt) {
+        public RawSignals(String paymentHmac, String addressHmac, String deviceHmac, String ipHmac,
+                          String refundAccountHmac, String phoneHmac, String phoneSource,
+                          String ipNetworkType, String ipNetworkTypeSource) {
+            this(paymentHmac, addressHmac, deviceHmac, ipHmac, refundAccountHmac, phoneHmac,
+                    phoneSource, ipNetworkType, ipNetworkTypeSource, null, null);
+        }
+    }
     public record Result(long rows) { }
     public record SupplierScope(String sourceEventCode, String sourcePerformanceCode, String eventTitle,
             LocalDateTime performanceStartsAt, Integer perAccountLimit, long declaredRowCount,
@@ -269,7 +277,9 @@ public final class BulkLedgerCsvStagingParser {
                                 String.valueOf(quantityUnit), String.valueOf(ticketStatus), String.valueOf(sourceVersion),
                                 String.valueOf(sourceEventId), String.valueOf(sourceChangedAt), String.valueOf(sourceSequence), String.valueOf(changeAction),
                                 String.valueOf(signals.paymentHmac()), String.valueOf(signals.addressHmac()), String.valueOf(signals.deviceHmac()),
+                                String.valueOf(signals.deviceObservedAt()),
                                 String.valueOf(signals.ipHmac()), String.valueOf(signals.refundAccountHmac()), String.valueOf(signals.phoneHmac()),
+                                String.valueOf(signals.refundAccountObservedAt()),
                                 String.valueOf(signals.phoneSource()), String.valueOf(signals.ipNetworkType()), String.valueOf(signals.ipNetworkTypeSource()),
                                 String.valueOf(seatZone), String.valueOf(seatRow), String.valueOf(seatNumber), String.valueOf(reservedAt),
                                 String.valueOf(paidAt), String.valueOf(cancelledAt), String.valueOf(accountCreatedAt))
@@ -316,6 +326,8 @@ public final class BulkLedgerCsvStagingParser {
                                       BulkLedgerRawSignalHashers hashers) {
         String device = BulkLedgerRawSignalNormalizer.device(optionalColumn(record, indexes, "device_reference", row));
         String deviceHmac = device == null ? null : hashers.device().hash(tenantId, device);
+        LocalDateTime deviceObservedAt = optionalTimestamp(record, indexes, "device_observed_at", row);
+        if (deviceObservedAt != null && deviceHmac == null) throw failure(row, "BULK_CSV_DEVICE_OBSERVATION_WITHOUT_DEVICE");
 
         String ip = BulkLedgerRawSignalNormalizer.ipv4(optionalColumn(record, indexes, "ip_reference", row), row);
         String declaredType = BulkLedgerRawSignalNormalizer.networkType(optionalColumn(record, indexes, "ip_network_type", row), row);
@@ -350,8 +362,12 @@ public final class BulkLedgerCsvStagingParser {
         String accountNumber = BulkLedgerRawSignalNormalizer.digits(optionalColumn(record, indexes, "refund_account_number", row), row, "BULK_CSV_REFUND_ACCOUNT_INCOMPLETE");
         if ((bank == null) != (accountNumber == null)) throw failure(row, "BULK_CSV_REFUND_ACCOUNT_INCOMPLETE");
         String refundHmac = bank == null ? null : hashers.refundAccount().hash(tenantId, bank + "|" + accountNumber);
+        LocalDateTime refundAccountObservedAt = optionalTimestamp(record, indexes, "refund_account_observed_at", row);
+        if (refundAccountObservedAt != null && refundHmac == null)
+            throw failure(row, "BULK_CSV_REFUND_ACCOUNT_OBSERVATION_WITHOUT_ACCOUNT");
 
-        return new RawSignals(paymentHmac, addressHmac, deviceHmac, ipHmac, refundHmac, phoneHmac, phoneSource, networkType, networkSource);
+        return new RawSignals(paymentHmac, addressHmac, deviceHmac, ipHmac, refundHmac, phoneHmac,
+                phoneSource, networkType, networkSource, deviceObservedAt, refundAccountObservedAt);
     }
 
     private static String optionalColumn(CSVRecord record, Map<String, Integer> indexes, String name, long row) {

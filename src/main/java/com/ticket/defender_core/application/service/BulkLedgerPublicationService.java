@@ -151,10 +151,10 @@ public class BulkLedgerPublicationService {
     private void publishRawSignals(Job job, Scope scope, Version version, LocalDateTime now) {
         jdbc.update("""
                 insert into td_bulk_ledger_track1_ticket_signals(id,version_id,ticket_reference_hmac,hmac_key_version,hmac_purpose,
-                  payment_hmac,address_hmac,device_hmac,ip_hmac,refund_account_hmac,phone_hmac,ip_network_type,phone_source,ip_network_type_source,
+                  payment_hmac,address_hmac,device_hmac,device_observed_at,ip_hmac,refund_account_hmac,refund_account_observed_at,phone_hmac,ip_network_type,phone_source,ip_network_type_source,
                   source_version,created_at)
                 select uuid(),?,s.ticket_reference_hmac,s.hmac_key_version,'TRACK1_CONNECTION',
-                  s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.phone_source,s.ip_network_type_source,
+                  s.payment_hmac,s.address_hmac,s.device_hmac,s.device_observed_at,s.ip_hmac,s.refund_account_hmac,s.refund_account_observed_at,s.phone_hmac,s.ip_network_type,s.phone_source,s.ip_network_type_source,
                   s.source_version,?
                 from td_bulk_import_staging_rows s
                 where s.import_id=? and s.tenant_id=? and s.event_id=? and s.performance_id=?

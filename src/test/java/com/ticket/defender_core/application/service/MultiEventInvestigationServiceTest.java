@@ -118,7 +118,7 @@ class MultiEventInvestigationServiceTest {
         Class<?> runInputType = Class.forName(MultiEventInvestigationService.class.getName() + "$RunInput");
         Constructor<?> constructor = runInputType.getDeclaredConstructors()[0];
         constructor.setAccessible(true);
-        Object input = constructor.newInstance("digest", "supplier-a", "TRACK1_CONNECTION", "key-v1",
+        Object input = constructor.newInstance(TENANT, "digest", "supplier-a", "TRACK1_CONNECTION", "key-v1",
                 MultiEventInvestigationService.SCORE_VERSION, "projection-v1",
                 OffsetDateTime.parse("2026-11-25T00:00:00Z"), OffsetDateTime.parse("2026-11-24T00:00:00Z"),
                 OffsetDateTime.parse("2026-11-26T00:00:00Z"));

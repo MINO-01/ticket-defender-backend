@@ -441,7 +441,7 @@ public class MultiEventInvestigationService {
                r.seat_zone,r.seat_row,r.seat_number,r.cancelled_at
         from ranked r
         where r.rn=1 and r.ticket_status in ('CANCELLED','REFUNDED') and r.cancelled_at is not null
-          and r.purchased_at>=? and r.purchased_at<? and r.hmac_key_version=?
+          and r.cancelled_at>=? and r.cancelled_at<? and r.hmac_key_version=?
         order by r.ticket_reference_hmac limit ?
         """;
 

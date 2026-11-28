@@ -98,6 +98,16 @@ class MultiEventInvestigationServiceTest {
         verify(jdbc, times(2)).query(any(PreparedStatementCreator.class), any(RowCallbackHandler.class));
     }
 
+    @Test
+    void cancelledArtifactUsesCancellationTimeForAnalysisWindow() throws Exception {
+        var field = MultiEventInvestigationService.class.getDeclaredField("ARTIFACT_CANCELLED_TICKET_SQL");
+        field.setAccessible(true);
+        String sql = (String) field.get(null);
+
+        assertThat(sql).contains("r.cancelled_at>=? and r.cancelled_at<?")
+                .doesNotContain("r.purchased_at>=?", "r.purchased_at<?");
+    }
+
     private List<String> writeArtifactRows(boolean cancellationTransferEnabled) throws Exception {
         service = new MultiEventInvestigationService(jdbc, tx, access, data, true, "supplier-a", cancellationTransferEnabled);
         var scope = new MultiEventInvestigationService.Scope(EVENT_A,

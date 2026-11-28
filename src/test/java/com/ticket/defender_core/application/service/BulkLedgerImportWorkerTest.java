@@ -30,6 +30,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 class BulkLedgerImportWorkerTest {
     private static final String DIGEST = "a".repeat(64);
@@ -57,6 +58,37 @@ class BulkLedgerImportWorkerTest {
     }
 
     @Test
+    void tdUuidActualStagingEncryptsReferencesWhenRevealIsEnabled() {
+        InvestigationReferenceCipher cipher = enabledCipher();
+        Fixture fixture = fixture(validCsv(), new BulkLedgerCsvStagingParser(cipher));
+
+        fixture.worker().process(fixture.job().getId());
+
+        ArgumentCaptor<BulkLedgerCsvStagingParser.ParsedRow> row = ArgumentCaptor.forClass(BulkLedgerCsvStagingParser.ParsedRow.class);
+        verify(fixture.session()).accept(row.capture());
+        var parsed = row.getValue();
+        assertThat(fixture.job().getScopeKeyType()).isEqualTo("TD_UUID");
+        assertThat(parsed.encryptedReferences()).isNotNull();
+        var references = cipher.decrypt(fixture.job().getId(), fixture.job().getTenantId(), parsed.eventId(),
+                parsed.performanceId(), parsed.rowNumber(), parsed.ticketToken(), parsed.reservationToken(),
+                parsed.accountToken(), parsed.encryptedReferences());
+        assertThat(references.accountReference()).isEqualTo("account-1");
+        assertThat(references.reservationReference()).isEqualTo("reservation-1");
+        assertThat(references.ticketReference()).isEqualTo("ticket-1");
+    }
+
+    @Test
+    void tdUuidActualStagingKeepsCiphertextAbsentWhenRevealIsDisabled() {
+        Fixture fixture = fixture(validCsv());
+
+        fixture.worker().process(fixture.job().getId());
+
+        ArgumentCaptor<BulkLedgerCsvStagingParser.ParsedRow> row = ArgumentCaptor.forClass(BulkLedgerCsvStagingParser.ParsedRow.class);
+        verify(fixture.session()).accept(row.capture());
+        assertThat(row.getValue().encryptedReferences()).isNull();
+    }
+
+    @Test
     void stagingValidationFailureStillRejectsBeforeCandidatePreparation() {
         Fixture fixture = fixture("event_id,performance_id\n");
 
@@ -67,6 +99,10 @@ class BulkLedgerImportWorkerTest {
     }
 
     private static Fixture fixture(String csv) {
+        return fixture(csv, new BulkLedgerCsvStagingParser());
+    }
+
+    private static Fixture fixture(String csv, BulkLedgerCsvStagingParser parser) {
         UUID tenant = UUID.randomUUID();
         UUID event = UUID.randomUUID();
         UUID performance = UUID.randomUUID();
@@ -101,7 +137,15 @@ class BulkLedgerImportWorkerTest {
         when(staging.countForImport(job.getId())).thenReturn(1L);
         when(staging.scopeCountsForImport(job.getId())).thenReturn(Map.of(event + ":" + performance, 1L));
 
-        return new Fixture(new BulkLedgerImportWorker(jobs, scopes, errors, gate, storage, staging, candidates, transactions), job, candidates);
+        return new Fixture(new BulkLedgerImportWorker(jobs, scopes, errors, gate, storage, staging, candidates, transactions,
+                null, null, null, parser, null, null), job, candidates, session);
+    }
+
+    private static InvestigationReferenceCipher enabledCipher() {
+        var beans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
+        String master = java.util.Base64.getEncoder().encodeToString(new byte[32]);
+        return new InvestigationReferenceCipher(beans.getBeanProvider(InvestigationRevealKeySource.class), true,
+                "SYNTHETIC_CONFIG", master, "synthetic-test-v1");
     }
 
     private static TransactionTemplate immediateTransactions() {
@@ -124,5 +168,5 @@ class BulkLedgerImportWorkerTest {
     }
 
     private record Fixture(BulkLedgerImportWorker worker, BulkLedgerImportJob job,
-                           BulkLedgerCandidatePreparationService candidates) { }
+                           BulkLedgerCandidatePreparationService candidates, BulkLedgerStagingWriter.Session session) { }
 }

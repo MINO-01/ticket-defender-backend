@@ -36,9 +36,17 @@ public class BulkLedgerStagingWriter {
              seat_zone, seat_row, seat_number, reserved_at, paid_at, cancelled_at, account_created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """;
+    private static final String INSERT_ENCRYPTED_REFERENCES = """
+            INSERT INTO td_investigation_reference_ciphertexts
+            (id, import_id, tenant_id, event_id, performance_id, source_row_no, ticket_reference_hmac,
+             reservation_reference_hmac, account_reference_hmac, reference_ciphertext, nonce, encryption_key_version, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,utc_timestamp(6))
+            ON DUPLICATE KEY UPDATE id=id
+            """;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final int batchSize;
+    @Value("${ticket-defender.investigation-reveal.enabled:false}") private boolean referenceEncryptionEnabled;
 
     public BulkLedgerStagingWriter(JdbcTemplate jdbc, TransactionTemplate transactions,
             @Value("${ticket-defender.bulk-ledger-upload.batch-size:1000}") int batchSize) {
@@ -52,6 +60,10 @@ public class BulkLedgerStagingWriter {
     public long countForImport(UUID importId) {
         Long count = jdbc.queryForObject("select count(*) from td_bulk_import_staging_rows where import_id=?", Long.class, importId.toString());
         return count == null ? 0 : count;
+    }
+    public void deleteEncryptedForImport(UUID importId) {
+        if (!referenceEncryptionEnabled) return;
+        jdbc.update("delete from td_investigation_reference_ciphertexts where import_id=? and ledger_version_id is null", importId.toString());
     }
     public Map<String, Long> scopeCountsForImport(UUID importId) {
         Map<String, Long> counts = new HashMap<>();
@@ -116,6 +128,21 @@ public class BulkLedgerStagingWriter {
             }
             @Override public int getBatchSize() { return inserts.size(); }
         });
+            List<BulkLedgerCsvStagingParser.ParsedRow> encrypted = inserts.stream()
+                    .filter(row -> row.encryptedReferences() != null).toList();
+            if (!encrypted.isEmpty()) jdbc.batchUpdate(INSERT_ENCRYPTED_REFERENCES, new BatchPreparedStatementSetter() {
+                @Override public void setValues(PreparedStatement statement, int index) throws SQLException {
+                    var row = encrypted.get(index);
+                    var value = row.encryptedReferences();
+                    statement.setString(1, UUID.randomUUID().toString()); statement.setString(2, importId.toString());
+                    statement.setString(3, tenantId.toString()); statement.setString(4, row.eventId().toString());
+                    statement.setString(5, row.performanceId().toString()); statement.setLong(6, row.rowNumber());
+                    statement.setString(7, row.ticketToken()); statement.setString(8, row.reservationToken());
+                    statement.setString(9, row.accountToken()); statement.setBytes(10, value.ciphertext());
+                    statement.setBytes(11, value.nonce()); statement.setString(12, value.keyVersion());
+                }
+                @Override public int getBatchSize() { return encrypted.size(); }
+            });
         });
         }
         private void timestampOrNull(PreparedStatement statement, int index, java.time.LocalDateTime value) throws SQLException {

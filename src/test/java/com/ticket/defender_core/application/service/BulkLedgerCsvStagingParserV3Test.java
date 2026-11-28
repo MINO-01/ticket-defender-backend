@@ -83,6 +83,35 @@ class BulkLedgerCsvStagingParserV3Test {
     }
 
     @Test
+    void supplierPreflightDoesNotEncryptButActualParseWithImportIdDoes() {
+        String header = "source_event_code,source_performance_code,event_title,performance_starts_at,per_account_limit,"
+                + "reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version";
+        String row = "SUP-E-1,SUP-P-1,합성 공연,2026-12-01T19:00:00+09:00,4,synthetic-reservation-ref-003,synthetic-ticket-ref-003,synthetic-account-ref-003,2026-11-13T10:00:00Z,1,TICKET,ACTIVE,v1";
+        var scope = new BulkLedgerCsvStagingParser.SupplierScope("SUP-E-1", "SUP-P-1", "합성 공연",
+                LocalDateTime.parse("2026-12-01T10:00:00"), 4, 1, event, performance);
+        UUID importId = UUID.randomUUID();
+        InvestigationReferenceCipher cipher = enabledCipher();
+        BulkLedgerCsvStagingParser parser = new BulkLedgerCsvStagingParser(cipher);
+        List<BulkLedgerCsvStagingParser.ParsedRow> preflightRows = new ArrayList<>();
+        List<BulkLedgerCsvStagingParser.ParsedRow> actualRows = new ArrayList<>();
+
+        parser.parseSupplier(stream(header + "\n" + row + "\n"), BulkLedgerImportJob.Mode.FULL_SNAPSHOT, tenant,
+                List.of(scope), reservation(), hasher("TICKET"), hasher("ACCOUNT"), hashers(List.of()), preflightRows::add);
+        parser.parseSupplier(importId, stream(header + "\n" + row + "\n"), BulkLedgerImportJob.Mode.FULL_SNAPSHOT, tenant,
+                List.of(scope), reservation(), hasher("TICKET"), hasher("ACCOUNT"), hashers(List.of()), actualRows::add);
+
+        assertThat(preflightRows).singleElement().satisfies(parsed -> assertThat(parsed.encryptedReferences()).isNull());
+        assertThat(actualRows).singleElement().satisfies(parsed -> {
+            assertThat(parsed.encryptedReferences()).isNotNull();
+            var decrypted = cipher.decrypt(importId, tenant, event, performance, parsed.rowNumber(), parsed.ticketToken(),
+                    parsed.reservationToken(), parsed.accountToken(), parsed.encryptedReferences());
+            assertThat(decrypted.accountReference()).isEqualTo("synthetic-account-ref-003");
+            assertThat(decrypted.reservationReference()).isEqualTo("synthetic-reservation-ref-003");
+            assertThat(decrypted.ticketReference()).isEqualTo("synthetic-ticket-ref-003");
+        });
+    }
+
+    @Test
     void supplierCodeCsvAcceptsFileWithoutOptionalSeatAndTimeColumns() {
         String header = "source_event_code,source_performance_code,event_title,performance_starts_at,per_account_limit,"
                 + "reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version";
@@ -290,5 +319,12 @@ class BulkLedgerCsvStagingParserV3Test {
         return new BulkLedgerRawSignalHashers(sig(BulkLedgerRawSignalHashers.DEVICE, "v1"), sig(BulkLedgerRawSignalHashers.IP, "v1"),
                 sig(BulkLedgerRawSignalHashers.ADDRESS, "v1"), sig(BulkLedgerRawSignalHashers.PHONE, "v1"), sig(BulkLedgerRawSignalHashers.PAYMENT, "v1"),
                 sig(BulkLedgerRawSignalHashers.REFUND_ACCOUNT, "v1"), new Track1IpNetworkClassifier(classes));
+    }
+
+    private InvestigationReferenceCipher enabledCipher() {
+        var beans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
+        String master = java.util.Base64.getEncoder().encodeToString(new byte[32]);
+        return new InvestigationReferenceCipher(beans.getBeanProvider(InvestigationRevealKeySource.class), true,
+                "SYNTHETIC_CONFIG", master, "synthetic-test-v1");
     }
 }

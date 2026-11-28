@@ -3,6 +3,7 @@ package com.ticket.defender_core.application.service;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -22,6 +23,7 @@ public class BulkLedgerPublicationService {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final SyntheticReservationImportGate syntheticGate;
+    @Value("${ticket-defender.investigation-reveal.enabled:false}") private boolean referenceEncryptionEnabled;
 
     public BulkLedgerPublicationService(JdbcTemplate jdbc, TransactionTemplate transactions, SyntheticReservationImportGate syntheticGate) {
         this.jdbc = jdbc;
@@ -97,6 +99,8 @@ public class BulkLedgerPublicationService {
                 int changed = jdbc.update("update td_bulk_ledger_publication_heads set version_id=?,published_at=? where tenant_id=? and performance_id=? and version_id=?",
                         version.id().toString(), Timestamp.valueOf(now), tenantId.toString(), scope.performanceId().toString(), previous.id().toString());
                 if (changed != 1) throw conflict("LEDGER_PUBLICATION_CONCURRENT");
+                if (referenceEncryptionEnabled)
+                    jdbc.update("delete from td_investigation_reference_ciphertexts where ledger_version_id=?", previous.id().toString());
             }
             UUID historyId = UUID.randomUUID();
             jdbc.update("insert into td_bulk_ledger_publication_history(id,publication_id,import_id,tenant_id,event_id,performance_id,previous_version_id,version_id,generation_no,revision_no,source_system,source_batch_id,published_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",

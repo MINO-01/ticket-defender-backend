@@ -37,6 +37,17 @@ spring:
       max-request-size: 101MB
 
 ticket-defender:
+  investigation-reveal:
+    enabled: ${INVESTIGATION_REVEAL_ENABLED:false}
+    # HMAC and AES keys are separate secrets. KMS requires an external InvestigationRevealKeySource bean.
+    key-source: ${INVESTIGATION_REVEAL_KEY_SOURCE:SYNTHETIC_CONFIG}
+    synthetic-master-key-base64: ${INVESTIGATION_REVEAL_SYNTHETIC_MASTER_KEY_BASE64:}
+    synthetic-key-version: ${INVESTIGATION_REVEAL_SYNTHETIC_KEY_VERSION:SYNTHETIC_V1}
+    synthetic-map-export:
+      enabled: ${INVESTIGATION_REVEAL_SYNTHETIC_MAP_EXPORT_ENABLED:false}
+      tenant-id: ${INVESTIGATION_REVEAL_SYNTHETIC_MAP_EXPORT_TENANT_ID:}
+      event-id: ${INVESTIGATION_REVEAL_SYNTHETIC_MAP_EXPORT_EVENT_ID:}
+      output: ${INVESTIGATION_REVEAL_SYNTHETIC_MAP_EXPORT_OUTPUT:}
   bulk-ledger-upload:
     # BL-02 only permits a separately configured synthetic, versioned private bucket.
     enabled: ${BULK_LEDGER_UPLOAD_ENABLED:false}

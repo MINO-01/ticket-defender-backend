@@ -30,7 +30,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "ticket-defender.track2-candidate-import.operational-mode=SYNTHETIC_ISOLATED",
         "ticket-defender.track2-candidate-import.synthetic-isolation-id=" + BulkLedgerPublicationMySqlTest.ISOLATION,
         "ticket-defender.track2-candidate-import.reference-hmac-master-key=synthetic-only-master-key-material-that-is-long-enough",
-        "ticket-defender.track2-candidate-import.reference-hmac-key-version=v1"
+        "ticket-defender.track2-candidate-import.reference-hmac-key-version=v1",
+        "ticket-defender.investigation-reveal.enabled=true"
 })
 @EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MYSQL_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/td_issue32_ci.*")
 class BulkLedgerPublicationMySqlTest {
@@ -188,6 +189,30 @@ class BulkLedgerPublicationMySqlTest {
             assertThat(scope.generation()).isZero();
             assertThat(scope.revision()).isEqualTo(1);
         });
+    }
+
+    @Test
+    void replacementPublicationDeletesCiphertextBoundToPreviousVersion() {
+        Fixture fixture = fixture(1);
+        Prepared initial = prepared(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT,
+                List.of(scope(fixture, 0, null, 0, 0, "cursor-10", null, 10L, 10L)));
+        BulkLedgerPublicationService.Publication first = publish(initial, fixture);
+        UUID previousVersion = versionFor(first, fixture.performances().getFirst());
+
+        jdbc.update("insert into td_investigation_reference_ciphertexts(id,import_id,tenant_id,event_id,performance_id,source_row_no,ticket_reference_hmac,reservation_reference_hmac,account_reference_hmac,reference_ciphertext,nonce,encryption_key_version,ledger_version_id,created_at) "
+                        + "values(?,?,?,?,?,1,?,?,?,?,?,'SYNTHETIC_V1',?,utc_timestamp(6))",
+                UUID.randomUUID().toString(), initial.job().getId().toString(), fixture.tenant().toString(),
+                fixture.event().toString(), fixture.performances().getFirst().toString(), "f".repeat(64),
+                "e".repeat(64), "d".repeat(64), new byte[16], new byte[12], previousVersion.toString());
+        assertThat(count("select count(*) from td_investigation_reference_ciphertexts where ledger_version_id=?", previousVersion))
+                .isEqualTo(1);
+
+        Prepared replacement = prepared(fixture, BulkLedgerImportJob.Mode.FULL_SNAPSHOT,
+                List.of(scope(fixture, 0, previousVersion, 1, 0, "cursor-20", null, 20L, 20L)));
+        publish(replacement, fixture);
+
+        assertThat(count("select count(*) from td_investigation_reference_ciphertexts where ledger_version_id=?", previousVersion))
+                .isZero();
     }
 
     private boolean tryPublish(Prepared prepared, Fixture fixture) {

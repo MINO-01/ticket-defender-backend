@@ -6,6 +6,7 @@ import com.ticket.defender_core.domain.BulkLedgerImportJob;
 import com.ticket.defender_core.domain.BulkLedgerImportScope;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Timestamp;
@@ -20,6 +21,7 @@ public class BulkLedgerCandidatePreparationService {
     private static final int PAGE_SIZE = 1_000;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    @Value("${ticket-defender.investigation-reveal.enabled:false}") private boolean referenceEncryptionEnabled;
     private final BulkLedgerImportJobRepository jobs;
     private final BulkLedgerImportScopeRepository scopes;
 
@@ -336,6 +338,14 @@ public class BulkLedgerCandidatePreparationService {
     private void finishVersion(Lease lease, UUID versionId) {
         transactions.executeWithoutResult(ignored -> {
             requireLease(lease);
+            // Attach only ciphertext staged for this exact import scope. The FK removes it with the ledger version.
+            if (referenceEncryptionEnabled) jdbc.update("""
+                    update td_investigation_reference_ciphertexts c
+                    join td_bulk_ledger_versions v on v.import_id=c.import_id and v.tenant_id=c.tenant_id
+                      and v.event_id=c.event_id and v.performance_id=c.performance_id
+                    set c.ledger_version_id=v.id
+                    where v.id=? and c.ledger_version_id is null
+                    """, versionId.toString());
             jdbc.update("update td_bulk_ledger_versions set status='READY' where id=? and status='PREPARING'", versionId.toString());
         });
     }
@@ -359,6 +369,7 @@ public class BulkLedgerCandidatePreparationService {
             requireLease(lease);
             // These events belong only to this private candidate. Published/other-candidate history is never removed.
             jdbc.update("delete ce from td_bulk_ledger_change_events ce join td_bulk_ledger_versions v on v.id=ce.version_id where v.candidate_import_id=? and v.status <> 'PUBLISHED'", lease.candidateId().toString());
+            if (referenceEncryptionEnabled) jdbc.update("delete c from td_investigation_reference_ciphertexts c join td_bulk_ledger_candidate_imports i on i.import_id=c.import_id where i.id=?", lease.candidateId().toString());
             jdbc.update("update td_bulk_ledger_versions set status='REJECTED' where candidate_import_id=? and status in ('PREPARING','READY')", lease.candidateId().toString());
             jdbc.update("update td_bulk_ledger_candidate_imports set status='REJECTED', failure_code=?, preparation_owner=null, preparation_lease_until=null, last_retry_code=null, updated_at=utc_timestamp(6) where id=? and preparation_fence_token=? and status='PREPARING'", code, lease.candidateId().toString(), lease.fence());
         });

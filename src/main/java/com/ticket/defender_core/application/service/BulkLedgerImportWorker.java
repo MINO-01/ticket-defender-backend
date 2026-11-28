@@ -130,10 +130,10 @@ public class BulkLedgerImportWorker {
                                     scope.getSourcePerformanceCode(), scope.getEventTitle(), scope.getPerformanceStartsAt(),
                                     scope.getPerAccountLimit(), scope.getDeclaredRowCount(), scope.getEventId(), scope.getPerformanceId()))
                             .toList();
-                    result = parser.parseSupplier(source, lease.mode(), lease.tenantId(), resolvedScopes, reservation,
+                    result = parser.parseSupplier(importId, source, lease.mode(), lease.tenantId(), resolvedScopes, reservation,
                             ticket, account, rawSignals, stagingSession::accept);
                 } else {
-                    result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes,
+                    result = parser.parse(importId, source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes,
                             reservation, ticket, account, rawSignals, stagingSession::accept);
                 }
             }
@@ -206,6 +206,7 @@ public class BulkLedgerImportWorker {
     }
     private void rejected(UUID importId, long fence, BulkLedgerCsvValidationException error) {
         BulkLedgerImportJob job = jobs.findById(importId).orElseThrow();
+        staging.deleteEncryptedForImport(importId);
         long processed = Math.max(0, error.rowNumber() - 2); long rejected = processed > 0 ? 1 : 0;
         job.reject(fence, processed, rejected, LocalDateTime.now(ZoneOffset.UTC)); jobs.saveAndFlush(job);
         // Error rows intentionally contain only a row number and bounded code, never a source value.

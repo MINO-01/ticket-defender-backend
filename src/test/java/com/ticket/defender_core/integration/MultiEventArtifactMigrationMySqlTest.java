@@ -20,7 +20,8 @@ class MultiEventArtifactMigrationMySqlTest {
             "multi-event-investigation-migration.sql",
             "multi-event-quantity-snapshot-migration.sql",
             "multi-event-source-binding-migration.sql",
-            "multi-event-artifact-job-migration.sql"
+            "multi-event-artifact-job-migration.sql",
+            "investigation-target-reveal-migration.sql"
     };
 
     @Test
@@ -54,6 +55,21 @@ class MultiEventArtifactMigrationMySqlTest {
         assertThat(runCheck).contains("DATA_PENDING", "RUNNING", "LEASE_OWNER", "LEASE_UNTIL");
         String artifactCheck = checkClause(jdbc, "chk_mei_artifact_binding").toUpperCase(java.util.Locale.ROOT);
         assertThat(artifactCheck).contains("ARTIFACT_RECORD_COUNT", "400000", "DATA_JOB_ID");
+
+        assertColumns(jdbc, "td_investigation_reference_ciphertexts", "reference_ciphertext", "nonce",
+                "encryption_key_version", "ledger_version_id");
+        assertCheck(jdbc, "chk_td_investigation_reference_values");
+        assertCheck(jdbc, "chk_td_investigation_access_audit_values");
+        assertCascade(jdbc, "fk_td_investigation_reference_tenant");
+        assertCascade(jdbc, "fk_td_investigation_reference_job");
+        assertCascade(jdbc, "fk_td_investigation_reference_event");
+        assertCascade(jdbc, "fk_td_investigation_reference_performance");
+        assertCascade(jdbc, "fk_td_investigation_reference_version_scope");
+        assertCascade(jdbc, "fk_td_investigation_access_audit_tenant");
+        assertCascade(jdbc, "fk_td_investigation_access_audit_event");
+        assertIndex(jdbc, "td_investigation_reference_ciphertexts", "uk_td_investigation_reference_import_row", true);
+
+        verifyReferenceRowsCascadeOnParentDeletion(jdbc);
     }
 
     private static void assertColumns(JdbcTemplate jdbc, String table, String... columns) {
@@ -92,5 +108,53 @@ class MultiEventArtifactMigrationMySqlTest {
                 + "where table_schema=database() and table_name=? and index_name=? limit 1", Integer.class, table, index);
         assertThat(nonUnique).isNotNull();
         assertThat(nonUnique == 0).isEqualTo(unique);
+    }
+
+    private static void assertCascade(JdbcTemplate jdbc, String constraint) {
+        assertThat(jdbc.queryForObject("select delete_rule from information_schema.referential_constraints "
+                + "where constraint_schema=database() and constraint_name=?", String.class, constraint))
+                .isEqualTo("CASCADE");
+    }
+
+    private static void verifyReferenceRowsCascadeOnParentDeletion(JdbcTemplate jdbc) {
+        String tenant = java.util.UUID.randomUUID().toString();
+        String event = java.util.UUID.randomUUID().toString();
+        String member = java.util.UUID.randomUUID().toString();
+        String performance = java.util.UUID.randomUUID().toString();
+        String importId = java.util.UUID.randomUUID().toString();
+        String ciphertextId = java.util.UUID.randomUUID().toString();
+        String auditId = java.util.UUID.randomUUID().toString();
+
+        jdbc.update("insert into tenants(id,name,status) values(?,?,'ACTIVE')", tenant, "synthetic reveal tenant");
+        jdbc.update("insert into events(id,tenant_id,external_event_ref,name,status,public_intake_enabled) "
+                + "values(?,?,?,?,'ACTIVE',b'0')", event, tenant, "reveal-" + event, "synthetic reveal event");
+        jdbc.update("insert into memberships(id,tenant_id,subject,status) values(?,?,?,'ACTIVE')",
+                member, tenant, "reveal-" + member);
+        jdbc.update("insert into verified_performances(id,tenant_id,event_id,performance_ref,status,verification_basis,source_version,verified_by_membership_id,revision,verified_at,row_version) "
+                + "values(?,?,?,?,'ACTIVE','basis','v1',?,1,utc_timestamp(6),0)",
+                performance, tenant, event, "reveal-" + performance, member);
+        jdbc.update("insert into td_bulk_import_jobs(id,tenant_id,created_by_membership_id,idempotency_key_digest,request_digest,schema_version,source_system,source_batch_id,mode,format,declared_object_sha256,declared_file_bytes,declared_row_count,complete_snapshot,status,processed_row_count,accepted_row_count,rejected_row_count,attempt_count,fence_token,created_at,updated_at,row_version) "
+                        + "values(?,?,?,?,'request','v1','SYNTHETIC','reveal-batch','FULL_SNAPSHOT','CSV',?,0,1,1,'CREATED',0,0,0,0,0,utc_timestamp(6),utc_timestamp(6),0)",
+                importId, tenant, member, "a".repeat(64), "b".repeat(64));
+        jdbc.update("insert into td_investigation_reference_ciphertexts(id,import_id,tenant_id,event_id,performance_id,source_row_no,ticket_reference_hmac,reservation_reference_hmac,account_reference_hmac,reference_ciphertext,nonce,encryption_key_version,ledger_version_id,created_at) "
+                        + "values(?,?,?,?,?,1,?,?,?,?,?,'SYNTHETIC_V1',null,utc_timestamp(6))",
+                ciphertextId, importId, tenant, event, performance, "c".repeat(64), "d".repeat(64), "e".repeat(64),
+                new byte[16], new byte[12]);
+        jdbc.update("insert into td_investigation_reference_access_audit(id,tenant_id,event_id,actor_subject,target_type,resource_id,action,target_count,reason,accessed_at) "
+                        + "values(?,?,?,'synthetic-admin','MULTI_EVENT','synthetic-run','REVEAL',1,'synthetic reason',utc_timestamp(6))",
+                auditId, tenant, event);
+
+        jdbc.update("delete from verified_performances where id=?", performance);
+        assertThat(jdbc.queryForObject("select count(*) from td_investigation_reference_ciphertexts where id=?", Integer.class, ciphertextId))
+                .isZero();
+        assertThat(jdbc.queryForObject("select count(*) from td_investigation_reference_access_audit where id=?", Integer.class, auditId))
+                .isEqualTo(1);
+
+        jdbc.update("delete from events where id=?", event);
+        assertThat(jdbc.queryForObject("select count(*) from td_investigation_reference_access_audit where id=?", Integer.class, auditId))
+                .isZero();
+        jdbc.update("delete from td_bulk_import_jobs where id=?", importId);
+        jdbc.update("delete from memberships where id=?", member);
+        jdbc.update("delete from tenants where id=?", tenant);
     }
 }

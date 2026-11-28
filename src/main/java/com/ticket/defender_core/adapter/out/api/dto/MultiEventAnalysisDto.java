@@ -89,6 +89,23 @@ public final class MultiEventAnalysisDto {
         }
     }
     public record ArtifactCancelledTicketRecord(String recordType, CancelledTicket cancelledTicket) { }
+    /** Separate exp3-only quantity scope totals. This sidecar does not alter exp2 scoring. */
+    public record Exp3QuantityScopeManifestRecord(String recordType, String contractVersion, UUID analysisId,
+            UUID tenantId, String supplierNamespace, String eventId, UUID performanceId, UUID ledgerVersionId,
+            String hmacPurpose, String hmacKeyVersion, String sourceVersion, OffsetDateTime sourceAsOf,
+            OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt, boolean ledgerCompleteSnapshot,
+            String quantityDataStatus, String cancellationHandling, String duplicateHandling,
+            String duplicateSelection, boolean duplicateSourceRowsRejected, String policyVerificationStatus,
+            UUID policySnapshotId, String policyVersion, String policySourceVersion, Integer confirmedPurchaseLimit,
+            int expectedAccountCount, int expectedActiveSourceRowCount, int expectedTicketUnitRowCount,
+            int expectedOrderLineRowCount, long expectedOrderLineTicketQuantity, long expectedActualTicketQuantity) { }
+    /** Actual active quantity for one account HMAC and one fixed performance scope. */
+    public record Exp3AccountQuantityEvidenceRecord(String recordType, String contractVersion, UUID analysisId,
+            UUID tenantId, String supplierNamespace, String eventId, UUID performanceId, UUID ledgerVersionId,
+            String hmacPurpose, String hmacKeyVersion, String accountHmac, String sourceVersion,
+            OffsetDateTime sourceAsOf, OffsetDateTime analysisStartAt, OffsetDateTime analysisEndAt,
+            int activeSourceRowCount, int ticketUnitRowCount, int orderLineRowCount,
+            long orderLineTicketQuantity, long actualTicketQuantity) { }
     /** Internal source event ID is separate from the supplier-facing event reference used for graph scope. */
     public record ArtifactLedgerScope(String eventId, UUID sourceEventId, UUID performanceId, UUID ledgerVersionId,
                                       String sourceBatchId, UUID policySnapshotId) { }

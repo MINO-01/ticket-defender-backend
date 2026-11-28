@@ -10,14 +10,25 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.OffsetDateTime;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -26,10 +37,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -56,6 +70,112 @@ class MultiEventInvestigationServiceTest {
     @BeforeEach
     void setUp() {
         service = new MultiEventInvestigationService(jdbc, tx, access, data, true, "supplier-a");
+    }
+
+    @Test
+    void largeArtifactOmitsCancelledRowsWhenTransferIsDisabled() throws Exception {
+        stubArtifactRows();
+
+        List<String> lines = writeArtifactRows(false);
+
+        assertThat(lines).hasSize(1);
+        assertThat(lines.getFirst()).doesNotContain("CANCELLED_TICKET", "cancelledTicket", "rawTicketNumber");
+        verify(jdbc, times(1)).query(any(PreparedStatementCreator.class), any(RowCallbackHandler.class));
+    }
+
+    @Test
+    void largeArtifactWritesCancelledRowsAsSeparatePseudonymousRecordsWhenEnabled() throws Exception {
+        stubArtifactRows();
+
+        List<String> lines = writeArtifactRows(true);
+
+        assertThat(lines).hasSize(2);
+        assertThat(lines.getFirst()).doesNotContain("CANCELLED_TICKET", "cancelledTicket");
+        assertThat(lines.get(1)).contains("\"recordType\":\"CANCELLED_TICKET\"", "\"cancelledTicket\"",
+                "\"accountHmac\"", "\"ticketHmac\"", "\"cancelledAt\"", "BALCONY", "R1", "12")
+                .doesNotContain("rawTicketNumber");
+        verify(jdbc, times(2)).query(any(PreparedStatementCreator.class), any(RowCallbackHandler.class));
+    }
+
+    private List<String> writeArtifactRows(boolean cancellationTransferEnabled) throws Exception {
+        service = new MultiEventInvestigationService(jdbc, tx, access, data, true, "supplier-a", cancellationTransferEnabled);
+        var scope = new MultiEventInvestigationService.Scope(EVENT_A,
+                UUID.fromString("00000000-0000-4000-8000-000000000041"),
+                UUID.fromString("00000000-0000-4000-8000-000000000051"), "event-a", "batch-a", "supplier-a", null);
+        var claim = new MultiEventInvestigationService.Claim(RUN_ID, TENANT, 1, "RUNNING", null, null,
+                null, null, null, 0, 0);
+        Class<?> runInputType = Class.forName(MultiEventInvestigationService.class.getName() + "$RunInput");
+        Constructor<?> constructor = runInputType.getDeclaredConstructors()[0];
+        constructor.setAccessible(true);
+        Object input = constructor.newInstance("digest", "supplier-a", "TRACK1_CONNECTION", "key-v1",
+                MultiEventInvestigationService.SCORE_VERSION, "projection-v1",
+                OffsetDateTime.parse("2026-11-25T00:00:00Z"), OffsetDateTime.parse("2026-11-24T00:00:00Z"),
+                OffsetDateTime.parse("2026-11-26T00:00:00Z"));
+        Method writer = MultiEventInvestigationService.class.getDeclaredMethod("writeArtifactRows",
+                MultiEventInvestigationService.Claim.class, List.class, runInputType, Path.class, MessageDigest.class);
+        writer.setAccessible(true);
+
+        Path path = Files.createTempFile("td-mei-cancellation-test-", ".ndjson");
+        try {
+            Object result = writer.invoke(service, claim, List.of(scope), input, path, MessageDigest.getInstance("SHA-256"));
+            assertThat(org.springframework.test.util.ReflectionTestUtils.getField(result, "recordCount"))
+                    .isEqualTo(cancellationTransferEnabled ? 2L : 1L);
+            assertThat(org.springframework.test.util.ReflectionTestUtils.getField(result, "cancelledTicketRecordCount"))
+                    .isEqualTo(cancellationTransferEnabled ? 1 : 0);
+            return Files.readAllLines(path);
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
+    private void stubArtifactRows() throws Exception {
+        doAnswer(invocation -> {
+            PreparedStatementCreator creator = invocation.getArgument(0);
+            RowCallbackHandler callback = invocation.getArgument(1);
+            var sql = new AtomicReference<String>();
+            Connection connection = mock(Connection.class);
+            PreparedStatement statement = mock(PreparedStatement.class);
+            when(connection.prepareStatement(anyString(), anyInt(), anyInt())).thenAnswer(prepare -> {
+                sql.set(prepare.getArgument(0));
+                return statement;
+            });
+            creator.createPreparedStatement(connection);
+            if (sql.get().contains("r.ticket_status='ACTIVE'")) {
+                callback.processRow(activeArtifactRow());
+            } else if (sql.get().contains("r.ticket_status in ('CANCELLED','REFUNDED')")) {
+                callback.processRow(cancelledArtifactRow());
+            } else {
+                throw new AssertionError("Unexpected artifact query");
+            }
+            return 1;
+        }).when(jdbc).query(any(PreparedStatementCreator.class), any(RowCallbackHandler.class));
+    }
+
+    private static ResultSet activeArtifactRow() throws Exception {
+        ResultSet row = mock(ResultSet.class);
+        when(row.getString(1)).thenReturn("a".repeat(64));
+        when(row.getString(2)).thenReturn("b".repeat(64));
+        when(row.getTimestamp(3)).thenReturn(Timestamp.valueOf("2026-11-25 10:00:00"));
+        when(row.getString(4)).thenReturn("key-v1");
+        when(row.getString(5)).thenReturn("source-v1");
+        when(row.getString(6)).thenReturn("c".repeat(64));
+        when(row.getString(13)).thenReturn("TRACK1_CONNECTION");
+        when(row.getString(14)).thenReturn("key-v1");
+        when(row.getString(15)).thenReturn("source-v1");
+        return row;
+    }
+
+    private static ResultSet cancelledArtifactRow() throws Exception {
+        ResultSet row = mock(ResultSet.class);
+        when(row.getString(1)).thenReturn("d".repeat(64));
+        when(row.getString(2)).thenReturn("e".repeat(64));
+        when(row.getString(3)).thenReturn("key-v1");
+        when(row.getString(4)).thenReturn("source-v1");
+        when(row.getString(5)).thenReturn("BALCONY");
+        when(row.getString(6)).thenReturn("R1");
+        when(row.getString(7)).thenReturn("12");
+        when(row.getTimestamp(8)).thenReturn(Timestamp.valueOf("2026-11-25 11:00:00"));
+        return row;
     }
 
     @Test

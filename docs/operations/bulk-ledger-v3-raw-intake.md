@@ -157,3 +157,6 @@ v3 = v2 필수 열 전부 + 아래 선택 열. 열이 없거나 값이 비면 �
 5. `bulk-ledger-track1-signal-source-migration.sql` (신호 출처 컬럼)
 6. `multi-event-multi-performance-migration.sql` (다회차 점수 버전과 후보 CHECK)
 7. `supplier-code-and-v3-fields-migration.sql` (Backend PR 3, 기준 스키마 및 기존 bulk-ledger migrations 뒤에 적용)
+8. `multi-event-exp3-quantity-evidence-migration.sql` (Backend PR 5의 exp3 수량 및 재예매 sidecar)
+9. `bulk-ledger-exp3-resource-retention-migration.sql` (승인된 exp3 자원 보유기간 정책)
+10. `multi-event-exp3-score-version-migration.sql` (Backend PR 5, 8번 이후 적용. exp2 점수/projection 제약은 보존)

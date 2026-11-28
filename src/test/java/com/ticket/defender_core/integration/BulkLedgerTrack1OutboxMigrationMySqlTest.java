@@ -12,7 +12,7 @@ import java.sql.Connection;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** BL-06 is deliberately applied only after the #81 Track 1 and BL-01~05 chains in disposable MySQL CI. */
-@EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MYSQL_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/td_issue32_ci.*")
+@EnabledIfEnvironmentVariable(named = "TD_ISSUE32_MYSQL_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/td_issue32_(?:minio_)?ci.*")
 class BulkLedgerTrack1OutboxMigrationMySqlTest {
     @Test
     void appliesOutboxAnalysisConstraintsAfterBothPredecessorChains() throws Exception {

@@ -133,7 +133,7 @@ public class BulkLedgerImportWorker {
                     result = parser.parseSupplier(importId, source, lease.mode(), lease.tenantId(), resolvedScopes, reservation,
                             ticket, account, rawSignals, stagingSession::accept);
                 } else {
-                    result = parser.parse(source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes,
+                    result = parser.parse(importId, source, lease.schemaVersion(), lease.mode(), lease.tenantId(), jobScopes,
                             reservation, ticket, account, rawSignals, stagingSession::accept);
                 }
             }

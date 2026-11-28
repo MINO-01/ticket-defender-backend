@@ -33,6 +33,7 @@ INVESTIGATION_REVEAL_SYNTHETIC_KEY_VERSION=SYNTHETIC_V1
 - `GET .../targets`는 계정, 예매, 티켓번호를 끝 두 자리만 남겨 마스킹해 반환한다(예: `****34`). 열람 사유는 `X-Investigation-Reason` 헤더로 받고, 이 응답에도 `Cache-Control: no-store`를 붙인다.
 - `POST .../targets/reveal`과 `POST .../targets/export`는 요청 본문의 필수 사유를 최대 500자로 제한한다. 실제 값은 권한 확인 후 `no-store` 응답으로만 반환한다.
 - 조사 대상은 요청당 최대 100개씩 페이지로 반환하며, 내보내기는 최대 500개다. 좌석 정보와 PR 1 구성원별 근거가 현재 저장되어 있지 않으면 빈 값으로 반환한다.
+- 대상 응답과 CSV는 `purchasedAt`/`purchased_at`(구매 기록 시각)과 `reservedAt`/`reserved_at`(예약 생성 시각)을 별도로 제공한다. `reserved_at`이 없으면 `reservedAt`은 비어 있으며 구매 시각으로 대체하지 않는다. 화면에서 명세의 “예매 시각”을 표시할 때는 `reservedAt`을 사용하고, 없으면 미제공으로 표시한다.
 - CSV 내보내기는 응답 메모리에서 생성하고 서버 파일로 쓰지 않는다.
 - 다공연 경로는 `/api/v1/admin/events/{eventId}/multi-event/{runId}/candidates/{candidateId}/targets`다. 대량 분석 경로는 `/api/v1/admin/events/{eventId}/ledger-track1/performances/{performanceId}/bulk-analysis-jobs/{jobId}/clusters/{clusterId}/targets`다. 각 경로에 `/reveal` 및 `/export`를 추가한다.
 

@@ -171,7 +171,7 @@ public class InvestigationTargetService {
         return jdbc.query("""
                 select c.id,c.import_id,c.tenant_id,c.event_id,c.performance_id,c.source_row_no,c.ticket_reference_hmac,
                   c.reservation_reference_hmac,c.account_reference_hmac,c.reference_ciphertext,c.nonce,c.encryption_key_version,
-                  t.purchased_at,t.ticket_status,t.seat_zone,t.seat_row,t.seat_number,mr.reasons_json
+                  t.purchased_at,t.ticket_status,t.seat_zone,t.seat_row,t.seat_number,t.reserved_at,mr.reasons_json
                 from td_multi_event_investigation_scopes s
                 join td_multi_event_investigation_members m on m.run_id=s.run_id and m.candidate_id=?
                 left join td_multi_event_investigation_member_reasons mr on mr.run_id=m.run_id
@@ -202,7 +202,7 @@ public class InvestigationTargetService {
         return jdbc.query("""
                 select c.id,c.import_id,c.tenant_id,c.event_id,c.performance_id,c.source_row_no,c.ticket_reference_hmac,
                   c.reservation_reference_hmac,c.account_reference_hmac,c.reference_ciphertext,c.nonce,c.encryption_key_version,
-                  t.purchased_at,t.ticket_status,t.seat_zone,t.seat_row,t.seat_number,null
+                  t.purchased_at,t.ticket_status,t.seat_zone,t.seat_row,t.seat_number,t.reserved_at,null
                 from td_bulk_ledger_track1_bulk_jobs j
                 join td_bulk_ledger_track1_bulk_members m on m.job_id=j.id and m.cluster_id=?
                 join td_investigation_reference_ciphertexts c on c.ledger_version_id=j.ledger_version_id
@@ -231,7 +231,8 @@ public class InvestigationTargetService {
         return new StoredTarget(UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)), UUID.fromString(rs.getString(3)),
                 UUID.fromString(rs.getString(4)), UUID.fromString(rs.getString(5)), rs.getLong(6), rs.getString(7), rs.getString(8),
                 rs.getString(9), rs.getBytes(10), rs.getBytes(11), rs.getString(12), rs.getTimestamp(13).toLocalDateTime(),
-                rs.getString(14), rs.getString(15), rs.getString(16), rs.getString(17), reasonCodes(rs.getString(18)));
+                rs.getString(14), rs.getString(15), rs.getString(16), rs.getString(17),
+                rs.getTimestamp(18) == null ? null : rs.getTimestamp(18).toLocalDateTime(), reasonCodes(rs.getString(19)));
     }
 
     private RevealedTarget reveal(StoredTarget row) {
@@ -239,7 +240,8 @@ public class InvestigationTargetService {
                 row.ticketHmac(), row.reservationHmac(), row.accountHmac(),
                 new InvestigationReferenceCipher.Encrypted(row.keyVersion(), row.nonce(), row.ciphertext()));
         return new RevealedTarget(row.id().toString(), refs.accountReference(), refs.reservationReference(), refs.ticketReference(),
-                row.performanceId(), row.purchasedAt(), row.ticketStatus(), row.seatZone(), row.seatRow(), row.seatNumber(), row.reasons());
+                row.performanceId(), row.purchasedAt(), row.ticketStatus(), row.seatZone(), row.seatRow(), row.seatNumber(),
+                row.reasons(), row.reservedAt());
     }
 
     static List<String> reasonCodes(String json) {
@@ -298,13 +300,14 @@ public class InvestigationTargetService {
     }
 
     static byte[] csv(List<RevealedTarget> rows) {
-        StringBuilder csv = new StringBuilder("account_id,reservation_reference,ticket_reference,performance_id,purchased_at,seat_zone,seat_row,seat_number,reasons\r\n");
+        StringBuilder csv = new StringBuilder("account_id,reservation_reference,ticket_reference,performance_id,purchased_at,reserved_at,seat_zone,seat_row,seat_number,reasons\r\n");
         for (RevealedTarget row : rows) {
             appendCsv(csv, row.accountReference()); csv.append(',');
             appendCsv(csv, row.reservationReference()); csv.append(',');
             appendCsv(csv, row.ticketReference()); csv.append(',');
             appendCsv(csv, row.performanceId().toString()); csv.append(',');
             appendCsv(csv, row.purchasedAt().toString()); csv.append(',');
+            appendCsv(csv, row.reservedAt() == null ? null : row.reservedAt().toString()); csv.append(',');
             appendCsv(csv, row.seatZone()); csv.append(',');
             appendCsv(csv, row.seatRow()); csv.append(',');
             appendCsv(csv, row.seatNumber()); csv.append(',');
@@ -330,7 +333,7 @@ public class InvestigationTargetService {
     static Target masked(RevealedTarget decoded) {
         return new Target(decoded.targetId(), mask(decoded.accountReference()), mask(decoded.reservationReference()),
                 mask(decoded.ticketReference()), decoded.performanceId(), decoded.purchasedAt(), decoded.ticketStatus(),
-                decoded.seatZone(), decoded.seatRow(), decoded.seatNumber(), decoded.reasons());
+                decoded.seatZone(), decoded.seatRow(), decoded.seatNumber(), decoded.reasons(), decoded.reservedAt());
     }
 
     private static ResponseStatusException notFound() { return new ResponseStatusException(HttpStatus.NOT_FOUND, "Resource not found"); }
@@ -339,11 +342,17 @@ public class InvestigationTargetService {
 
     public record Target(String targetId, String accountReference, String reservationReference, String ticketReference,
                          UUID performanceId, LocalDateTime purchasedAt, String ticketStatus, String seatZone,
-                         String seatRow, String seatNumber, List<String> reasons) { }
+                         String seatRow, String seatNumber, List<String> reasons, LocalDateTime reservedAt) { }
     public record TargetPage(List<Target> items, int page, int pageSize, int total, boolean hasNext) { }
     public record RevealedTarget(String targetId, String accountReference, String reservationReference, String ticketReference,
                                  UUID performanceId, LocalDateTime purchasedAt, String ticketStatus, String seatZone,
-                                 String seatRow, String seatNumber, List<String> reasons) {
+                                 String seatRow, String seatNumber, List<String> reasons, LocalDateTime reservedAt) {
+        public RevealedTarget(String targetId, String accountReference, String reservationReference, String ticketReference,
+                UUID performanceId, LocalDateTime purchasedAt, String ticketStatus, String seatZone,
+                String seatRow, String seatNumber, List<String> reasons) {
+            this(targetId, accountReference, reservationReference, ticketReference, performanceId, purchasedAt,
+                    ticketStatus, seatZone, seatRow, seatNumber, reasons, null);
+        }
         @Override public String toString() { return "RevealedTarget[redacted]"; }
     }
     public record RevealedPage(List<RevealedTarget> items, int page, int pageSize, int total, boolean hasNext) { }
@@ -351,7 +360,7 @@ public class InvestigationTargetService {
                              String reason, java.time.OffsetDateTime accessedAt) { }
     private record StoredTarget(UUID id, UUID importId, UUID tenantId, UUID eventId, UUID performanceId, long rowNumber,
             String ticketHmac, String reservationHmac, String accountHmac, byte[] ciphertext, byte[] nonce, String keyVersion,
-            LocalDateTime purchasedAt, String ticketStatus, String seatZone, String seatRow, String seatNumber,
+            LocalDateTime purchasedAt, String ticketStatus, String seatZone, String seatRow, String seatNumber, LocalDateTime reservedAt,
             List<String> reasons) {
     }
 }

@@ -72,13 +72,15 @@ class CaseSourceVerifierMultiEventTest {
 
     @Test
     void doesNotTreatMultiEventCandidateAsAFanReportSource() {
+        Case fanReportTarget = new Case(UUID.randomUUID(), TENANT, EVENT, UUID.randomUUID(), Case.Type.FAN_REPORT,
+                null, null, NOW);
         CaseDto.Create input = new CaseDto.Create(EVENT, Case.Type.FAN_REPORT, List.of(), List.of(), List.of(),
                 List.of(), List.of(new CaseDto.MultiEventCandidate(RUN, CANDIDATE)),
                 "Invalid source type", null, null);
 
-        assertThatThrownBy(() -> verifier.verify(target, input, NOW))
+        assertThatThrownBy(() -> verifier.verify(fanReportTarget, input, NOW))
                 .isInstanceOf(CaseApiException.class);
-        verify(multiEventCandidates, never()).verify(target,
+        verify(multiEventCandidates, never()).verify(fanReportTarget,
                 List.of(new CaseDto.MultiEventCandidate(RUN, CANDIDATE)), NOW);
     }
 }

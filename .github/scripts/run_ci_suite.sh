@@ -78,6 +78,7 @@ mysql_full() {
 minio_full() {
   migration_prefix
   run_test bulk-ledger-import-migration '*BulkLedgerImportMigrationMySqlTest'
+  run_test multi-event-artifact-migration '*MultiEventArtifactMigrationMySqlTest'
   schema_prefix
   run_test case-w07-schema '*CaseW07SchemaValidateMySqlTest'
   run_test case-w08a-schema '*CaseW08aSchemaValidateMySqlTest'

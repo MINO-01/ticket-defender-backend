@@ -45,7 +45,30 @@ public final class MultiEventAnalysisDto {
                          @JsonInclude(JsonInclude.Include.NON_NULL) String seatNumber,
                          @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime reservedAt,
                          @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime paidAt,
-                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime accountCreatedAt) {
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime accountCreatedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime deviceObservedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountObservedAt,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) UUID refundAccountRetentionApprovalId,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String refundAccountRetentionPolicyVersion,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) Integer refundAccountRetentionDays,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountRetentionEffectiveFrom,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountRetentionEffectiveUntil,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) OffsetDateTime refundAccountRetentionApprovedAt) {
+        public Ticket(String accountId, String reservationNo, String eventId, UUID performanceId, UUID ledgerVersionId,
+                      Long sourceRowOrdinal, String supplierNamespace, String hmacPurpose, String hmacKeyVersion,
+                      OffsetDateTime purchasedAt, Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit,
+                      UUID quantityPolicySnapshotId, String quantityPolicyVersion, String quantitySourceVersion,
+                      String paymentHash, String addressHash, String deviceIdHash, String ipHash,
+                      String refundAccountHash, String phoneHash, String ipNetworkType, String quantityStatus,
+                      String quantityReason, String sourceVersion, String seatZone, String seatRow,
+                      String seatNumber, OffsetDateTime reservedAt, OffsetDateTime paidAt, OffsetDateTime accountCreatedAt) {
+            this(accountId, reservationNo, eventId, performanceId, ledgerVersionId, sourceRowOrdinal,
+                    supplierNamespace, hmacPurpose, hmacKeyVersion, purchasedAt, effectiveTicketQuantity,
+                    confirmedPurchaseLimit, quantityPolicySnapshotId, quantityPolicyVersion, quantitySourceVersion,
+                    paymentHash, addressHash, deviceIdHash, ipHash, refundAccountHash, phoneHash, ipNetworkType,
+                    quantityStatus, quantityReason, sourceVersion, seatZone, seatRow, seatNumber, reservedAt,
+                    paidAt, accountCreatedAt, null, null, null, null, null, null, null, null);
+        }
         public Ticket(String accountId, String reservationNo, String eventId, UUID performanceId, UUID ledgerVersionId,
                       Long sourceRowOrdinal, String supplierNamespace, String hmacPurpose, String hmacKeyVersion,
                       OffsetDateTime purchasedAt, Integer effectiveTicketQuantity, Integer confirmedPurchaseLimit,
@@ -57,7 +80,8 @@ public final class MultiEventAnalysisDto {
                     supplierNamespace, hmacPurpose, hmacKeyVersion, purchasedAt, effectiveTicketQuantity,
                     confirmedPurchaseLimit, quantityPolicySnapshotId, quantityPolicyVersion, quantitySourceVersion,
                     paymentHash, addressHash, deviceIdHash, ipHash, refundAccountHash, phoneHash, ipNetworkType,
-                    quantityStatus, quantityReason, sourceVersion, null, null, null, null, null, null);
+                    quantityStatus, quantityReason, sourceVersion, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null);
         }
     }
     /** Separate pseudonymous cancellation evidence; never participates in the active ticket analysis list. */

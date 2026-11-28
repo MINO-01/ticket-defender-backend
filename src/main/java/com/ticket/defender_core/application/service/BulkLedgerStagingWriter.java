@@ -33,8 +33,8 @@ public class BulkLedgerStagingWriter {
              ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
              quantity_unit, ticket_status, source_version, source_event_id, source_changed_at, source_sequence, change_action, row_digest,
              payment_hmac, address_hmac, device_hmac, ip_hmac, refund_account_hmac, phone_hmac, phone_source, ip_network_type, ip_network_type_source,
-             seat_zone, seat_row, seat_number, reserved_at, paid_at, cancelled_at, account_created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             seat_zone, seat_row, seat_number, reserved_at, paid_at, cancelled_at, account_created_at, device_observed_at, refund_account_observed_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """;
     private static final String INSERT_ENCRYPTED_REFERENCES = """
             INSERT INTO td_investigation_reference_ciphertexts
@@ -124,6 +124,8 @@ public class BulkLedgerStagingWriter {
                     statement.setString(30, row.seatZone()); statement.setString(31, row.seatRow()); statement.setString(32, row.seatNumber());
                     timestampOrNull(statement, 33, row.reservedAt()); timestampOrNull(statement, 34, row.paidAt());
                     timestampOrNull(statement, 35, row.cancelledAt()); timestampOrNull(statement, 36, row.accountCreatedAt());
+                    timestampOrNull(statement, 37, signals.deviceObservedAt());
+                    timestampOrNull(statement, 38, signals.refundAccountObservedAt());
                 }
             }
             @Override public int getBatchSize() { return inserts.size(); }

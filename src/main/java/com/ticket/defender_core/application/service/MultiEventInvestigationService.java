@@ -406,12 +406,17 @@ public class MultiEventInvestigationService {
                     statement.setFetchSize(MYSQL_STREAMING_FETCH_SIZE);
                     statement.setString(1,scope.versionId().toString());
                     statement.setString(2,scope.versionId().toString());
-                    statement.setString(3,scope.policySnapshotId()==null?null:scope.policySnapshotId().toString());
-                    statement.setString(4,scope.versionId().toString());
-                    statement.setString(5,scope.performanceId().toString());
-                    statement.setTimestamp(6,java.sql.Timestamp.from(input.analysisStartAt().toInstant()));
-                    statement.setTimestamp(7,java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
-                    statement.setInt(8,queryLimit);
+                    statement.setString(3,input.tenantId().toString());
+                    statement.setString(4,scope.eventId().toString());
+                    statement.setString(5,input.supplierNamespace());
+                    statement.setTimestamp(6,java.sql.Timestamp.from(input.analysisAsOf().toInstant()));
+                    statement.setTimestamp(7,java.sql.Timestamp.from(input.analysisAsOf().toInstant()));
+                    statement.setString(8,scope.policySnapshotId()==null?null:scope.policySnapshotId().toString());
+                    statement.setString(9,scope.versionId().toString());
+                    statement.setString(10,scope.performanceId().toString());
+                    statement.setTimestamp(11,java.sql.Timestamp.from(input.analysisStartAt().toInstant()));
+                    statement.setTimestamp(12,java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
+                    statement.setInt(13,queryLimit);
                     return statement;
                 },rs->{
                     try {
@@ -749,8 +754,12 @@ public class MultiEventInvestigationService {
                s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.hmac_purpose,s.hmac_key_version,s.source_version,
                ps.snapshot_id,ps.source_version,ps.ledger_complete_snapshot,ps.policy_verification_status,ps.quantity_data_status,ps.data_completeness_reason,ps.cancellation_handling,ps.duplicate_handling,ps.max_tickets_per_account,
                lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version,
-               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at
+               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at,s.device_observed_at,
+               s.refund_account_observed_at,rp.id,rp.policy_version,rp.retention_days,rp.effective_from,rp.effective_until,rp.approved_at
         from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
+        left join td_exp3_resource_retention_policies rp on s.refund_account_hmac is not null and s.refund_account_observed_at is not null
+          and rp.tenant_id=? and rp.event_id=? and rp.supplier_namespace=?
+          and rp.resource_type='refund_account_hash' and rp.effective_from<=? and (rp.effective_until is null or rp.effective_until>?)
         left join td_bulk_ledger_track1_policy_snapshots ps on ps.snapshot_id=? and ps.ledger_version_id=?
         left join td_bulk_ledger_track1_bulk_limit_findings lf on lf.job_id=ps.job_id and lf.performance_id=? and lf.account_reference_hmac=r.account_reference_hmac
         where r.rn=1 and r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<?
@@ -827,7 +836,9 @@ public class MultiEventInvestigationService {
                 input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,
                 quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),
                 rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,
-                rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33));
+                rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33),nullableTime(rs,34),
+                nullableTime(rs,35),rs.getString(36)==null?null:uuid(rs.getString(36)),rs.getString(37),nullableInteger(rs,38),
+                nullableTime(rs,39),nullableTime(rs,40),nullableTime(rs,41));
     }
 
     private void registerArtifact(Claim claim) {
@@ -883,8 +894,8 @@ public class MultiEventInvestigationService {
     static String dataJobIdempotencyKey(UUID runId){return "mei-"+runId;}
 
     private RunInput runInput(Claim claim){
-        return jdbc.query("select ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at from td_multi_event_investigation_runs where id=? and tenant_id=?",
-                (rs,n)->new RunInput(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),time(rs,7),time(rs,8),time(rs,9)),
+        return jdbc.query("select tenant_id,ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at from td_multi_event_investigation_runs where id=? and tenant_id=?",
+                (rs,n)->new RunInput(uuid(rs.getString(1)),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),rs.getString(7),time(rs,8),time(rs,9),time(rs,10)),
                 claim.id().toString(),claim.tenantId().toString()).stream().findFirst().orElseThrow(()->new Blocked("RUN_MISSING"));
     }
 
@@ -1633,7 +1644,7 @@ public class MultiEventInvestigationService {
     }
     private MultiEventAnalysisDto.Request request(Claim claim){
         List<Scope> scopes=scopesForWorker(claim.id()); if(scopes.size()<2)throw new Blocked("FIXED_LEDGER_SCOPE_MISSING");
-        RunInput input=jdbc.query("select ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at from td_multi_event_investigation_runs where id=? and tenant_id=?",(rs,n)->new RunInput(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),time(rs,7),time(rs,8),time(rs,9)),claim.id().toString(),claim.tenantId().toString()).stream().findFirst().orElseThrow(()->new Blocked("RUN_MISSING"));
+        RunInput input=jdbc.query("select tenant_id,ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at from td_multi_event_investigation_runs where id=? and tenant_id=?",(rs,n)->new RunInput(uuid(rs.getString(1)),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),rs.getString(7),time(rs,8),time(rs,9),time(rs,10)),claim.id().toString(),claim.tenantId().toString()).stream().findFirst().orElseThrow(()->new Blocked("RUN_MISSING"));
         List<MultiEventAnalysisDto.Ticket> tickets=new ArrayList<>();
         List<MultiEventAnalysisDto.CancelledTicket> cancelledTickets=new ArrayList<>();
         for(Scope scope:scopes){
@@ -1670,8 +1681,12 @@ public class MultiEventInvestigationService {
                s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.hmac_purpose,s.hmac_key_version,s.source_version,
                ps.snapshot_id,ps.source_version,ps.ledger_complete_snapshot,ps.policy_verification_status,ps.quantity_data_status,ps.data_completeness_reason,ps.cancellation_handling,ps.duplicate_handling,ps.max_tickets_per_account,
                lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version,
-               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at
+               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at,s.device_observed_at,
+               s.refund_account_observed_at,rp.id,rp.policy_version,rp.retention_days,rp.effective_from,rp.effective_until,rp.approved_at
         from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
+        left join td_exp3_resource_retention_policies rp on s.refund_account_hmac is not null and s.refund_account_observed_at is not null
+          and rp.tenant_id=? and rp.event_id=? and rp.supplier_namespace=?
+          and rp.resource_type='refund_account_hash' and rp.effective_from<=? and (rp.effective_until is null or rp.effective_until>?)
         left join td_bulk_ledger_track1_policy_snapshots ps on ps.snapshot_id=? and ps.ledger_version_id=?
         left join td_bulk_ledger_track1_bulk_limit_findings lf on lf.job_id=ps.job_id and lf.performance_id=? and lf.account_reference_hmac=r.account_reference_hmac
         where r.rn=1 and r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<? order by r.ticket_reference_hmac limit ?
@@ -1690,8 +1705,8 @@ public class MultiEventInvestigationService {
                 else if(policySourceVersion==null||!policySourceVersion.equals(rowSource)||!quantityFound||!policyLimitFound||!findingLimitFound||policyLimit!=findingLimit||snapshotPolicyVersion==null||!snapshotPolicyVersion.equals(rs.getString(27))||effectiveQuantity<1||effectiveQuantity>100||policyLimit<1||policyLimit>100) {quantityStatus="INCOMPLETE";quantityReason="POLICY_QUANTITY_SOURCE_MISMATCH";}
                 else {quantityStatus="COMPLETE";quantityReason="POLICY_SNAPSHOT_AND_QUANTITY_VERIFIED";quantity=(int)effectiveQuantity;confirmedLimit=policyLimit;}
             }
-            java.sql.Timestamp purchased=rs.getTimestamp(3);return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),n+1L,input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33));
-        },scope.versionId().toString(),scope.versionId().toString(),scope.policySnapshotId()==null?null:scope.policySnapshotId().toString(),scope.versionId().toString(),scope.performanceId().toString(),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()),limit);}
+            java.sql.Timestamp purchased=rs.getTimestamp(3);return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),n+1L,input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33),nullableTime(rs,34),nullableTime(rs,35),rs.getString(36)==null?null:uuid(rs.getString(36)),rs.getString(37),nullableInteger(rs,38),nullableTime(rs,39),nullableTime(rs,40),nullableTime(rs,41));
+        },scope.versionId().toString(),input.tenantId().toString(),scope.eventId().toString(),input.supplierNamespace(),java.sql.Timestamp.from(input.analysisAsOf().toInstant()),java.sql.Timestamp.from(input.analysisAsOf().toInstant()),scope.policySnapshotId()==null?null:scope.policySnapshotId().toString(),scope.versionId().toString(),scope.performanceId().toString(),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()),limit);}
     private void complete(Claim claim,MultiEventAnalysisDto.Response response){
         requireLease(claim);
         jdbc.update("delete from td_multi_event_investigation_relationship_sources where run_id=?",claim.id().toString());
@@ -1745,7 +1760,7 @@ public class MultiEventInvestigationService {
     private static String owner(Claim claim){return "mei-"+claim.id();}
     private static void validPage(int page,int size){if(page<0||size<1||size>100)throw invalid();}
     private static <T> Page<T> page(List<T> rows,int page,int size){boolean next=rows.size()>size;if(next)rows=rows.subList(0,size);return new Page<>(rows,page,size,next);}
-    private static UUID uuid(String value){return UUID.fromString(value);} private static OffsetDateTime time(java.sql.ResultSet rs,int index)throws java.sql.SQLException{return rs.getTimestamp(index).toLocalDateTime().atOffset(ZoneOffset.UTC);}private static OffsetDateTime nullableTime(java.sql.ResultSet rs,int index)throws java.sql.SQLException{return rs.getTimestamp(index)==null?null:time(rs,index);}
+    private static UUID uuid(String value){return UUID.fromString(value);} private static OffsetDateTime time(java.sql.ResultSet rs,int index)throws java.sql.SQLException{return rs.getTimestamp(index).toLocalDateTime().atOffset(ZoneOffset.UTC);}private static OffsetDateTime nullableTime(java.sql.ResultSet rs,int index)throws java.sql.SQLException{return rs.getTimestamp(index)==null?null:time(rs,index);}private static Integer nullableInteger(java.sql.ResultSet rs,int index)throws java.sql.SQLException{int value=rs.getInt(index);return rs.wasNull()?null:value;}
     private static Long nullableLong(java.sql.ResultSet rs,int index)throws java.sql.SQLException{long value=rs.getLong(index);return rs.wasNull()?null:value;}
     private static CaseApiException invalid(){return new CaseApiException(HttpStatus.BAD_REQUEST,"INVALID_MULTI_EVENT_INVESTIGATION_REQUEST");} private static CaseApiException incomplete(String code){return new CaseApiException(HttpStatus.CONFLICT,code);}private static CaseApiException notFound(){return new CaseApiException(HttpStatus.NOT_FOUND,"RESOURCE_NOT_FOUND");}
     public record PerformanceSelection(UUID eventId,List<UUID> performanceIds){}
@@ -1769,7 +1784,7 @@ public class MultiEventInvestigationService {
     record Claim(UUID id,UUID tenantId,long fence,String priorStatus,UUID dataJobId,String artifactId,
                          String objectVersion,String artifactSha256,Long artifactRecordCount,
                          int artifactCancelledTicketCount,int attemptCount){}
-    private record RunInput(String ledgerDigest,String supplierNamespace,String purpose,String keyVersion,String scoreVersion,String projectionVersion,OffsetDateTime analysisAsOf,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt){}
+    private record RunInput(UUID tenantId,String ledgerDigest,String supplierNamespace,String purpose,String keyVersion,String scoreVersion,String projectionVersion,OffsetDateTime analysisAsOf,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt){}
     private static final class Blocked extends RuntimeException{private final String code;private Blocked(String code){this.code=code;}}
     public record ScopeView(UUID eventId,UUID performanceId,UUID ledgerVersionId,String eventReference,String sourceBatchId){}
     private record FamilyKey(String familyId,double familyScore){}

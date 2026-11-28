@@ -102,11 +102,18 @@ public final class MultiEventAnalysisDto {
                                   int distinctPerformanceCount, int verifiedRelationshipCount,
                                   List<LedgerScope> sourceScopes, List<String> availableSignals,
                                   List<String> excludedSignals, List<String> unavailableSignals,
-                                  List<String> normalSharingPossibilities, ScoreBreakdown scoreBreakdown) { }
+                                  List<String> normalSharingPossibilities, ScoreBreakdown scoreBreakdown,
+                                  String familyId, String parentCandidateId, int childCount, Double familyScore,
+                                  List<EvidenceReason> reasons) { }
     public record CandidatePage(UUID jobId, String ledgerVersionSetDigest, String cursor, String nextCursor,
                                 int totalCount, List<CandidateSummary> records) { }
     public record MemberPage(UUID jobId, String candidateId, String ledgerVersionSetDigest, String cursor,
                              String nextCursor, int totalCount, List<String> records) { }
+    public record MemberEvidenceReason(String code, int peerCount, List<String> performances) { }
+    public record MemberEvidence(String accountReferenceHmac, List<MemberEvidenceReason> reasons) { }
+    public record MemberEvidencePage(UUID jobId, String candidateId, String ledgerVersionSetDigest, String cursor,
+                                     String nextCursor, int totalCount, List<MemberEvidence> records) { }
+    public record EvidenceReason(String code, int count, List<String> performances, int strengthRank) { }
     public record RelationshipSummary(String relationshipId, String signalType, int accountCount,
                                      int sourceScopeCount, List<LedgerScope> sourceScopes) { }
     public record RelationshipPage(UUID jobId, String candidateId, String ledgerVersionSetDigest, String cursor,
@@ -116,7 +123,9 @@ public final class MultiEventAnalysisDto {
                             int verifiedRelationshipCount, List<LedgerScope> sourceScopes, List<String> availableSignals,
                             List<String> excludedSignals, List<String> unavailableSignals,
                             List<String> normalSharingPossibilities, ScoreBreakdown scoreBreakdown,
-                            List<String> memberAccountIds, List<Relationship> relationships) { }
+                            List<String> memberAccountIds, List<Relationship> relationships, String familyId,
+                            String parentCandidateId, int childCount, Double familyScore,
+                            List<EvidenceReason> reasons, List<MemberEvidence> memberReasons) { }
     public record Relationship(String signalType, List<String> accountIds, List<LedgerScope> sourceScopes) { }
     public record ScoreBreakdown(double L, double G, double B, double Q, double R, double score,
                                  String quantityStatus, String quantityReason) { }

@@ -64,6 +64,7 @@ class MultiEventInvestigationServiceTest {
 
     private MultiEventInvestigationService service;
     private final AtomicReference<String> runListSql = new AtomicReference<>();
+    private final AtomicReference<String> familyPageSql = new AtomicReference<>();
     private final AtomicReference<String> baselineSql = new AtomicReference<>();
     private final AtomicReference<Object[]> baselineArguments = new AtomicReference<>();
 
@@ -225,6 +226,27 @@ class MultiEventInvestigationServiceTest {
     }
 
     @Test
+    void legacyCandidatesWithoutFamilyMetadataRemainVisibleAsSingletonFamilies() {
+        when(access.event(EVENT_A, ROLES)).thenReturn(scope(EVENT_A));
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.contains("from td_multi_event_investigation_runs r")) return List.of(run());
+            if (sql.contains("select distinct event_id")) return List.of(EVENT_A);
+            if (sql.contains("group by coalesce(family_id,candidate_id)")) {
+                familyPageSql.set(sql);
+                return List.of();
+            }
+            return List.of();
+        }).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
+
+        var result = service.candidateFamilies(EVENT_A, RUN_ID, 0, 20);
+
+        assertThat(result.items()).isEmpty();
+        assertThat(familyPageSql.get()).contains("coalesce(family_id,candidate_id)");
+        assertThat(familyPageSql.get()).doesNotContain("family_id is not null");
+    }
+
+    @Test
     void candidateMemberRelationshipAndSourceRowsStayHiddenUntilTheDataJobCompletes() {
         when(access.event(EVENT_A, ROLES)).thenReturn(scope(EVENT_A));
         when(access.event(EVENT_B, ROLES)).thenReturn(scope(EVENT_B));
@@ -342,7 +364,8 @@ class MultiEventInvestigationServiceTest {
         var scopeB = new MultiEventAnalysisDto.LedgerScope("event-b", performanceB, versionB, "batch-b");
         var candidate = new MultiEventAnalysisDto.CandidateSummary("multi-" + "c".repeat(64), "HIGH",
                 "score-v2-exp2-multi-performance-recurrence", "projection-v2.2-exp2-ipwindow-softhub",
-                3, 2, 2, 1, List.of(scopeA, scopeB), List.of("refund_account_hash"), List.of(), List.of(), List.of(), null);
+                3, 2, 2, 1, List.of(scopeA, scopeB), List.of("refund_account_hash"), List.of(), List.of(), List.of(), null,
+                "multi-"+"c".repeat(64),null,0,0.5,List.of());
         var narrowerRelation = new MultiEventAnalysisDto.RelationshipSummary("relation-refund", "refund_account_hash",
                 2, 2, List.of(scopeA, scopeB));
         var fixedScopes = java.util.Map.of(

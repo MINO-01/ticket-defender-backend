@@ -293,6 +293,11 @@ public class FastApiAdapter {
                 + java.net.URLEncoder.encode(candidateId, StandardCharsets.UTF_8) + "/members?limit=500" + cursor(cursor);
         return bulkGet(path, MultiEventAnalysisDto.MemberPage.class);
     }
+    public MultiEventAnalysisDto.MemberEvidencePage multiEventMemberEvidencePage(UUID jobId, String candidateId, String cursor) {
+        String path = MULTI_EVENT_JOB_PATH + "/" + jobId + "/results/"
+                + java.net.URLEncoder.encode(candidateId, StandardCharsets.UTF_8) + "/member-reasons?limit=500" + cursor(cursor);
+        return bulkGet(path, MultiEventAnalysisDto.MemberEvidencePage.class);
+    }
     public MultiEventAnalysisDto.RelationshipPage multiEventRelationshipPage(UUID jobId, String candidateId, String cursor) {
         String path = MULTI_EVENT_JOB_PATH + "/" + jobId + "/results/"
                 + java.net.URLEncoder.encode(candidateId, StandardCharsets.UTF_8) + "/relationships?limit=500" + cursor(cursor);

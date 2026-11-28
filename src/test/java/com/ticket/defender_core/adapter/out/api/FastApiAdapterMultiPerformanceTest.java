@@ -120,11 +120,13 @@ class FastApiAdapterMultiPerformanceTest {
                    "sourceScopes":SCOPES,"availableSignals":AVAILABLE,"excludedSignals":[],"unavailableSignals":["ip_window"],
                    "normalSharingPossibilities":["NORMAL_SHARED_POSSIBLE"],
                    "scoreBreakdown":{"L":0.8,"G":0.68,"B":BEHAVIOR,"Q":0.5,"R":RECURRENCE,"score":SCORE,"quantityStatus":"NEUTRAL_NO_POLICY","quantityReason":"UNKNOWN"},
+                   "familyId":"FAMILY_ID","parentCandidateId":null,"childCount":0,"familyScore":SCORE,"reasons":[],
+                   "memberReasons":[{"accountReferenceHmac":"MEMBER_A","reasons":[]},{"accountReferenceHmac":"MEMBER_B","reasons":[]}],
                    "memberAccountIds":["MEMBER_A","MEMBER_B"],"relationships":[RELATIONSHIPS]}]}
                 """.replace("BAND", band).replace("VERIFIED", Integer.toString(verified)).replace("SCOPES", SCOPES)
                 .replace("AVAILABLE", available).replace("BEHAVIOR", Double.toString(behavior)).replace("RECURRENCE", Double.toString(recurrence))
                 .replace("SCORE", Double.toString(score)).replace("MEMBER_A", "a".repeat(64)).replace("MEMBER_B", "b".repeat(64))
-                .replace("RELATIONSHIPS", relationships);
+                .replace("FAMILY_ID", "multi-"+"1".repeat(64)).replace("RELATIONSHIPS", relationships);
     }
 
     /** bothScopes=false이면 계정 b는 두 번째 회차에만 있습니다. */

@@ -126,8 +126,34 @@ class MultiEventMultiPerformanceTest {
 
         var retired = new MultiEventAnalysisDto.CandidateSummary("multi-" + "c".repeat(64), "LOW", MultiEventInvestigationService.RETIRED_SCORE_VERSION,
                 "projection-v2.2-exp2-ipwindow-softhub", 2, 1, 2, 1, List.of(scopeA(), scopeB()), List.of("device_id_hash"), List.of(), List.of(), List.of(),
-                breakdown(recurrenceFor(2)));
+                breakdown(recurrenceFor(2)),"multi-"+"c".repeat(64),null,0,breakdown(recurrenceFor(2)).score(),List.of());
         assertThatThrownBy(() -> service.validateCandidateSummary(retired, fixedScopes())).isInstanceOf(FastApiResponseContractException.class);
+    }
+
+    @Test
+    void candidateReasonsMustMatchSupportedSignalsAndFixedPerformances() {
+        var deviceReason = new MultiEventAnalysisDto.EvidenceReason("SHARED_DEVICE",2,
+                List.of(PERFORMANCE_A.toString(),PERFORMANCE_B.toString()),1);
+        assertThatCode(() -> service.validateReasonSummary(List.of(deviceReason),2,2,List.of(scopeA(),scopeB()),List.of("device_id_hash")))
+                .doesNotThrowAnyException();
+
+        var refundReason = new MultiEventAnalysisDto.EvidenceReason("SHARED_REFUND_ACCOUNT",2,
+                List.of(PERFORMANCE_A.toString(),PERFORMANCE_B.toString()),1);
+        assertThatThrownBy(() -> service.validateReasonSummary(List.of(refundReason),2,2,List.of(scopeA(),scopeB()),List.of("device_id_hash")))
+                .isInstanceOf(FastApiResponseContractException.class);
+    }
+
+    @Test
+    void memberReasonPeerCountAndPerformanceListMustFitCandidateEvidence() {
+        var candidateReason = new MultiEventAnalysisDto.EvidenceReason("SHARED_DEVICE",2,
+                List.of(PERFORMANCE_A.toString(),PERFORMANCE_B.toString()),1);
+        var memberReason = new MultiEventAnalysisDto.MemberEvidenceReason("SHARED_DEVICE",1,List.of(PERFORMANCE_A.toString()));
+        assertThatCode(() -> service.validateMemberEvidence(List.of(memberReason),List.of(candidateReason),2,List.of(scopeA(),scopeB())))
+                .doesNotThrowAnyException();
+
+        var invalidPeer = new MultiEventAnalysisDto.MemberEvidenceReason("SHARED_DEVICE",2,List.of(PERFORMANCE_A.toString()));
+        assertThatThrownBy(() -> service.validateMemberEvidence(List.of(invalidPeer),List.of(candidateReason),2,List.of(scopeA(),scopeB())))
+                .isInstanceOf(FastApiResponseContractException.class);
     }
 
     @Test
@@ -224,7 +250,7 @@ class MultiEventMultiPerformanceTest {
         String band = score.score() >= .40 ? "HIGH" : score.score() >= .20 ? "MEDIUM" : "LOW";
         return new MultiEventAnalysisDto.CandidateSummary("multi-" + "c".repeat(64), band, MultiEventInvestigationService.SCORE_VERSION,
                 "projection-v2.2-exp2-ipwindow-softhub", 2, events, performances, 2, List.of(scopeA(), scopeB()), available, List.of(), unavailable,
-                List.of("NORMAL_SHARED_POSSIBLE"), score);
+                List.of("NORMAL_SHARED_POSSIBLE"), score,"multi-"+"c".repeat(64),null,0,score.score(),List.of());
     }
 
     private static MultiEventAnalysisDto.LedgerScope scopeA() { return new MultiEventAnalysisDto.LedgerScope("event-1", PERFORMANCE_A, VERSION_A, "batch-a"); }

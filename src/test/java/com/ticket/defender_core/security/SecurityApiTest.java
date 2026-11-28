@@ -287,6 +287,16 @@ class SecurityApiTest {
     }
 
     @Test
+    void multiEventInvestigationRoutesRequireAuthenticationAndReachEventAuthorization() throws Exception {
+        String modelsPath = "/api/v1/admin/multi-event-investigations/events/" + EVENT_A + "/models";
+        mvc.perform(get(modelsPath))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get(modelsPath)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken())))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void publicFanReportRoutesStayClosedByDefault() throws Exception {
         mvc.perform(post("/api/v1/fan-reports"))
                 .andExpect(status().isUnauthorized());

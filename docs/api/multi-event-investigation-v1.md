@@ -64,6 +64,8 @@
 5. `bulk-ledger-track1-signal-source-migration.sql` (v3 원본 수신의 신호 출처 컬럼)
 6. `multi-event-multi-performance-migration.sql` (새 점수 버전과 퇴역 버전 동시 허용, 후보 `distinct_event_count >= 1`)
 7. `multi-event-candidate-family-reasons-migration.sql` (후보 가족 및 구성원 근거, 추가형)
+8. `multi-event-exp3-quantity-evidence-migration.sql` (exp3 수량 및 재예매 sidecar)
+9. `multi-event-exp3-score-version-migration.sql` (exp2 제약을 유지하면서 exp3 score/projection 조합 허용, 8번 이후 적용)
 
 대량 원장 쪽 v3 스테이징 migration을 포함한 전체 순서는 `docs/operations/bulk-ledger-v3-raw-intake.md`를 따른다.
 

@@ -239,9 +239,14 @@ public class FastApiAdapter {
                 || manifest.analysisAsOf() == null || manifest.analysisStartAt() == null || manifest.analysisEndAt() == null
                 || !manifest.analysisEndAt().isAfter(manifest.analysisStartAt())
                 || manifest.analysisEndAt().isAfter(manifest.analysisAsOf())
-                || !MULTI_PERFORMANCE_SCORE_VERSION.equals(manifest.scoreVersion())
+                || !(MULTI_PERFORMANCE_SCORE_VERSION.equals(manifest.scoreVersion())
+                    && "projection-v2.2-exp2-ipwindow-softhub".equals(manifest.projectionVersion())
+                    || EXP3_SCORE_VERSION.equals(manifest.scoreVersion())
+                    && EXP3_PROJECTION_VERSION.equals(manifest.projectionVersion()))
+                || (EXP3_SCORE_VERSION.equals(manifest.scoreVersion())
+                    && (!"multi-event-exp3-evidence-ndjson-v1".equals(manifest.inputFormatVersion())
+                        || manifest.exp3QuantityEvidenceArtifact() == null))
                 || manifest.ledgerScopes().stream().map(scope -> scope == null ? null : scope.performanceId()).distinct().count() < 2
-                || !"projection-v2.2-exp2-ipwindow-softhub".equals(manifest.projectionVersion())
                 || manifest.ledgerScopes().stream().anyMatch(scope -> scope == null || scope.eventId() == null
                     || scope.eventId().isBlank() || scope.eventId().length() > 128 || scope.sourceEventId() == null
                     || scope.performanceId() == null || scope.ledgerVersionId() == null
@@ -334,6 +339,8 @@ public class FastApiAdapter {
 
     /** 회차 수로 R을 계산하는 다회차 후보 점수 버전입니다. 퇴역한 event 기준 버전은 보내지도 받지도 않습니다. */
     static final String MULTI_PERFORMANCE_SCORE_VERSION = "score-v2-exp2-multi-performance-recurrence";
+    static final String EXP3_SCORE_VERSION = "score-v3-exp3-continuity";
+    static final String EXP3_PROJECTION_VERSION = "projection-v3-exp3-continuity-ipwindow-2offset";
     private static final String COCLUSTER = "stable_account_cocluster";
     private static final Set<String> STRONG_RELATIONSHIP_SIGNALS = Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash");
     private static final Set<String> EXP2_SIGNALS = Set.of("refund_account_hash", "phone_hash", "device_id_hash", "address_hash", "payment_hash",

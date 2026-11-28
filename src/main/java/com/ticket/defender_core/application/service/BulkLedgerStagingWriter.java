@@ -32,8 +32,9 @@ public class BulkLedgerStagingWriter {
             (id, import_id, tenant_id, event_id, performance_id, source_row_no, reservation_reference_hmac,
              ticket_reference_hmac, account_reference_hmac, hmac_key_version, purchased_at, ticket_quantity,
              quantity_unit, ticket_status, source_version, source_event_id, source_changed_at, source_sequence, change_action, row_digest,
-             payment_hmac, address_hmac, device_hmac, ip_hmac, refund_account_hmac, phone_hmac, phone_source, ip_network_type, ip_network_type_source)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             payment_hmac, address_hmac, device_hmac, ip_hmac, refund_account_hmac, phone_hmac, phone_source, ip_network_type, ip_network_type_source,
+             seat_zone, seat_row, seat_number, reserved_at, paid_at, cancelled_at, account_created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """;
     private static final String INSERT_ENCRYPTED_REFERENCES = """
             INSERT INTO td_investigation_reference_ciphertexts
@@ -120,6 +121,9 @@ public class BulkLedgerStagingWriter {
                     statement.setString(25, signals.refundAccountHmac()); statement.setString(26, signals.phoneHmac());
                     statement.setString(27, signals.phoneSource()); statement.setString(28, signals.ipNetworkType());
                     statement.setString(29, signals.ipNetworkTypeSource());
+                    statement.setString(30, row.seatZone()); statement.setString(31, row.seatRow()); statement.setString(32, row.seatNumber());
+                    timestampOrNull(statement, 33, row.reservedAt()); timestampOrNull(statement, 34, row.paidAt());
+                    timestampOrNull(statement, 35, row.cancelledAt()); timestampOrNull(statement, 36, row.accountCreatedAt());
                 }
             }
             @Override public int getBatchSize() { return inserts.size(); }
@@ -140,6 +144,10 @@ public class BulkLedgerStagingWriter {
                 @Override public int getBatchSize() { return encrypted.size(); }
             });
         });
+        }
+        private void timestampOrNull(PreparedStatement statement, int index, java.time.LocalDateTime value) throws SQLException {
+            if (value == null) statement.setNull(index, java.sql.Types.TIMESTAMP);
+            else statement.setTimestamp(index, Timestamp.valueOf(value));
         }
     }
 }

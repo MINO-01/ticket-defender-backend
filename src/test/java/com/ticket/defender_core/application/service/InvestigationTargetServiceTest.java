@@ -32,6 +32,83 @@ class InvestigationTargetServiceTest {
     private static final UUID EVENT = UUID.fromString("af8cc0af-9c65-46d1-bd07-0fcf8433a3a0");
 
     @Test
+    void memberReasonJsonReturnsOnlyReasonCodesAndAllowsOlderRowsWithoutReasons() {
+        assertThat(InvestigationTargetService.reasonCodes("[{\"code\":\"SHARED_PHONE\",\"peerCount\":2,\"performances\":[\"p1\"]}]"))
+                .containsExactly("SHARED_PHONE");
+        assertThat(InvestigationTargetService.reasonCodes("[]")).isEmpty();
+        assertThat(InvestigationTargetService.reasonCodes(null)).isEmpty();
+        assertThatThrownBy(() -> InvestigationTargetService.reasonCodes("[{\"peerCount\":2}]"))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void multiEventTargetsIncludeMaskedReferencesSeatAndMemberReasonCodes() throws Exception {
+        UUID tenant = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f0");
+        UUID membership = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f1");
+        UUID performance = UUID.fromString("7a7626f7-b313-43ee-97ae-822069ad78f2");
+        UUID runId = UUID.randomUUID();
+        UUID importId = UUID.randomUUID();
+        String candidateId = "multi-" + "a".repeat(64);
+        String ticketHmac = "a".repeat(64);
+        String reservationHmac = "b".repeat(64);
+        String accountHmac = "c".repeat(64);
+        var cipher = cipher();
+        var encrypted = cipher.encrypt(importId, tenant, EVENT, performance, 7, ticketHmac, reservationHmac,
+                accountHmac, "synthetic-account-42", "synthetic-reservation-87", "synthetic-ticket-19");
+        CandidatePipelineAccess access = mock(CandidatePipelineAccess.class);
+        AdminAccessService adminAccess = mock(AdminAccessService.class);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        InvestigationTargetService service = new InvestigationTargetService(access, adminAccess, jdbc, cipher);
+        Set<AdminRole> roles = Set.of(AdminRole.TENANT_ADMIN, AdminRole.ANALYST);
+        when(access.event(eq(EVENT), eq(roles)))
+                .thenReturn(new CandidatePipelineAccess.Scope(tenant, EVENT, membership, null));
+        when(adminAccess.authenticatedSubject()).thenReturn("synthetic-admin");
+        when(jdbc.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.query(contains("select distinct event_id"), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of(EVENT));
+        when(jdbc.query(contains("join td_investigation_reference_ciphertexts c"), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    String sql = invocation.getArgument(0);
+                    assertThat(sql).contains("td_multi_event_investigation_member_reasons", "t.seat_zone", "t.seat_row", "t.seat_number");
+                    RowMapper<?> mapper = invocation.getArgument(1);
+                    var row = mock(java.sql.ResultSet.class);
+                    when(row.getString(1)).thenReturn(UUID.randomUUID().toString());
+                    when(row.getString(2)).thenReturn(importId.toString());
+                    when(row.getString(3)).thenReturn(tenant.toString());
+                    when(row.getString(4)).thenReturn(EVENT.toString());
+                    when(row.getString(5)).thenReturn(performance.toString());
+                    when(row.getLong(6)).thenReturn(7L);
+                    when(row.getString(7)).thenReturn(ticketHmac);
+                    when(row.getString(8)).thenReturn(reservationHmac);
+                    when(row.getString(9)).thenReturn(accountHmac);
+                    when(row.getBytes(10)).thenReturn(encrypted.ciphertext());
+                    when(row.getBytes(11)).thenReturn(encrypted.nonce());
+                    when(row.getString(12)).thenReturn(encrypted.keyVersion());
+                    when(row.getTimestamp(13)).thenReturn(java.sql.Timestamp.valueOf("2026-11-25 10:00:00"));
+                    when(row.getString(14)).thenReturn("ACTIVE");
+                    when(row.getString(15)).thenReturn("A");
+                    when(row.getString(16)).thenReturn("12");
+                    when(row.getString(17)).thenReturn("34");
+                    when(row.getString(18)).thenReturn("[{\"code\":\"SHARED_PHONE\",\"peerCount\":1,\"performances\":[\"" + performance + "\"]}]");
+                    return List.of(mapper.mapRow(row, 0));
+                });
+
+        var page = service.multiEventTargets(EVENT, runId, candidateId, 0, 50, "synthetic review");
+
+        assertThat(page.items()).singleElement().satisfies(item -> {
+            assertThat(item.accountReference()).isEqualTo("****42");
+            assertThat(item.reservationReference()).isEqualTo("****87");
+            assertThat(item.ticketReference()).isEqualTo("****19");
+            assertThat(item.purchasedAt()).isEqualTo(LocalDateTime.parse("2026-11-25T10:00:00"));
+            assertThat(item.seatZone()).isEqualTo("A");
+            assertThat(item.seatRow()).isEqualTo("12");
+            assertThat(item.seatNumber()).isEqualTo("34");
+            assertThat(item.reasons()).containsExactly("SHARED_PHONE");
+        });
+    }
+
+    @Test
     void unauthorizedRoleIsHiddenAsNotFoundBeforeAnyTargetQuery() {
         CandidatePipelineAccess access = mock(CandidatePipelineAccess.class);
         AdminAccessService adminAccess = mock(AdminAccessService.class);

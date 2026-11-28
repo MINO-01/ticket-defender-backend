@@ -127,7 +127,7 @@ components:
     RegisterRequest:
       type: object
       additionalProperties: false
-      required: [schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256, declaredFileBytes, declaredRowCount, completeSnapshot, scopes]
+      required: [schemaVersion, sourceSystem, sourceBatchId, mode, format, declaredObjectSha256, declaredFileBytes, declaredRowCount, completeSnapshot]
       properties:
         schemaVersion: { type: string, enum: [v1, v2, v3], description: 'v1 remains staging-only. Candidate preparation requires v2 or v3. v3는 v2 범위 규칙을 그대로 쓰고 원본 신호 선택 열을 허용합니다.' }
         sourceSystem: { type: string, maxLength: 64 }
@@ -138,7 +138,28 @@ components:
         declaredFileBytes: { type: integer, minimum: 0 }
         declaredRowCount: { type: integer, minimum: 0 }
         completeSnapshot: { type: boolean, description: 'true only for FULL_SNAPSHOT' }
-        scopes: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Scope' } }
+        scopeKeyType: { type: string, enum: [TD_UUID, SUPPLIER_CODE], default: TD_UUID, description: 'TD_UUID keeps the existing eventId/performanceId registration. SUPPLIER_CODE is v3-only and resolves codes after complete CSV validation.' }
+        scopes: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Scope' }, description: 'Required only for TD_UUID.' }
+        supplierScopes: { type: array, minItems: 1, items: { $ref: '#/components/schemas/SupplierScope' }, description: 'Required only for scopeKeyType SUPPLIER_CODE; no UUIDs are supplied by the client.' }
+    SupplierScope:
+      type: object
+      required: [sourceEventCode, sourcePerformanceCode, eventTitle, performanceStartsAt, declaredRowCount]
+      properties:
+        sourceEventCode: { type: string, minLength: 1, maxLength: 128 }
+        sourcePerformanceCode: { type: string, minLength: 1, maxLength: 128 }
+        eventTitle: { type: string, minLength: 1, maxLength: 255 }
+        performanceStartsAt: { type: string, format: date-time, description: 'ISO 8601 timestamp with an explicit UTC offset.' }
+        perAccountLimit: { type: [integer, 'null'], minimum: 1, description: 'Supplier-declared per-account performance limit. Omitted values do not erase an existing declared value.' }
+        scopeAsOf: { type: string, format: date-time, description: 'Required only for FULL_SNAPSHOT.' }
+        declaredRowCount: { type: integer, minimum: 0 }
+        cursorStart: { type: string, maxLength: 256 }
+        cursorEnd: { type: string, maxLength: 256 }
+        sourceSequenceStart: { type: integer, minimum: 0 }
+        sourceSequenceEnd: { type: integer, minimum: 0 }
+        eventId: { type: [string, 'null'], format: uuid, readOnly: true }
+        performanceId: { type: [string, 'null'], format: uuid, readOnly: true }
+        eventCreated: { type: boolean, readOnly: true }
+        performanceCreated: { type: boolean, readOnly: true }
     Scope:
       type: object
       required: [eventId, performanceId, declaredRowCount]
@@ -159,6 +180,8 @@ components:
         status: { type: string, enum: [CREATED, UPLOAD_PENDING, UPLOADED, VALIDATING, STAGING, READY_TO_PUBLISH, PUBLISHED, FAILED_RETRYABLE, REJECTED, CANCELLED] }
         mode: { type: string, enum: [FULL_SNAPSHOT, CHANGE_FEED] }
         scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        scopeKeyType: { type: string, enum: [TD_UUID, SUPPLIER_CODE] }
+        supplierScopes: { type: array, items: { $ref: '#/components/schemas/SupplierScope' }, description: 'Resolved code to UUID mapping and creation flags; never includes CSV row values.' }
         processedRowCount: { type: integer, minimum: 0 }
         acceptedRowCount: { type: integer, minimum: 0 }
         rejectedRowCount: { type: integer, minimum: 0 }

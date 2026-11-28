@@ -57,6 +57,32 @@ final class Track1PurchaseLimitContractValidator {
             tokens(ticket.paymentHash(), ticket.addressHash(), ticket.deviceIdHash(), ticket.ipHash());
             ticketProvenance(ticket);
         }
+        if (request.cancelledTickets() == null) throw invalid("cancelled ticket list must be present as an array");
+        Set<String> cancelledRows = new HashSet<>();
+        for (Track1PurchaseLimitAnalysisRequest.CancelledTicket ticket : request.cancelledTickets()) {
+            if (ticket == null || blank(ticket.accountHmac()) || !HASH.matcher(ticket.accountHmac()).matches()
+                    || blank(ticket.ticketHmac()) || !HASH.matcher(ticket.ticketHmac()).matches() || blank(ticket.eventId())
+                    || ticket.performanceId() == null || ticket.cancelledAt() == null
+                    || ticket.seatZone() != null && (blank(ticket.seatZone()) || ticket.seatZone().length() > 64)
+                    || ticket.seatRow() != null && (blank(ticket.seatRow()) || ticket.seatRow().length() > 64)
+                    || ticket.seatNumber() != null && (blank(ticket.seatNumber()) || ticket.seatNumber().length() > 64)) {
+                throw invalid("cancelled ticket evidence is incomplete or not pseudonymous");
+            }
+            Track1PurchaseLimitAnalysisRequest.PerformanceScope scope = scopes.get(ticket.performanceId());
+            String key = ticket.performanceId() + "|" + ticket.accountHmac() + "|" + ticket.ticketHmac();
+            if (scope == null || !scope.eventId().equals(ticket.eventId()) || !cancelledRows.add(key)) {
+                throw invalid("cancelled ticket scope or identity is duplicated");
+            }
+            if (request.tickets().stream().anyMatch(active -> active.performanceId().equals(ticket.performanceId())
+                    && active.ticketReference() != null && active.ticketReference().equals(ticket.ticketHmac()))) {
+                throw invalid("cancelled ticket evidence overlaps the active ticket list");
+            }
+        }
+        if (!request.cancelledTickets().isEmpty() && request.tickets().stream()
+                .anyMatch(ticket -> ticket.ticketStatus() != null
+                        && ticket.ticketStatus() != Track1PurchaseLimitAnalysisRequest.TicketStatus.ACTIVE)) {
+            throw invalid("cancelled ticket evidence must be separate from active ticket rows");
+        }
     }
 
     static void response(Track1PurchaseLimitAnalysisRequest request, Track1PurchaseLimitAnalysisResponse response) {

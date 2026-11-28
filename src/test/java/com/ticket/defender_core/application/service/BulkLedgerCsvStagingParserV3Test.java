@@ -53,6 +53,75 @@ class BulkLedgerCsvStagingParserV3Test {
     }
 
     @Test
+    void supplierCodeCsvMapsOneFileScopeAndPersistsOptionalFieldsWithoutRawValues() {
+        String header = "source_event_code,source_performance_code,event_title,performance_starts_at,per_account_limit,"
+                + "reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version,"
+                + "seat_zone,seat_row,seat_number,reserved_at,paid_at,cancelled_at,account_created_at";
+        String row = "SUP-E-1,SUP-P-1,합성 공연,2026-12-01T19:00:00+09:00,4,synthetic-reservation-ref-001,synthetic-ticket-ref-001,synthetic-account-ref-001,2026-11-13T10:00:00Z,1,TICKET,ACTIVE,v1,"
+                + "A,2,18,2026-11-13T18:00:00+09:00,2026-11-13T18:01:00+09:00,,2025-01-02T03:04:05Z";
+        var scope = new BulkLedgerCsvStagingParser.SupplierScope("SUP-E-1", "SUP-P-1", "합성 공연",
+                LocalDateTime.parse("2026-12-01T10:00:00"), 4, 1, event, performance);
+        List<BulkLedgerCsvStagingParser.ParsedRow> rows = new ArrayList<>();
+
+        var result = new BulkLedgerCsvStagingParser().parseSupplier(stream(header + "\n" + row + "\n"),
+                BulkLedgerImportJob.Mode.FULL_SNAPSHOT, tenant, List.of(scope), reservation(), hasher("TICKET"),
+                hasher("ACCOUNT"), hashers(List.of()), rows::add);
+
+        assertThat(result.rows()).isEqualTo(1);
+        assertThat(rows).singleElement().satisfies(parsed -> {
+            assertThat(parsed.eventId()).isEqualTo(event);
+            assertThat(parsed.performanceId()).isEqualTo(performance);
+            assertThat(parsed.seatZone()).isEqualTo("A");
+            assertThat(parsed.seatRow()).isEqualTo("2");
+            assertThat(parsed.seatNumber()).isEqualTo("18");
+            assertThat(parsed.reservedAt()).isEqualTo(LocalDateTime.parse("2026-11-13T09:00:00"));
+            assertThat(parsed.paidAt()).isEqualTo(LocalDateTime.parse("2026-11-13T09:01:00"));
+            assertThat(parsed.cancelledAt()).isNull();
+            assertThat(parsed.accountCreatedAt()).isEqualTo(LocalDateTime.parse("2025-01-02T03:04:05"));
+            assertThat(parsed.toString()).doesNotContain("synthetic-reservation-ref-001", "synthetic-ticket-ref-001", "synthetic-account-ref-001");
+        });
+    }
+
+    @Test
+    void supplierCodeCsvAcceptsFileWithoutOptionalSeatAndTimeColumns() {
+        String header = "source_event_code,source_performance_code,event_title,performance_starts_at,per_account_limit,"
+                + "reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version";
+        String row = "SUP-E-1,SUP-P-1,합성 공연,2026-12-01T19:00:00Z,,synthetic-reservation-ref-002,"
+                + "synthetic-ticket-ref-002,synthetic-account-ref-002,2026-11-13T10:00:00Z,1,TICKET,ACTIVE,v1";
+        var scope = new BulkLedgerCsvStagingParser.SupplierScope("SUP-E-1", "SUP-P-1", "합성 공연",
+                LocalDateTime.parse("2026-12-01T19:00:00"), null, 1, event, performance);
+        List<BulkLedgerCsvStagingParser.ParsedRow> rows = new ArrayList<>();
+
+        new BulkLedgerCsvStagingParser().parseSupplier(stream(header + "\n" + row + "\n"),
+                BulkLedgerImportJob.Mode.FULL_SNAPSHOT, tenant, List.of(scope), reservation(), hasher("TICKET"),
+                hasher("ACCOUNT"), hashers(List.of()), rows::add);
+
+        assertThat(rows).singleElement().satisfies(parsed -> {
+            assertThat(parsed.seatZone()).isNull();
+            assertThat(parsed.seatRow()).isNull();
+            assertThat(parsed.seatNumber()).isNull();
+            assertThat(parsed.reservedAt()).isNull();
+            assertThat(parsed.paidAt()).isNull();
+            assertThat(parsed.cancelledAt()).isNull();
+            assertThat(parsed.accountCreatedAt()).isNull();
+        });
+    }
+
+    @Test
+    void supplierCodeCsvRejectsMixedIdsMetadataMismatchOffsetlessTimeAndOversizedSeat() {
+        String baseHeader = "source_event_code,source_performance_code,event_title,performance_starts_at,per_account_limit,"
+                + "reservation_reference,ticket_reference,account_reference,purchased_at,ticket_quantity,quantity_unit,ticket_status,source_version";
+        String baseRow = "SUP-E-1,SUP-P-1,합성 공연,2026-12-01T19:00:00Z,4,r1,t1,a1,2026-11-13T10:00:00Z,1,TICKET,ACTIVE,v1";
+        var scope = new BulkLedgerCsvStagingParser.SupplierScope("SUP-E-1", "SUP-P-1", "합성 공연",
+                LocalDateTime.parse("2026-12-01T19:00:00"), 4, 1, event, performance);
+
+        assertSupplierRejected(baseHeader + ",event_id", baseRow + "," + event, scope, "BULK_CSV_HEADER_INVALID");
+        assertSupplierRejected(baseHeader, baseRow.replace("합성 공연", "다른 공연"), scope, "BULK_CSV_PERFORMANCE_METADATA_MISMATCH");
+        assertSupplierRejected(baseHeader + ",cancelled_at", baseRow + ",2026-12-01T19:00:00", scope, "BULK_CSV_CANCELLED_AT_INVALID");
+        assertSupplierRejected(baseHeader + ",seat_number", baseRow + "," + "1".repeat(65), scope, "BULK_CSV_FIELD_INVALID");
+    }
+
+    @Test
     void sameRawValueGivesSameTokenAndDifferentSignalKindsGiveDifferentTokens() {
         String header = HEADER + ",device_reference,delivery_address,recipient_phone,member_phone,ip_reference,refund_bank_code,refund_account_number,"
                 + "payment_masked_card,payment_issuer_code,payment_method_type";
@@ -199,6 +268,13 @@ class BulkLedgerCsvStagingParserV3Test {
     private void parse(String schema, String csv, long rows, List<BulkLedgerCsvStagingParser.ParsedRow> sink) {
         new BulkLedgerCsvStagingParser().parse(stream(csv), schema, BulkLedgerImportJob.Mode.FULL_SNAPSHOT, tenant, scopes(rows), reservation(),
                 hasher("TICKET"), hasher("ACCOUNT"), "v3".equals(schema) ? hashers(List.of()) : null, sink::add);
+    }
+
+    private void assertSupplierRejected(String header, String row, BulkLedgerCsvStagingParser.SupplierScope scope, String code) {
+        assertThatThrownBy(() -> new BulkLedgerCsvStagingParser().parseSupplier(stream(header + "\n" + row + "\n"),
+                BulkLedgerImportJob.Mode.FULL_SNAPSHOT, tenant, List.of(scope), reservation(), hasher("TICKET"),
+                hasher("ACCOUNT"), hashers(List.of()), ignored -> { }))
+                .isInstanceOf(BulkLedgerCsvValidationException.class).hasMessage(code);
     }
 
     private List<BulkLedgerImportScope> scopes(long rows) {

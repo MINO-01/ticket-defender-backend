@@ -27,6 +27,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -72,6 +74,8 @@ public class MultiEventInvestigationService {
     static final Set<String> IP_NETWORK_TYPES=Set.of("RESIDENTIAL","CORPORATE_EDU","DATACENTER_PROXY","UNKNOWN","MOBILE_CGNAT");
     static final Set<String> EXP2_SIGNALS=Set.of("refund_account_hash","phone_hash","device_id_hash","address_hash","payment_hash",
             "ip_window:RESIDENTIAL","ip_window:CORPORATE_EDU","ip_window:DATACENTER_PROXY","ip_window:UNKNOWN","ip_window:MOBILE_CGNAT");
+    private static final Set<String> EVIDENCE_REASON_CODES=Set.of("SHARED_REFUND_ACCOUNT","SHARED_PHONE","SHARED_DEVICE",
+            "SHARED_ADDRESS","IP_SAME_WINDOW","REPEATED_PERFORMANCES");
     static final Set<String> UNAVAILABLE_SIGNALS=Set.of("refund_account_hash","phone_hash","device_id_hash","address_hash","payment_hash","ip_window");
     static final int IP_WINDOW_SECONDS=600;
     /**
@@ -87,21 +91,29 @@ public class MultiEventInvestigationService {
 
     private final JdbcTemplate jdbc; private final TransactionTemplate tx; private final CandidatePipelineAccess access; private final FastApiAdapter data;
     private final BulkLedgerUploadStorage storage;
-    private final boolean enabled; private final Set<String> approvedSupplierNamespaces; private final ObjectMapper json=JsonMapper.builder().build();
+    private final boolean enabled; private final boolean cancelledTicketTransferEnabled;
+    private final Set<String> approvedSupplierNamespaces; private final ObjectMapper json=JsonMapper.builder().build();
     @Value("${ticket-defender.bulk-ledger-upload.max-bytes:1073741824}") private long maxArtifactBytes=DEFAULT_MAX_ARTIFACT_BYTES;
     @Autowired
     public MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             BulkLedgerUploadStorage storage,
             @Value("${ticket-defender.multi-event-investigation.enabled:false}") boolean enabled,
-            @Value("${ticket-defender.multi-event-investigation.approved-supplier-namespaces:}") String approvedSupplierNamespaces){
+            @Value("${ticket-defender.multi-event-investigation.approved-supplier-namespaces:}") String approvedSupplierNamespaces,
+            @Value("${ticket-defender.bulk-ledger-upload.cancelled-ticket-transfer.enabled:false}") boolean cancelledTicketTransferEnabled){
         this.jdbc=jdbc;this.tx=tx;this.access=access;this.data=data;this.storage=storage;this.enabled=enabled;
+        this.cancelledTicketTransferEnabled=cancelledTicketTransferEnabled;
         this.approvedSupplierNamespaces=approvedSupplierNamespaces==null?Set.of():java.util.Arrays.stream(approvedSupplierNamespaces.split(","))
                 .map(String::trim).filter(value->!value.isEmpty()).collect(Collectors.toUnmodifiableSet());
     }
 
     MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
             boolean enabled,String approvedSupplierNamespaces){
-        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces);
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,false);
+    }
+
+    MultiEventInvestigationService(JdbcTemplate jdbc,TransactionTemplate tx,CandidatePipelineAccess access,FastApiAdapter data,
+            boolean enabled,String approvedSupplierNamespaces,boolean cancelledTicketTransferEnabled){
+        this(jdbc,tx,access,data,null,enabled,approvedSupplierNamespaces,cancelledTicketTransferEnabled);
     }
 
     @Scheduled(fixedDelayString="${ticket-defender.multi-event-investigation.worker-delay:PT30S}") public void scheduled(){if(enabled){expireExhaustedLeases();consumeOne();}}
@@ -192,7 +204,55 @@ public class MultiEventInvestigationService {
         authorizeRunEvents(scope,runId);
         return run;
     }
-    public Page<Candidate> candidates(UUID eventId,UUID runId,int page,int pageSize){validPage(page,pageSize);requireCompleted(get(eventId,runId));List<Candidate> rows=jdbc.query("select candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,distinct_event_count,distinct_performance_count,verified_relationship_count,score_breakdown_json,available_signals_json,excluded_signals_json,unavailable_signals_json,normal_sharing_json from td_multi_event_investigation_candidates where run_id=? order by investigation_score desc,candidate_id limit ? offset ?",(rs,n)->new Candidate(rs.getString(1),rs.getString(2),rs.getDouble(3),(Double)rs.getObject(4),rs.getInt(5),rs.getInt(6),rs.getInt(7),rs.getInt(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),rs.getString(13)),runId.toString(),pageSize+1,page*pageSize);return page(rows,page,pageSize);}
+    public Page<Candidate> candidates(UUID eventId,UUID runId,int page,int pageSize){
+        validPage(page,pageSize);requireCompleted(get(eventId,runId));
+        List<Candidate> rows=jdbc.query("""
+                select candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,
+                  distinct_event_count,distinct_performance_count,verified_relationship_count,score_breakdown_json,
+                  available_signals_json,excluded_signals_json,unavailable_signals_json,normal_sharing_json,
+                  family_id,parent_candidate_id,child_count,family_score,reasons_json
+                from td_multi_event_investigation_candidates where run_id=?
+                order by investigation_score desc,candidate_id limit ? offset ?
+                """,(rs,n)->candidate(rs),runId.toString(),pageSize+1,page*pageSize);
+        return page(rows,page,pageSize);
+    }
+    public Page<CandidateFamily> candidateFamilies(UUID eventId,UUID runId,int page,int pageSize){
+        validPage(page,pageSize);requireCompleted(get(eventId,runId));
+        List<FamilyKey> keys=jdbc.query("""
+                select coalesce(family_id,candidate_id) family_id,
+                  max(coalesce(family_score,investigation_score)) family_score
+                from td_multi_event_investigation_candidates where run_id=?
+                group by coalesce(family_id,candidate_id)
+                order by max(coalesce(family_score,investigation_score)) desc,coalesce(family_id,candidate_id)
+                limit ? offset ?
+                """,(rs,n)->new FamilyKey(rs.getString(1),rs.getDouble(2)),runId.toString(),pageSize+1,page*pageSize);
+        boolean next=keys.size()>pageSize;
+        if(next)keys=keys.subList(0,pageSize);
+        List<CandidateFamily> families=new ArrayList<>();
+        for(FamilyKey key:keys){
+            List<Candidate> members=jdbc.query("""
+                    select candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,
+                      distinct_event_count,distinct_performance_count,verified_relationship_count,score_breakdown_json,
+                      available_signals_json,excluded_signals_json,unavailable_signals_json,normal_sharing_json,
+                      coalesce(family_id,candidate_id) family_id,parent_candidate_id,coalesce(child_count,0) child_count,
+                      coalesce(family_score,investigation_score) family_score,reasons_json
+                    from td_multi_event_investigation_candidates where run_id=? and coalesce(family_id,candidate_id)=?
+                    order by investigation_score desc,candidate_id
+                    """,(rs,n)->candidate(rs),runId.toString(),key.familyId());
+            families.add(new CandidateFamily(key.familyId(),key.familyScore(),members));
+        }
+        return new Page<>(families,page,pageSize,next);
+    }
+    private Candidate candidate(ResultSet rs)throws java.sql.SQLException{
+        return new Candidate(rs.getString(1),rs.getString(2),rs.getDouble(3),(Double)rs.getObject(4),rs.getInt(5),
+                rs.getInt(6),rs.getInt(7),rs.getInt(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),
+                rs.getString(13),rs.getString(14),rs.getString(15),rs.getInt(16),(Double)rs.getObject(17),readReasons(rs.getString(18)));
+    }
+    private List<MultiEventAnalysisDto.EvidenceReason> readReasons(String value){
+        if(value==null)return List.of();
+        try{return List.of(json.readValue(value,MultiEventAnalysisDto.EvidenceReason[].class));}
+        catch(Exception e){throw new Blocked("RESULT_REASON_SERIALIZATION_INVALID");}
+    }
     public Page<Member> members(UUID eventId,UUID runId,String candidateId,int page,int pageSize){validPage(page,pageSize);requireCompleted(get(eventId,runId));if(candidateId==null||!candidateId.matches("multi-[a-f0-9]{64}"))throw invalid();int found=jdbc.queryForObject("select count(*) from td_multi_event_investigation_candidates where run_id=? and candidate_id=?",Integer.class,runId.toString(),candidateId);if(found!=1)throw notFound();List<Member> rows=jdbc.query("select account_reference_hmac from td_multi_event_investigation_members where run_id=? and candidate_id=? order by account_reference_hmac limit ? offset ?",(rs,n)->new Member(CandidatePipelineSupport.sha256("MEI_MEMBER",runId.toString(),candidateId,rs.getString(1)).substring(0,24)),runId.toString(),candidateId,pageSize+1,page*pageSize);return page(rows,page,pageSize);}
     public Page<Relationship> relationships(UUID eventId,UUID runId,String candidateId,int page,int pageSize){validPage(page,pageSize);requireCompleted(get(eventId,runId));if(candidateId==null||!candidateId.matches("multi-[a-f0-9]{64}"))throw invalid();int found=jdbc.queryForObject("select count(*) from td_multi_event_investigation_candidates where run_id=? and candidate_id=?",Integer.class,runId.toString(),candidateId);if(found!=1)throw notFound();List<Relationship> rows=jdbc.query("select id,signal_type,account_count,source_scope_count from td_multi_event_investigation_relationships where run_id=? and candidate_id=? order by signal_type,id limit ? offset ?",(rs,n)->{UUID id=uuid(rs.getString(1));List<String> memberHashes=jdbc.query("select account_reference_hmac from td_multi_event_investigation_relationship_members where relationship_id=? order by account_reference_hmac limit 21",(r,i)->r.getString(1),id.toString());boolean truncated=memberHashes.size()>20;if(truncated)memberHashes=memberHashes.subList(0,20);List<String> opaqueMembers=memberHashes.stream().map(account->CandidatePipelineSupport.sha256("MEI_MEMBER",runId.toString(),candidateId,account).substring(0,24)).toList();List<ScopeView> sourceScopes=jdbc.query("select s.event_id,s.performance_id,s.ledger_version_id,s.external_event_ref,s.source_batch_id from td_multi_event_investigation_relationship_sources rs join td_multi_event_investigation_scopes s on s.run_id=rs.run_id and s.performance_id=rs.performance_id where rs.relationship_id=? order by s.event_id,s.performance_id",(r,i)->new ScopeView(uuid(r.getString(1)),uuid(r.getString(2)),uuid(r.getString(3)),r.getString(4),r.getString(5)),id.toString());return new Relationship(id,rs.getString(2),rs.getInt(3),rs.getInt(4),opaqueMembers,truncated,sourceScopes);},runId.toString(),candidateId,pageSize+1,page*pageSize);return page(rows,page,pageSize);}
     public List<ScopeView> scopes(UUID eventId,UUID runId){requireCompleted(get(eventId,runId));return jdbc.query("select event_id,performance_id,ledger_version_id,external_event_ref,source_batch_id from td_multi_event_investigation_scopes where run_id=? order by event_id,performance_id",(rs,n)->new ScopeView(uuid(rs.getString(1)),uuid(rs.getString(2)),uuid(rs.getString(3)),rs.getString(4),rs.getString(5)),runId.toString());}
@@ -229,7 +289,7 @@ public class MultiEventInvestigationService {
     }
     private Claim claim(){
         List<Claim> rows=jdbc.query("""
-            select id,tenant_id,fence_token,status,data_job_id,artifact_id,artifact_object_version,artifact_sha256,artifact_record_count,attempt_count
+            select id,tenant_id,fence_token,status,data_job_id,artifact_id,artifact_object_version,artifact_sha256,artifact_record_count,artifact_cancelled_ticket_count,attempt_count
             from td_multi_event_investigation_runs
             where (data_job_id is not null or attempt_count<3)
               and ((status in ('PENDING','DATA_PENDING','RETRYABLE') and lease_until is null)
@@ -237,7 +297,7 @@ public class MultiEventInvestigationService {
             order by created_at limit 1 for update skip locked
             """,(rs,n)->new Claim(uuid(rs.getString(1)),uuid(rs.getString(2)),rs.getLong(3)+1,rs.getString(4),
                     rs.getString(5)==null?null:uuid(rs.getString(5)),rs.getString(6),rs.getString(7),rs.getString(8),
-                    nullableLong(rs,9),rs.getInt(10)));
+                    nullableLong(rs,9),rs.getInt(10),rs.getInt(11)));
         if(rows.isEmpty())return null;
         Claim claim=rows.getFirst();
         int incrementAttempt=shouldIncrementAttempt(claim.priorStatus(),claim.dataJobId(),claim.artifactId())?1:0;
@@ -265,7 +325,8 @@ public class MultiEventInvestigationService {
         try {
             path=Files.createTempFile("td-mei-", ".ndjson");
             MessageDigest digest=MessageDigest.getInstance("SHA-256");
-            long count=writeArtifactRows(claim,scopes,input,path,digest);
+            ArtifactWriteResult written=writeArtifactRows(claim,scopes,input,path,digest);
+            long count=written.recordCount();
             if(count<1) throw new Blocked("NO_EFFECTIVE_TICKETS");
             long artifactBytes=Files.size(path);
             if(artifactBytes>artifactByteLimit()) throw new Blocked("MULTI_EVENT_ARTIFACT_TOO_LARGE");
@@ -282,11 +343,12 @@ public class MultiEventInvestigationService {
                 requireLease(claim);
                 int changed=jdbc.update("""
                     update td_multi_event_investigation_runs
-                    set artifact_id=?,artifact_object_version=?,artifact_sha256=?,artifact_record_count=?,
+                    set artifact_id=?,artifact_object_version=?,artifact_sha256=?,artifact_record_count=?,artifact_cancelled_ticket_count=?,
                         status='DATA_PENDING',lease_owner=null,lease_until=null,failure_code=null,
                         updated_at=utc_timestamp(6),row_version=row_version+1
                     where id=? and status='RUNNING' and fence_token=? and lease_owner=?
-                    """,artifact,stored.versionId(),stored.sha256(),count,claim.id().toString(),claim.fence(),owner(claim));
+                    """,artifact,stored.versionId(),stored.sha256(),count,written.cancelledTicketRecordCount(),
+                    claim.id().toString(),claim.fence(),owner(claim));
                 if(changed!=1) throw new Blocked("RUN_LEASE_LOST");
             });
         } catch(Blocked e){throw e;}
@@ -295,8 +357,9 @@ public class MultiEventInvestigationService {
         finally {if(path!=null)try{Files.deleteIfExists(path);}catch(Exception ignored){}}
     }
 
-    private long writeArtifactRows(Claim claim,List<Scope> scopes,RunInput input,Path path,MessageDigest digest) throws Exception {
+    private ArtifactWriteResult writeArtifactRows(Claim claim,List<Scope> scopes,RunInput input,Path path,MessageDigest digest) throws Exception {
         long[] total={0},byteTotal={0};
+        int[] cancelledTotal={0};
         try(var output=new BufferedOutputStream(Files.newOutputStream(path))) {
             for(Scope scope:scopes) {
                 long[] ordinal={0};
@@ -324,9 +387,34 @@ public class MultiEventInvestigationService {
                     if(total[0]%10_000==0) heartbeat(claim);
                     } catch(Blocked e){throw e;} catch(Exception e){throw new RuntimeException(e);}
                 });
+                if(cancelledTicketTransferEnabled) {
+                    int cancellationLimit=(int)Math.min((long)MAX_ARTIFACT_TICKETS-total[0]+1,Integer.MAX_VALUE);
+                    jdbc.query(connection->{
+                        PreparedStatement statement=connection.prepareStatement(ARTIFACT_CANCELLED_TICKET_SQL,
+                                ResultSet.TYPE_FORWARD_ONLY,ResultSet.CONCUR_READ_ONLY);
+                        statement.setFetchSize(MYSQL_STREAMING_FETCH_SIZE);
+                        statement.setString(1,scope.versionId().toString());
+                        statement.setTimestamp(2,java.sql.Timestamp.from(input.analysisStartAt().toInstant()));
+                        statement.setTimestamp(3,java.sql.Timestamp.from(input.analysisEndAt().toInstant()));
+                        statement.setString(4,input.keyVersion());
+                        statement.setInt(5,cancellationLimit);
+                        return statement;
+                    },rs->{
+                        try {
+                            if(total[0]>=MAX_ARTIFACT_TICKETS) throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");
+                            MultiEventAnalysisDto.CancelledTicket cancelled=cancelledTicketFromResultSet(rs,scope,input,++ordinal[0]);
+                            byte[] bytes=(json.writeValueAsString(new MultiEventAnalysisDto.ArtifactCancelledTicketRecord(
+                                    "CANCELLED_TICKET",cancelled))+"\n").getBytes(StandardCharsets.UTF_8);
+                            if(bytes.length>artifactByteLimit()-byteTotal[0]) throw new Blocked("MULTI_EVENT_ARTIFACT_TOO_LARGE");
+                            output.write(bytes); digest.update(bytes); total[0]++; cancelledTotal[0]++;
+                            byteTotal[0]+=bytes.length;
+                            if(total[0]%10_000==0) heartbeat(claim);
+                        } catch(Blocked e){throw e;} catch(Exception e){throw new RuntimeException(e);}
+                    });
+                }
             }
         }
-        return total[0];
+        return new ArtifactWriteResult(total[0],cancelledTotal[0]);
     }
 
     private static final String ARTIFACT_TICKET_SQL="""
@@ -336,13 +424,39 @@ public class MultiEventInvestigationService {
         select r.reservation_reference_hmac,r.account_reference_hmac,r.purchased_at,r.hmac_key_version,r.source_version,
                s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.hmac_purpose,s.hmac_key_version,s.source_version,
                ps.snapshot_id,ps.source_version,ps.ledger_complete_snapshot,ps.policy_verification_status,ps.quantity_data_status,ps.data_completeness_reason,ps.cancellation_handling,ps.duplicate_handling,ps.max_tickets_per_account,
-               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version
+               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version,
+               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at
         from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
         left join td_bulk_ledger_track1_policy_snapshots ps on ps.snapshot_id=? and ps.ledger_version_id=?
         left join td_bulk_ledger_track1_bulk_limit_findings lf on lf.job_id=ps.job_id and lf.performance_id=? and lf.account_reference_hmac=r.account_reference_hmac
         where r.rn=1 and r.ticket_status='ACTIVE' and r.purchased_at>=? and r.purchased_at<?
         order by r.ticket_reference_hmac limit ?
         """;
+
+    private static final String ARTIFACT_CANCELLED_TICKET_SQL="""
+        with recursive l as (select id,base_version_id,generation_no,revision_no from td_bulk_ledger_versions where id=? and status='PUBLISHED'
+          union all select p.id,p.base_version_id,p.generation_no,p.revision_no from td_bulk_ledger_versions p join l on l.base_version_id=p.id where p.status='PUBLISHED' and p.generation_no=l.generation_no and p.revision_no=l.revision_no-1),
+        ranked as (select tv.*,row_number() over(partition by tv.ticket_reference_hmac order by l.revision_no desc) rn from td_bulk_ledger_ticket_versions tv join l on l.id=tv.version_id)
+        select r.ticket_reference_hmac,r.account_reference_hmac,r.hmac_key_version,r.source_version,
+               r.seat_zone,r.seat_row,r.seat_number,r.cancelled_at
+        from ranked r
+        where r.rn=1 and r.ticket_status in ('CANCELLED','REFUNDED') and r.cancelled_at is not null
+          and r.cancelled_at>=? and r.cancelled_at<? and r.hmac_key_version=?
+        order by r.ticket_reference_hmac limit ?
+        """;
+
+    private MultiEventAnalysisDto.CancelledTicket cancelledTicketFromResultSet(ResultSet rs,Scope scope,
+            RunInput input,long ordinal) throws SQLException {
+        String ticketHmac=rs.getString(1),accountHmac=rs.getString(2),keyVersion=rs.getString(3),sourceVersion=rs.getString(4);
+        Timestamp cancelledAt=rs.getTimestamp(8);
+        if(ordinal<1||ordinal>MAX_ARTIFACT_TICKETS||ticketHmac==null||!ticketHmac.matches("[0-9a-f]{64}")
+                ||accountHmac==null||!accountHmac.matches("[0-9a-f]{64}")||!input.keyVersion().equals(keyVersion)
+                ||sourceVersion==null||sourceVersion.isBlank()||cancelledAt==null)
+            throw new Blocked("CANCELLED_TICKET_IDENTITY_INVALID");
+        return new MultiEventAnalysisDto.CancelledTicket(accountHmac,ticketHmac,scope.externalEventRef(),
+                scope.performanceId(),scope.versionId(),input.supplierNamespace(),input.purpose(),keyVersion,sourceVersion,
+                ordinal,rs.getString(5),rs.getString(6),rs.getString(7),cancelledAt.toLocalDateTime().atOffset(ZoneOffset.UTC));
+    }
 
     private MultiEventAnalysisDto.Ticket ticketFromResultSet(ResultSet rs,Scope scope,RunInput input,long ordinal) throws Exception {
         String rowKey=rs.getString(4),rowSource=rs.getString(5),purpose=rs.getString(13),key=rs.getString(14),signalSource=rs.getString(15);
@@ -367,7 +481,8 @@ public class MultiEventInvestigationService {
         return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),ordinal,
                 input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,
                 quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),
-                rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource);
+                rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,
+                rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33));
     }
 
     private void registerArtifact(Claim claim) {
@@ -375,8 +490,10 @@ public class MultiEventInvestigationService {
             throw new Blocked("MULTI_EVENT_ARTIFACT_METADATA_MISSING");
         List<Scope> scopes=scopesForWorker(claim.id());
         RunInput input=runInput(claim);
+        String inputFormat=claim.artifactCancelledTicketCount()>0
+                ?"multi-event-exp2-ndjson-v2":"multi-event-exp2-ndjson-v1";
         var manifest=new MultiEventAnalysisDto.ArtifactManifest(claim.artifactId(),claim.artifactId(),claim.objectVersion(),claim.artifactSha256(),
-                claim.artifactRecordCount(),"multi-event-exp2-ndjson-v1",claim.id(),claim.tenantId(),input.supplierNamespace(),input.purpose(),
+                claim.artifactRecordCount(),claim.artifactCancelledTicketCount(),inputFormat,claim.id(),claim.tenantId(),input.supplierNamespace(),input.purpose(),
                 input.keyVersion(),input.ledgerDigest(),input.analysisAsOf(),input.analysisStartAt(),input.analysisEndAt(),input.scoreVersion(),input.projectionVersion(),
                 scopes.stream().sorted(Comparator.comparing((Scope s)->s.eventId().toString()).thenComparing(s->s.performanceId().toString())).map(s->
                         new MultiEventAnalysisDto.ArtifactLedgerScope(s.externalEventRef(),s.eventId(),s.performanceId(),s.versionId(),s.sourceBatchId(),s.policySnapshotId())).toList());
@@ -510,6 +627,8 @@ public class MultiEventInvestigationService {
                 insertCandidateSummary(claim,candidate);
                 int memberCount=collectMembers(claim,candidate,fixedScopes,input);
                 if(memberCount!=candidate.distinctAccountCount()) throw new FastApiResponseContractException("Data candidate member pages are incomplete");
+                int memberEvidenceCount=collectMemberEvidence(claim,candidate,input);
+                if(memberEvidenceCount!=memberCount)throw new FastApiResponseContractException("Data candidate member evidence pages are incomplete");
                 verifyAvailableSignals(claim,candidate,input);
                 Double baseline=baselineMaxScore(claim.id(),candidate.candidateId(),candidate.distinctAccountCount(),candidate.sourceScopes());
                 tx.executeWithoutResult(txStatus->{
@@ -531,6 +650,7 @@ public class MultiEventInvestigationService {
             throw new FastApiResponseContractException("Data candidate page totals are incomplete or changed after preflight");
         Integer stored=jdbc.queryForObject("select count(*) from td_multi_event_investigation_candidates where run_id=?",Integer.class,claim.id().toString());
         if(stored==null||stored!=total) throw new FastApiResponseContractException("Stored multi-event candidate count does not match Data");
+        validateStoredFamilyMetadata(claim.id(),total);
         return total;
     }
 
@@ -601,11 +721,64 @@ public class MultiEventInvestigationService {
         return memberRows;
     }
 
+    private void validateStoredFamilyMetadata(UUID runId,int expectedCount){
+        List<FamilyRow> rows=jdbc.query("""
+                select candidate_id,distinct_account_count,investigation_score,family_id,parent_candidate_id,child_count,family_score
+                from td_multi_event_investigation_candidates where run_id=? order by candidate_id
+                """,(rs,n)->new FamilyRow(rs.getString(1),rs.getInt(2),rs.getDouble(3),rs.getString(4),rs.getString(5),rs.getInt(6),rs.getObject(7,Double.class)),runId.toString());
+        if(rows.size()!=expectedCount)throw new FastApiResponseContractException("Stored candidate family rows are incomplete");
+        Map<String,FamilyRow> byId=rows.stream().collect(Collectors.toMap(FamilyRow::candidateId,value->value));
+        Map<String,String> parents=new java.util.HashMap<>();
+        for(FamilyRow row:rows){
+            List<String> supersets=jdbc.query("""
+                    select sup.candidate_id from td_multi_event_investigation_members child
+                    join td_multi_event_investigation_members sup_member
+                      on sup_member.run_id=child.run_id and sup_member.account_reference_hmac=child.account_reference_hmac
+                    join td_multi_event_investigation_candidates sup
+                      on sup.run_id=sup_member.run_id and sup.candidate_id=sup_member.candidate_id
+                    where child.run_id=? and child.candidate_id=? and sup.candidate_id<>?
+                      and sup.distinct_account_count>?
+                    group by sup.candidate_id,sup.distinct_account_count
+                    having count(*)=?
+                    order by sup.distinct_account_count,sup.candidate_id limit 1
+                    """,(rs,n)->rs.getString(1),runId.toString(),row.candidateId(),row.candidateId(),row.memberCount(),row.memberCount());
+            parents.put(row.candidateId(),supersets.isEmpty()?null:supersets.get(0));
+        }
+        Map<String,Integer> childCounts=new java.util.HashMap<>();
+        Map<String,String> roots=new java.util.HashMap<>();
+        Map<String,Double> familyScores=new java.util.HashMap<>();
+        for(String candidateId:byId.keySet())childCounts.put(candidateId,0);
+        for(String parent:parents.values())if(parent!=null)childCounts.compute(parent,(key,value)->value==null?1:value+1);
+        for(String candidateId:byId.keySet()){
+            List<String> path=new java.util.ArrayList<>();
+            String root=candidateId;
+            while(parents.get(root)!=null&&!roots.containsKey(root)){
+                path.add(root);
+                root=parents.get(root);
+            }
+            String resolvedRoot=roots.getOrDefault(root,root);
+            roots.put(candidateId,resolvedRoot);
+            for(String item:path)roots.put(item,resolvedRoot);
+        }
+        for(String candidateId:byId.keySet()){
+            familyScores.merge(roots.get(candidateId),byId.get(candidateId).score(),Math::max);
+        }
+        for(FamilyRow row:rows){
+            String candidateId=row.candidateId();Double familyScore=row.familyScore();
+            if(!Objects.equals(roots.get(candidateId),row.familyId())
+                    ||!Objects.equals(parents.get(candidateId),row.parentCandidateId())
+                    ||!Objects.equals(childCounts.get(candidateId),row.childCount())
+                    ||familyScore==null||Math.abs(familyScore-familyScores.get(roots.get(candidateId)))>1e-9)
+                throw new FastApiResponseContractException("Data candidate family metadata does not match persisted account sets");
+        }
+    }
+
     private void completeArtifactRun(Claim claim,String algorithmVersion,int expectedCandidates) {
         tx.executeWithoutResult(status->{
             requireLease(claim);
             Integer candidates=jdbc.queryForObject("select count(*) from td_multi_event_investigation_candidates where run_id=?",Integer.class,claim.id().toString());
             if(candidates==null||candidates!=expectedCandidates) throw new Blocked("RESULT_CANDIDATE_COUNT_MISMATCH");
+            validateStoredFamilyMetadata(claim.id(),expectedCandidates);
             int updated=jdbc.update("update td_multi_event_investigation_runs set status='COMPLETED',failure_code=null,analysis_algorithm_version=?,lease_owner=null,lease_until=null,completed_at=utc_timestamp(6),updated_at=utc_timestamp(6),row_version=row_version+1 where id=? and status='RUNNING' and fence_token=? and lease_owner=?",
                     algorithmVersion,claim.id().toString(),claim.fence(),owner(claim));
             if(updated!=1)throw new Blocked("RUN_LEASE_LOST");
@@ -616,10 +789,21 @@ public class MultiEventInvestigationService {
 
     private void insertCandidateSummary(Claim claim,MultiEventAnalysisDto.CandidateSummary candidate) {
         String breakdown=write(candidate.scoreBreakdown()),available=write(candidate.availableSignals()),excluded=write(candidate.excludedSignals()),unavailable=write(candidate.unavailableSignals()),normal=write(candidate.normalSharingPossibilities());
+        String reasons=write(candidate.reasons());
         tx.executeWithoutResult(status->{
             requireLease(claim);
-            jdbc.update("insert into td_multi_event_investigation_candidates(run_id,candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,distinct_event_count,distinct_performance_count,verified_relationship_count,score_breakdown_json,available_signals_json,excluded_signals_json,unavailable_signals_json,normal_sharing_json) values(?,?,?,?,null,?,?,?,?,cast(? as json),cast(? as json),cast(? as json),cast(? as json),cast(? as json))",
-                    claim.id().toString(),candidate.candidateId(),candidate.priorityBand(),candidate.scoreBreakdown().score(),candidate.distinctAccountCount(),candidate.distinctEventCount(),candidate.distinctPerformanceCount(),candidate.verifiedRelationshipCount(),breakdown,available,excluded,unavailable,normal);
+            jdbc.update("""
+                    insert into td_multi_event_investigation_candidates(
+                      run_id,candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,
+                      distinct_event_count,distinct_performance_count,verified_relationship_count,family_id,
+                      parent_candidate_id,child_count,family_score,reasons_json,score_breakdown_json,available_signals_json,
+                      excluded_signals_json,unavailable_signals_json,normal_sharing_json)
+                    values(?,?,?,?,null,?,?,?,?,?,?,?,?,cast(? as json),cast(? as json),cast(? as json),cast(? as json),cast(? as json),cast(? as json))
+                    """,
+                    claim.id().toString(),candidate.candidateId(),candidate.priorityBand(),candidate.scoreBreakdown().score(),
+                    candidate.distinctAccountCount(),candidate.distinctEventCount(),candidate.distinctPerformanceCount(),
+                    candidate.verifiedRelationshipCount(),candidate.familyId(),candidate.parentCandidateId(),candidate.childCount(),
+                    candidate.familyScore(),reasons,breakdown,available,excluded,unavailable,normal);
         });
     }
 
@@ -642,6 +826,11 @@ public class MultiEventInvestigationService {
                 ||candidate.distinctAccountCount()<2||candidate.distinctAccountCount()>50_000
                 ||candidate.distinctEventCount()<1||candidate.distinctPerformanceCount()<2
                 ||candidate.verifiedRelationshipCount()<1||candidate.sourceScopes()==null||candidate.sourceScopes().size()<2
+                ||candidate.familyId()==null||!candidate.familyId().matches("multi-[a-f0-9]{64}")
+                ||candidate.parentCandidateId()!=null&&!candidate.parentCandidateId().matches("multi-[a-f0-9]{64}")
+                ||candidate.parentCandidateId()!=null&&candidate.parentCandidateId().equals(candidate.candidateId())
+                ||candidate.childCount()<0||candidate.familyScore()==null||!Double.isFinite(candidate.familyScore())
+                ||candidate.familyScore()<0||candidate.familyScore()>1
                 ||candidate.availableSignals()==null||candidate.excludedSignals()==null||candidate.unavailableSignals()==null
                 ||candidate.normalSharingPossibilities()==null||candidate.scoreBreakdown()==null
                 ||!sourceScopesValid(candidate.sourceScopes(),fixedScopes,null))
@@ -657,10 +846,12 @@ public class MultiEventInvestigationService {
                 ||candidate.unavailableSignals().stream().anyMatch(s->!UNAVAILABLE_SIGNALS.contains(s))
                 ||candidate.unavailableSignals().stream().anyMatch(candidate.availableSignals()::contains))
             throw new FastApiResponseContractException("Data candidate signal lists are invalid");
+        validateReasonSummary(candidate.reasons(),candidate.distinctAccountCount(),candidate.distinctPerformanceCount(),candidate.sourceScopes(),candidate.availableSignals());
         var score=candidate.scoreBreakdown();
         double[] parts={score.L(),score.G(),score.B(),score.Q(),score.R(),score.score()};
         for(double value:parts)if(!Double.isFinite(value)||value<0||value>1)
             throw new FastApiResponseContractException("Data candidate score is outside its valid range");
+        if(candidate.familyScore()+1e-9<score.score())throw new FastApiResponseContractException("Data family score is below an individual candidate score");
         // 사전 등록 정의: R = min((서로 다른 회차 수 - 1) / 3, 1)
         double expectedRecurrence=Math.min((candidate.distinctPerformanceCount()-1)/3.0,1.0);
         double expectedBehavior=.5*score.Q()+.5*expectedRecurrence;
@@ -671,6 +862,112 @@ public class MultiEventInvestigationService {
             throw new FastApiResponseContractException("Data candidate score breakdown is inconsistent");
         String band=score.score()>=.40?"HIGH":score.score()>=.20?"MEDIUM":"LOW";
         if(!band.equals(candidate.priorityBand())) throw new FastApiResponseContractException("Data candidate priority band is inconsistent");
+    }
+
+    void validateReasonSummary(List<MultiEventAnalysisDto.EvidenceReason> reasons,int memberCount,int performanceCount,
+            List<MultiEventAnalysisDto.LedgerScope> scopes,List<String> availableSignals){
+        if(reasons==null||reasons.size()>10)throw new FastApiResponseContractException("Data returned invalid candidate reason rows");
+        Set<String> availablePerformances=scopes.stream().map(scope->scope.performanceId().toString()).collect(Collectors.toSet());
+        Set<String> seenCodes=new HashSet<>();Set<Integer> ranks=new HashSet<>();
+        for(var reason:reasons){
+            if(reason==null||!EVIDENCE_REASON_CODES.contains(reason.code())||!seenCodes.add(reason.code())
+                    ||reason.count()<1||reason.count()>memberCount||reason.performances()==null||reason.performances().isEmpty()
+                    ||reason.performances().size()>availablePerformances.size()
+                    ||new HashSet<>(reason.performances()).size()!=reason.performances().size()
+                    ||!availablePerformances.containsAll(reason.performances())||reason.strengthRank()<1
+                    ||reason.strengthRank()>reasons.size()||!ranks.add(reason.strengthRank()))
+                throw new FastApiResponseContractException("Data returned an invalid candidate evidence reason");
+            boolean supported=switch(reason.code()){
+                case "SHARED_REFUND_ACCOUNT"->availableSignals.contains("refund_account_hash");
+                case "SHARED_PHONE"->availableSignals.contains("phone_hash");
+                case "SHARED_DEVICE"->availableSignals.contains("device_id_hash");
+                case "SHARED_ADDRESS"->availableSignals.contains("address_hash");
+                case "IP_SAME_WINDOW"->availableSignals.stream().anyMatch(signal->signal.startsWith("ip_window:"));
+                case "REPEATED_PERFORMANCES"->reason.count()==memberCount
+                        &&new HashSet<>(reason.performances()).equals(availablePerformances)
+                        &&reason.performances().size()==performanceCount;
+                default->false;
+            };
+            if(!supported)throw new FastApiResponseContractException("Data returned a candidate reason inconsistent with its fixed scope");
+        }
+        if(ranks.size()!=reasons.size())throw new FastApiResponseContractException("Data candidate reason ranks are incomplete");
+        for(int rank=1;rank<=reasons.size();rank++)if(!ranks.contains(rank))
+            throw new FastApiResponseContractException("Data candidate reason ranks are not contiguous");
+    }
+
+    void validateMemberEvidence(List<MultiEventAnalysisDto.MemberEvidenceReason> reasons,
+            List<MultiEventAnalysisDto.EvidenceReason> candidateReasons,int memberCount,
+            List<MultiEventAnalysisDto.LedgerScope> scopes){
+        if(reasons==null||reasons.size()>10)throw new FastApiResponseContractException("Data returned invalid member evidence rows");
+        Map<String,MultiEventAnalysisDto.EvidenceReason> candidateByCode=candidateReasons.stream()
+                .collect(Collectors.toMap(MultiEventAnalysisDto.EvidenceReason::code,value->value));
+        Set<String> availablePerformances=scopes.stream().map(scope->scope.performanceId().toString()).collect(Collectors.toSet());
+        Set<String> seen=new HashSet<>();
+        for(var reason:reasons){
+            var candidateReason=reason==null?null:candidateByCode.get(reason.code());
+            if(reason==null||candidateReason==null||!seen.add(reason.code())||reason.peerCount()<0
+                    ||reason.peerCount()>=memberCount||reason.performances()==null
+                    ||new HashSet<>(reason.performances()).size()!=reason.performances().size()
+                    ||!availablePerformances.containsAll(reason.performances())
+                    ||!candidateReason.performances().containsAll(reason.performances()))
+                throw new FastApiResponseContractException("Data returned invalid member evidence");
+            if("REPEATED_PERFORMANCES".equals(reason.code())){
+                if(reason.peerCount()!=0||reason.performances().size()<2)
+                    throw new FastApiResponseContractException("Data returned invalid member recurrence evidence");
+            }else if(reason.peerCount()<1||reason.performances().isEmpty()){
+                throw new FastApiResponseContractException("Data returned an empty shared-signal member reason");
+            }
+        }
+    }
+
+    private void validateAndPersistMemberReasons(UUID runId,String candidateId,List<String> expectedAccounts,
+            List<MultiEventAnalysisDto.MemberEvidence> evidence,List<MultiEventAnalysisDto.EvidenceReason> candidateReasons,
+            List<MultiEventAnalysisDto.LedgerScope> sourceScopes){
+        if(evidence==null||evidence.size()!=expectedAccounts.size())
+            throw new FastApiResponseContractException("Data member reason total does not match its candidate");
+        Set<String> remaining=new HashSet<>(expectedAccounts);
+        for(var member:evidence){
+            if(member==null||member.accountReferenceHmac()==null||!member.accountReferenceHmac().matches("[0-9a-f]{64}")
+                    ||!remaining.remove(member.accountReferenceHmac()))
+                throw new FastApiResponseContractException("Data returned a missing or duplicate member evidence key");
+            validateMemberEvidence(member.reasons(),candidateReasons,expectedAccounts.size(),sourceScopes);
+            jdbc.update("insert into td_multi_event_investigation_member_reasons(run_id,candidate_id,account_reference_hmac,reasons_json) values(?,?,?,cast(? as json))",
+                    runId.toString(),candidateId,member.accountReferenceHmac(),write(member.reasons()));
+        }
+        if(!remaining.isEmpty())throw new FastApiResponseContractException("Data member evidence omitted candidate members");
+    }
+
+    private int collectMemberEvidence(Claim claim,MultiEventAnalysisDto.CandidateSummary candidate,RunInput input){
+        Set<String> remaining=new HashSet<>(jdbc.query("select account_reference_hmac from td_multi_event_investigation_members where run_id=? and candidate_id=?",
+                (rs,n)->rs.getString(1),claim.id().toString(),candidate.candidateId()));
+        String cursor=null;Set<String> seenCursors=new HashSet<>();int total=-1,received=0;
+        do{
+            MultiEventAnalysisDto.MemberEvidencePage page=data.multiEventMemberEvidencePage(claim.dataJobId(),candidate.candidateId(),cursor);
+            if(page==null||!claim.dataJobId().equals(page.jobId())||!candidate.candidateId().equals(page.candidateId())
+                    ||!Objects.equals(input.ledgerDigest(),page.ledgerVersionSetDigest())||!Objects.equals(cursor,page.cursor())
+                    ||page.totalCount()<0||page.totalCount()>50_000||(total>=0&&total!=page.totalCount())
+                    ||page.records()==null||page.records().size()>MEMBER_PAGE_SIZE)
+                throw new FastApiResponseContractException("Data returned an invalid multi-event member evidence page");
+            if(total<0)total=page.totalCount();
+            validatePageCursor(cursor,page.nextCursor(),total,page.records().size());
+            if(total!=candidate.distinctAccountCount())throw new FastApiResponseContractException("Data member evidence total does not match its candidate");
+            for(var member:page.records()){
+                if(member==null||member.accountReferenceHmac()==null||!member.accountReferenceHmac().matches("[0-9a-f]{64}")
+                        ||!remaining.remove(member.accountReferenceHmac()))
+                    throw new FastApiResponseContractException("Data returned missing or duplicate member evidence");
+                validateMemberEvidence(member.reasons(),candidate.reasons(),candidate.distinctAccountCount(),candidate.sourceScopes());
+                tx.executeWithoutResult(status->{
+                    requireLease(claim);
+                    jdbc.update("insert into td_multi_event_investigation_member_reasons(run_id,candidate_id,account_reference_hmac,reasons_json) values(?,?,?,cast(? as json))",
+                            claim.id().toString(),candidate.candidateId(),member.accountReferenceHmac(),write(member.reasons()));
+                });
+                received++;
+            }
+            cursor=page.nextCursor();
+            if(cursor!=null&&!seenCursors.add(cursor))throw new FastApiResponseContractException("Data repeated a multi-event member evidence cursor");
+        }while(cursor!=null);
+        if(total<0||received!=total||!remaining.isEmpty())throw new FastApiResponseContractException("Data member evidence pages are incomplete");
+        return received;
     }
 
     private int collectMembers(Claim claim,MultiEventAnalysisDto.CandidateSummary candidate,
@@ -965,9 +1262,33 @@ public class MultiEventInvestigationService {
     private MultiEventAnalysisDto.Request request(Claim claim){
         List<Scope> scopes=scopesForWorker(claim.id()); if(scopes.size()<2)throw new Blocked("FIXED_LEDGER_SCOPE_MISSING");
         RunInput input=jdbc.query("select ledger_version_set_digest,supplier_namespace,hmac_purpose,hmac_key_version,score_version,projection_version,analysis_as_of,analysis_start_at,analysis_end_at from td_multi_event_investigation_runs where id=? and tenant_id=?",(rs,n)->new RunInput(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),time(rs,7),time(rs,8),time(rs,9)),claim.id().toString(),claim.tenantId().toString()).stream().findFirst().orElseThrow(()->new Blocked("RUN_MISSING"));
-        List<MultiEventAnalysisDto.Ticket> tickets=new ArrayList<>();for(Scope scope:scopes){int remaining=MAX_JSON_TICKETS-tickets.size();tickets.addAll(tickets(scope,input,remaining+1));if(tickets.size()>MAX_JSON_TICKETS)throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");}
+        List<MultiEventAnalysisDto.Ticket> tickets=new ArrayList<>();
+        List<MultiEventAnalysisDto.CancelledTicket> cancelledTickets=new ArrayList<>();
+        for(Scope scope:scopes){
+            int remaining=MAX_JSON_TICKETS-tickets.size();
+            List<MultiEventAnalysisDto.Ticket> scopedTickets=tickets(scope,input,remaining+1);
+            tickets.addAll(scopedTickets);
+            if(tickets.size()>MAX_JSON_TICKETS)throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");
+            if(cancelledTicketTransferEnabled){
+                int cancellationLimit=MAX_JSON_TICKETS-tickets.size()+1;
+                List<MultiEventAnalysisDto.CancelledTicket> scopedCancelled=cancelledTickets(scope,input,
+                        scopedTickets.size()+1L,cancellationLimit);
+                cancelledTickets.addAll(scopedCancelled);
+                if(tickets.size()+cancelledTickets.size()>MAX_JSON_TICKETS)
+                    throw new Blocked("MULTI_EVENT_TICKET_LIMIT_EXCEEDED");
+            }
+        }
         if(tickets.isEmpty())throw new Blocked("NO_EFFECTIVE_TICKETS");
-        return new MultiEventAnalysisDto.Request(claim.id(),claim.tenantId(),input.ledgerDigest(),input.analysisAsOf(),input.analysisStartAt(),input.analysisEndAt(),input.scoreVersion(),input.projectionVersion(),scopes.stream().map(s->new MultiEventAnalysisDto.LedgerScope(s.externalEventRef(),s.performanceId(),s.versionId(),s.sourceBatchId(),s.policySnapshotId())).toList(),tickets);
+        return new MultiEventAnalysisDto.Request(claim.id(),claim.tenantId(),input.ledgerDigest(),input.analysisAsOf(),
+                input.analysisStartAt(),input.analysisEndAt(),input.scoreVersion(),input.projectionVersion(),
+                scopes.stream().map(s->new MultiEventAnalysisDto.LedgerScope(s.externalEventRef(),s.performanceId(),
+                        s.versionId(),s.sourceBatchId(),s.policySnapshotId())).toList(),tickets,cancelledTickets);
+    }
+    private List<MultiEventAnalysisDto.CancelledTicket> cancelledTickets(Scope scope,RunInput input,long firstOrdinal,int limit){
+        if(limit<1)return List.of();
+        return jdbc.query(ARTIFACT_CANCELLED_TICKET_SQL,(rs,n)->cancelledTicketFromResultSet(rs,scope,input,firstOrdinal+n),
+                scope.versionId().toString(),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),
+                java.sql.Timestamp.from(input.analysisEndAt().toInstant()),input.keyVersion(),limit);
     }
     private List<MultiEventAnalysisDto.Ticket> tickets(Scope scope,RunInput input,int limit){return jdbc.query("""
         with recursive l as (select id,base_version_id,generation_no,revision_no from td_bulk_ledger_versions where id=? and status='PUBLISHED'
@@ -976,7 +1297,8 @@ public class MultiEventInvestigationService {
         select r.reservation_reference_hmac,r.account_reference_hmac,r.purchased_at,r.hmac_key_version,r.source_version,
                s.payment_hmac,s.address_hmac,s.device_hmac,s.ip_hmac,s.refund_account_hmac,s.phone_hmac,s.ip_network_type,s.hmac_purpose,s.hmac_key_version,s.source_version,
                ps.snapshot_id,ps.source_version,ps.ledger_complete_snapshot,ps.policy_verification_status,ps.quantity_data_status,ps.data_completeness_reason,ps.cancellation_handling,ps.duplicate_handling,ps.max_tickets_per_account,
-               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version
+               lf.effective_ticket_quantity,lf.max_tickets_per_account,lf.policy_version,
+               r.seat_zone,r.seat_row,r.seat_number,r.reserved_at,r.paid_at,r.account_created_at
         from ranked r left join td_bulk_ledger_track1_ticket_signals s on s.version_id=? and s.ticket_reference_hmac=r.ticket_reference_hmac
         left join td_bulk_ledger_track1_policy_snapshots ps on ps.snapshot_id=? and ps.ledger_version_id=?
         left join td_bulk_ledger_track1_bulk_limit_findings lf on lf.job_id=ps.job_id and lf.performance_id=? and lf.account_reference_hmac=r.account_reference_hmac
@@ -996,10 +1318,44 @@ public class MultiEventInvestigationService {
                 else if(policySourceVersion==null||!policySourceVersion.equals(rowSource)||!quantityFound||!policyLimitFound||!findingLimitFound||policyLimit!=findingLimit||snapshotPolicyVersion==null||!snapshotPolicyVersion.equals(rs.getString(27))||effectiveQuantity<1||effectiveQuantity>100||policyLimit<1||policyLimit>100) {quantityStatus="INCOMPLETE";quantityReason="POLICY_QUANTITY_SOURCE_MISMATCH";}
                 else {quantityStatus="COMPLETE";quantityReason="POLICY_SNAPSHOT_AND_QUANTITY_VERIFIED";quantity=(int)effectiveQuantity;confirmedLimit=policyLimit;}
             }
-            java.sql.Timestamp purchased=rs.getTimestamp(3);return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),n+1L,input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource);
+            java.sql.Timestamp purchased=rs.getTimestamp(3);return new MultiEventAnalysisDto.Ticket(account,reservation,scope.externalEventRef(),scope.performanceId(),scope.versionId(),n+1L,input.supplierNamespace(),purpose,key,purchased==null?null:purchased.toLocalDateTime().atOffset(ZoneOffset.UTC),quantity,confirmedLimit,quantitySnapshot,policyVersion,quantitySourceVersion,rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10),rs.getString(11),rs.getString(12),quantityStatus,quantityReason,rowSource,rs.getString(28),rs.getString(29),rs.getString(30),nullableTime(rs,31),nullableTime(rs,32),nullableTime(rs,33));
         },scope.versionId().toString(),scope.versionId().toString(),scope.policySnapshotId()==null?null:scope.policySnapshotId().toString(),scope.versionId().toString(),scope.performanceId().toString(),java.sql.Timestamp.from(input.analysisStartAt().toInstant()),java.sql.Timestamp.from(input.analysisEndAt().toInstant()),limit);}
-    private void complete(Claim claim,MultiEventAnalysisDto.Response response){requireLease(claim);jdbc.update("delete from td_multi_event_investigation_relationship_sources where run_id=?",claim.id().toString());jdbc.update("delete from td_multi_event_investigation_relationship_members where run_id=?",claim.id().toString());jdbc.update("delete from td_multi_event_investigation_relationships where run_id=?",claim.id().toString());jdbc.update("delete from td_multi_event_investigation_members where run_id=?",claim.id().toString());jdbc.update("delete from td_multi_event_investigation_candidates where run_id=?",claim.id().toString());for(var candidate:response.candidates()){String breakdown=write(candidate.scoreBreakdown()),available=write(candidate.availableSignals()),excluded=write(candidate.excludedSignals()),unavailable=write(candidate.unavailableSignals()),normal=write(candidate.normalSharingPossibilities());Double baseline=baselineMaxScore(claim.id(),candidate.memberAccountIds(),candidate.sourceScopes());jdbc.update("insert into td_multi_event_investigation_candidates(run_id,candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,distinct_event_count,distinct_performance_count,verified_relationship_count,score_breakdown_json,available_signals_json,excluded_signals_json,unavailable_signals_json,normal_sharing_json) values(?,?,?,?,?,?,?,?,?,cast(? as json),cast(? as json),cast(? as json),cast(? as json),cast(? as json))",claim.id().toString(),candidate.candidateId(),candidate.priorityBand(),candidate.scoreBreakdown().score(),baseline,candidate.distinctAccountCount(),candidate.distinctEventCount(),candidate.distinctPerformanceCount(),candidate.verifiedRelationshipCount(),breakdown,available,excluded,unavailable,normal);for(String account:candidate.memberAccountIds())jdbc.update("insert into td_multi_event_investigation_members(run_id,candidate_id,account_reference_hmac) values(?,?,?)",claim.id().toString(),candidate.candidateId(),account);for(var relation:candidate.relationships()){UUID relationship=UUID.randomUUID();jdbc.update("insert into td_multi_event_investigation_relationships(id,run_id,candidate_id,signal_type,account_count,source_scope_count) values(?,?,?,?,?,?)",relationship.toString(),claim.id().toString(),candidate.candidateId(),relation.signalType(),relation.accountIds().size(),relation.sourceScopes().size());for(String account:relation.accountIds())jdbc.update("insert into td_multi_event_investigation_relationship_members(relationship_id,run_id,candidate_id,account_reference_hmac) values(?,?,?,?)",relationship.toString(),claim.id().toString(),candidate.candidateId(),account);for(var source:relation.sourceScopes())jdbc.update("insert into td_multi_event_investigation_relationship_sources(relationship_id,run_id,performance_id) values(?,?,?)",relationship.toString(),claim.id().toString(),source.performanceId().toString());}}
-        int updated=jdbc.update("update td_multi_event_investigation_runs set status='COMPLETED',failure_code=null,analysis_algorithm_version=?,lease_owner=null,lease_until=null,completed_at=utc_timestamp(6),updated_at=utc_timestamp(6),row_version=row_version+1 where id=? and status='RUNNING' and fence_token=? and lease_owner=?",response.algorithmVersion(),claim.id().toString(),claim.fence(),owner(claim));if(updated!=1)throw new Blocked("RUN_LEASE_LOST");}
+    private void complete(Claim claim,MultiEventAnalysisDto.Response response){
+        requireLease(claim);
+        jdbc.update("delete from td_multi_event_investigation_relationship_sources where run_id=?",claim.id().toString());
+        jdbc.update("delete from td_multi_event_investigation_relationship_members where run_id=?",claim.id().toString());
+        jdbc.update("delete from td_multi_event_investigation_relationships where run_id=?",claim.id().toString());
+        jdbc.update("delete from td_multi_event_investigation_member_reasons where run_id=?",claim.id().toString());
+        jdbc.update("delete from td_multi_event_investigation_members where run_id=?",claim.id().toString());
+        jdbc.update("delete from td_multi_event_investigation_candidates where run_id=?",claim.id().toString());
+        for(var candidate:response.candidates()){
+            validateReasonSummary(candidate.reasons(),candidate.distinctAccountCount(),candidate.distinctPerformanceCount(),candidate.sourceScopes(),candidate.availableSignals());
+            String breakdown=write(candidate.scoreBreakdown()),available=write(candidate.availableSignals()),excluded=write(candidate.excludedSignals()),unavailable=write(candidate.unavailableSignals()),normal=write(candidate.normalSharingPossibilities()),reasons=write(candidate.reasons());
+            Double baseline=baselineMaxScore(claim.id(),candidate.memberAccountIds(),candidate.sourceScopes());
+            jdbc.update("""
+                    insert into td_multi_event_investigation_candidates(
+                      run_id,candidate_id,priority_band,investigation_score,baseline_max_score,distinct_account_count,
+                      distinct_event_count,distinct_performance_count,verified_relationship_count,family_id,
+                      parent_candidate_id,child_count,family_score,reasons_json,score_breakdown_json,available_signals_json,
+                      excluded_signals_json,unavailable_signals_json,normal_sharing_json)
+                    values(?,?,?,?,?,?,?,?,?,?,?,?,?,cast(? as json),cast(? as json),cast(? as json),cast(? as json),cast(? as json),cast(? as json))
+                    """,claim.id().toString(),candidate.candidateId(),candidate.priorityBand(),candidate.scoreBreakdown().score(),baseline,
+                    candidate.distinctAccountCount(),candidate.distinctEventCount(),candidate.distinctPerformanceCount(),candidate.verifiedRelationshipCount(),
+                    candidate.familyId(),candidate.parentCandidateId(),candidate.childCount(),candidate.familyScore(),reasons,breakdown,available,excluded,unavailable,normal);
+            for(String account:candidate.memberAccountIds())
+                jdbc.update("insert into td_multi_event_investigation_members(run_id,candidate_id,account_reference_hmac) values(?,?,?)",claim.id().toString(),candidate.candidateId(),account);
+            validateAndPersistMemberReasons(claim.id(),candidate.candidateId(),candidate.memberAccountIds(),candidate.memberReasons(),candidate.reasons(),candidate.sourceScopes());
+            for(var relation:candidate.relationships()){
+                UUID relationship=UUID.randomUUID();
+                jdbc.update("insert into td_multi_event_investigation_relationships(id,run_id,candidate_id,signal_type,account_count,source_scope_count) values(?,?,?,?,?,?)",relationship.toString(),claim.id().toString(),candidate.candidateId(),relation.signalType(),relation.accountIds().size(),relation.sourceScopes().size());
+                for(String account:relation.accountIds())jdbc.update("insert into td_multi_event_investigation_relationship_members(relationship_id,run_id,candidate_id,account_reference_hmac) values(?,?,?,?)",relationship.toString(),claim.id().toString(),candidate.candidateId(),account);
+                for(var source:relation.sourceScopes())jdbc.update("insert into td_multi_event_investigation_relationship_sources(relationship_id,run_id,performance_id) values(?,?,?)",relationship.toString(),claim.id().toString(),source.performanceId().toString());
+            }
+        }
+        validateStoredFamilyMetadata(claim.id(),response.candidates().size());
+        int updated=jdbc.update("update td_multi_event_investigation_runs set status='COMPLETED',failure_code=null,analysis_algorithm_version=?,lease_owner=null,lease_until=null,completed_at=utc_timestamp(6),updated_at=utc_timestamp(6),row_version=row_version+1 where id=? and status='RUNNING' and fence_token=? and lease_owner=?",response.algorithmVersion(),claim.id().toString(),claim.fence(),owner(claim));
+        if(updated!=1)throw new Blocked("RUN_LEASE_LOST");
+    }
     private void finish(Claim claim,String status,String code){tx.executeWithoutResult(x->{int updated=jdbc.update("update td_multi_event_investigation_runs set status=case when ?='RETRYABLE' and attempt_count<3 then 'RETRYABLE' when ?='RETRYABLE' then 'FAILED' else ? end,failure_code=?,lease_owner=null,lease_until=null,updated_at=utc_timestamp(6),row_version=row_version+1 where id=? and status='RUNNING' and fence_token=? and lease_owner=?",status,status,status,code,claim.id().toString(),claim.fence(),owner(claim));if(updated!=1)throw new Blocked("RUN_LEASE_LOST");});}
     private void requireLease(Claim claim){Integer count=jdbc.queryForObject("select count(*) from td_multi_event_investigation_runs where id=? and status='RUNNING' and fence_token=? and lease_owner=?",Integer.class,claim.id().toString(),claim.fence(),owner(claim));if(count==null||count!=1)throw new Blocked("RUN_LEASE_LOST");}
     Double baselineMaxScore(UUID runId,List<String> memberAccountIds,List<MultiEventAnalysisDto.LedgerScope> sourceScopes){List<String> versions=sourceScopes.stream().map(scope->scope.ledgerVersionId().toString()).distinct().toList();if(versions.isEmpty()||memberAccountIds==null||memberAccountIds.isEmpty())return null;String marks=String.join(",",java.util.Collections.nCopies(versions.size(),"?"));List<Object> args=new ArrayList<>();args.add(write(memberAccountIds));args.addAll(versions);args.add(memberAccountIds.size());args.add(runId.toString());args.add(runId.toString());args.add(memberAccountIds.size());String sql="select max(exact_cluster.risk_score) from (select c.risk_score from td_bulk_ledger_track1_bulk_jobs j join td_bulk_ledger_track1_bulk_clusters c on c.job_id=j.id join td_bulk_ledger_track1_bulk_members m on m.job_id=c.job_id and m.cluster_id=c.cluster_id join json_table(?, '$[*]' columns(account_reference_hmac char(64) path '$')) expected on expected.account_reference_hmac=m.account_reference_hmac where j.ledger_version_id in ("+marks+") and j.status='COMPLETED' and j.algorithm_version like '%score-v2-exp1' and c.member_count=? and j.tenant_id=(select r.tenant_id from td_multi_event_investigation_runs r where r.id=?) and j.hmac_key_version=(select r.hmac_key_version from td_multi_event_investigation_runs r where r.id=?) group by j.id,c.cluster_id,c.risk_score having count(distinct m.account_reference_hmac)=?) exact_cluster";
@@ -1028,14 +1384,22 @@ public class MultiEventInvestigationService {
     record IdentityContract(String purpose,String keyVersion){}
     private record VersionIdentity(UUID versionId,String purpose,String keyVersion){}
     private record Existing(UUID id,String requestDigest,String status){}
+    private record ArtifactWriteResult(long recordCount,int cancelledTicketRecordCount){}
     private record CandidateBudget(int memberCount,long relationshipMemberRows){}
     private record RelationshipImportSummary(int observations,long memberRows){}
     record Claim(UUID id,UUID tenantId,long fence,String priorStatus,UUID dataJobId,String artifactId,
-                         String objectVersion,String artifactSha256,Long artifactRecordCount,int attemptCount){}
+                         String objectVersion,String artifactSha256,Long artifactRecordCount,
+                         int artifactCancelledTicketCount,int attemptCount){}
     private record RunInput(String ledgerDigest,String supplierNamespace,String purpose,String keyVersion,String scoreVersion,String projectionVersion,OffsetDateTime analysisAsOf,OffsetDateTime analysisStartAt,OffsetDateTime analysisEndAt){}
     private static final class Blocked extends RuntimeException{private final String code;private Blocked(String code){this.code=code;}}
     public record ScopeView(UUID eventId,UUID performanceId,UUID ledgerVersionId,String eventReference,String sourceBatchId){}
-    public record Candidate(String candidateId,String priorityBand,double investigationScore,Double baselineMaxScore,int distinctAccountCount,int distinctEventCount,int distinctPerformanceCount,int verifiedRelationshipCount,String scoreBreakdown,String availableSignals,String excludedSignals,String unavailableSignals,String normalSharingPossibilities){}
+    private record FamilyKey(String familyId,double familyScore){}
+    private record FamilyRow(String candidateId,int memberCount,double score,String familyId,String parentCandidateId,int childCount,Double familyScore){}
+    public record Candidate(String candidateId,String priorityBand,double investigationScore,Double baselineMaxScore,
+            int distinctAccountCount,int distinctEventCount,int distinctPerformanceCount,int verifiedRelationshipCount,
+            String scoreBreakdown,String availableSignals,String excludedSignals,String unavailableSignals,String normalSharingPossibilities,
+            String familyId,String parentCandidateId,int childCount,Double familyScore,List<MultiEventAnalysisDto.EvidenceReason> reasons){}
+    public record CandidateFamily(String familyId,double familyScore,List<Candidate> candidates){}
     public record Member(String memberId){}
     public record Relationship(UUID relationshipId,String signalType,int accountCount,int sourceScopeCount,List<String> memberIds,boolean membersTruncated,List<ScopeView> sourceScopes){}
     public record Page<T>(List<T> items,int page,int pageSize,boolean hasNext){}

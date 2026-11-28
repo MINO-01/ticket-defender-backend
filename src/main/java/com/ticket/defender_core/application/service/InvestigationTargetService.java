@@ -8,6 +8,9 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
@@ -23,6 +26,7 @@ public class InvestigationTargetService {
     private static final Set<AdminRole> REVEAL_ROLES = Set.of(AdminRole.TENANT_ADMIN, AdminRole.ANALYST);
     private static final int PAGE_MAX = 100;
     private static final int EXPORT_MAX = 500;
+    private static final ObjectMapper JSON = JsonMapper.builder().build();
     private final CandidatePipelineAccess access;
     private final AdminAccessService adminAccess;
     private final JdbcTemplate jdbc;
@@ -167,9 +171,11 @@ public class InvestigationTargetService {
         return jdbc.query("""
                 select c.id,c.import_id,c.tenant_id,c.event_id,c.performance_id,c.source_row_no,c.ticket_reference_hmac,
                   c.reservation_reference_hmac,c.account_reference_hmac,c.reference_ciphertext,c.nonce,c.encryption_key_version,
-                  t.purchased_at,t.ticket_status
+                  t.purchased_at,t.ticket_status,t.seat_zone,t.seat_row,t.seat_number,mr.reasons_json
                 from td_multi_event_investigation_scopes s
                 join td_multi_event_investigation_members m on m.run_id=s.run_id and m.candidate_id=?
+                left join td_multi_event_investigation_member_reasons mr on mr.run_id=m.run_id
+                  and mr.candidate_id=m.candidate_id and mr.account_reference_hmac=m.account_reference_hmac
                 join td_investigation_reference_ciphertexts c on c.ledger_version_id=s.ledger_version_id
                   and c.tenant_id=s.tenant_id and c.event_id=s.event_id and c.performance_id=s.performance_id
                   and c.account_reference_hmac=m.account_reference_hmac
@@ -196,7 +202,7 @@ public class InvestigationTargetService {
         return jdbc.query("""
                 select c.id,c.import_id,c.tenant_id,c.event_id,c.performance_id,c.source_row_no,c.ticket_reference_hmac,
                   c.reservation_reference_hmac,c.account_reference_hmac,c.reference_ciphertext,c.nonce,c.encryption_key_version,
-                  t.purchased_at,t.ticket_status
+                  t.purchased_at,t.ticket_status,t.seat_zone,t.seat_row,t.seat_number,null
                 from td_bulk_ledger_track1_bulk_jobs j
                 join td_bulk_ledger_track1_bulk_members m on m.job_id=j.id and m.cluster_id=?
                 join td_investigation_reference_ciphertexts c on c.ledger_version_id=j.ledger_version_id
@@ -224,7 +230,8 @@ public class InvestigationTargetService {
     private StoredTarget stored(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new StoredTarget(UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)), UUID.fromString(rs.getString(3)),
                 UUID.fromString(rs.getString(4)), UUID.fromString(rs.getString(5)), rs.getLong(6), rs.getString(7), rs.getString(8),
-                rs.getString(9), rs.getBytes(10), rs.getBytes(11), rs.getString(12), rs.getTimestamp(13).toLocalDateTime(), rs.getString(14));
+                rs.getString(9), rs.getBytes(10), rs.getBytes(11), rs.getString(12), rs.getTimestamp(13).toLocalDateTime(),
+                rs.getString(14), rs.getString(15), rs.getString(16), rs.getString(17), reasonCodes(rs.getString(18)));
     }
 
     private RevealedTarget reveal(StoredTarget row) {
@@ -232,7 +239,26 @@ public class InvestigationTargetService {
                 row.ticketHmac(), row.reservationHmac(), row.accountHmac(),
                 new InvestigationReferenceCipher.Encrypted(row.keyVersion(), row.nonce(), row.ciphertext()));
         return new RevealedTarget(row.id().toString(), refs.accountReference(), refs.reservationReference(), refs.ticketReference(),
-                row.performanceId(), row.purchasedAt(), row.ticketStatus(), null, null, null, List.of());
+                row.performanceId(), row.purchasedAt(), row.ticketStatus(), row.seatZone(), row.seatRow(), row.seatNumber(), row.reasons());
+    }
+
+    static List<String> reasonCodes(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            JsonNode root = JSON.readTree(json);
+            if (root == null || !root.isArray()) throw new IllegalStateException("Stored member evidence is invalid");
+            java.util.ArrayList<String> codes = new java.util.ArrayList<>();
+            for (JsonNode item : root) {
+                JsonNode code = item == null ? null : item.get("code");
+                if (code == null || !code.isString() || code.asString().isBlank())
+                    throw new IllegalStateException("Stored member evidence is invalid");
+                codes.add(code.asString());
+            }
+            return List.copyOf(codes);
+        } catch (RuntimeException malformed) {
+            if (malformed instanceof IllegalStateException invalid) throw invalid;
+            throw new IllegalStateException("Stored member evidence is invalid", malformed);
+        }
     }
 
     private static List<StoredTarget> trimLookahead(List<StoredTarget> rows, int pageSize) {
@@ -325,6 +351,7 @@ public class InvestigationTargetService {
                              String reason, java.time.OffsetDateTime accessedAt) { }
     private record StoredTarget(UUID id, UUID importId, UUID tenantId, UUID eventId, UUID performanceId, long rowNumber,
             String ticketHmac, String reservationHmac, String accountHmac, byte[] ciphertext, byte[] nonce, String keyVersion,
-            LocalDateTime purchasedAt, String ticketStatus) {
+            LocalDateTime purchasedAt, String ticketStatus, String seatZone, String seatRow, String seatNumber,
+            List<String> reasons) {
     }
 }

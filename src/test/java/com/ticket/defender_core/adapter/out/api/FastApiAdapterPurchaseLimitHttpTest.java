@@ -66,7 +66,31 @@ class FastApiAdapterPurchaseLimitHttpTest {
             assertThat(body.get()).contains("\"quantityInputType\":\"INDIVIDUAL_TICKET\"")
                     .contains("\"ticketReference\":\"seat-ticket-1\"")
                     .contains("\"ticketStatus\":\"ACTIVE\"")
-                    .contains("\"sourceVersion\":\"ledger-2026-11-09\"");
+                    .contains("\"sourceVersion\":\"ledger-2026-11-09\"")
+                    .doesNotContain("\"cancelledTickets\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void sendsCancelledEvidenceInSeparatePseudonymousList() throws IOException {
+        AtomicReference<String> body = new AtomicReference<>();
+        HttpServer server = server(response("QUANTITY_DATA_INCOMPLETE", "policy-v1", "[]"), new AtomicReference<>(), body);
+        try {
+            var cancelled = new Track1PurchaseLimitAnalysisRequest.CancelledTicket("a".repeat(64), "b".repeat(64),
+                    "event-external", PERFORMANCE_ID, "BALCONY", "R1", "12",
+                    OffsetDateTime.parse("2026-11-07T10:00:00Z"));
+            Track1PurchaseLimitAnalysisRequest request = new Track1PurchaseLimitAnalysisRequest(REQUEST_ID,
+                    request().performanceScopes(), List.of(ticket()), List.of(cancelled));
+
+            adapter(server.getAddress().getPort()).requestPurchaseLimitAnalysis(request);
+
+            assertThat(body.get()).contains("\"cancelledTickets\"")
+                    .contains("\"accountHmac\":\"" + "a".repeat(64) + "\"")
+                    .contains("\"ticketHmac\":\"" + "b".repeat(64) + "\"")
+                    .contains("\"cancelledAt\":\"2026-11-07T10:00:00Z\"")
+                    .doesNotContain("rawTicketNumber");
         } finally {
             server.stop(0);
         }

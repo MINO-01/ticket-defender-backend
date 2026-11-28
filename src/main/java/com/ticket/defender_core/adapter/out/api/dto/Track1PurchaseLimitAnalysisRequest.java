@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
  * Trusted Spring-to-Data v2 payload.  Values in this type must originate from an
@@ -13,11 +14,17 @@ import java.util.UUID;
 public record Track1PurchaseLimitAnalysisRequest(
         String requestId,
         List<PerformanceScope> performanceScopes,
-        List<Ticket> tickets
+        List<Ticket> tickets,
+        @JsonInclude(JsonInclude.Include.NON_EMPTY) List<CancelledTicket> cancelledTickets
 ) {
     public Track1PurchaseLimitAnalysisRequest {
         performanceScopes = performanceScopes == null ? null : List.copyOf(performanceScopes);
         tickets = tickets == null ? null : List.copyOf(tickets);
+        cancelledTickets = cancelledTickets == null ? List.of() : List.copyOf(cancelledTickets);
+    }
+
+    public Track1PurchaseLimitAnalysisRequest(String requestId, List<PerformanceScope> performanceScopes, List<Ticket> tickets) {
+        this(requestId, performanceScopes, tickets, List.of());
     }
 
     public record PerformanceScope(
@@ -66,6 +73,18 @@ public record Track1PurchaseLimitAnalysisRequest(
                     paymentHash, addressHash, deviceIdHash, ipHash, null, null, null, null, null);
         }
     }
+
+    /** Separate pseudonymous evidence; never part of the active ticket quantity list. */
+    public record CancelledTicket(
+            String accountHmac,
+            String ticketHmac,
+            String eventId,
+            UUID performanceId,
+            String seatZone,
+            String seatRow,
+            String seatNumber,
+            OffsetDateTime cancelledAt
+    ) { }
 
     public enum PolicyVerificationStatus { CONFIRMED, POLICY_NOT_CONFIRMED }
     public enum QuantityDataStatus { COMPLETE, INCOMPLETE, UNKNOWN }

@@ -7,7 +7,12 @@ ALTER TABLE td_multi_event_investigation_runs
     ADD COLUMN artifact_object_version VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NULL,
     ADD COLUMN artifact_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
     ADD COLUMN artifact_record_count INT NULL,
+    ADD COLUMN artifact_cancelled_ticket_count INT NOT NULL DEFAULT 0,
     ADD UNIQUE KEY uk_mei_data_job (data_job_id),
+    ADD CONSTRAINT chk_mei_cancelled_artifact_count CHECK (
+        artifact_cancelled_ticket_count >= 0
+        AND (artifact_record_count IS NULL OR artifact_cancelled_ticket_count < artifact_record_count)
+    ),
     ADD CONSTRAINT chk_mei_artifact_binding CHECK (
         ((artifact_id IS NULL AND artifact_object_version IS NULL AND artifact_sha256 IS NULL
             AND artifact_record_count IS NULL AND data_job_id IS NULL)

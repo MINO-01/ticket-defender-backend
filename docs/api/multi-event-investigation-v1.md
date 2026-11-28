@@ -26,11 +26,23 @@
 | GET | `/api/v1/admin/multi-event-investigations/events/{eventId}` | 해당 event 범위에 속한 실행 목록을 반환한다. |
 | GET | `/api/v1/admin/multi-event-investigations/events/{eventId}/{runId}` | 실행 상태를 반환한다. |
 | GET | `/api/v1/admin/multi-event-investigations/events/{eventId}/{runId}/candidates` | 후보를 페이지 단위로 반환한다. |
+| GET | `/api/v1/admin/multi-event-investigations/events/{eventId}/{runId}/candidate-families` | 묶음 점수 내림차순으로 후보 가족을 페이지 단위로 반환한다. 한 가족의 후보는 같은 응답에 포함한다. |
 | GET | `/api/v1/admin/multi-event-investigations/events/{eventId}/{runId}/candidates/{candidateId}/members` | 불투명 구성원 ID를 페이지 단위로 반환한다. |
 | GET | `/api/v1/admin/multi-event-investigations/events/{eventId}/{runId}/candidates/{candidateId}/relationships` | 신호 종류와 관계 계수만 반환한다. |
 | GET | `/api/v1/admin/multi-event-investigations/events/{eventId}/{runId}/sources` | 고정 원장 출처를 반환한다. |
 
 `pageSize`는 1부터 100까지다. 다른 tenant 범위는 기존 404 정책을 따른다.
+
+## 후보 가족과 조사 근거
+
+- 후보 가족은 같은 분석 run 안에서만 계산한다. 후보 계정 집합이 다른 후보의 진부분집합이면 가장 작은 상위 집합을 직접 부모로 둔다. 같은 크기의 부모 후보가 여럿이면 candidate ID 오름차순 첫 후보를 고른다. 부분 겹침은 가족으로 묶지 않는다.
+- `familyId`는 부모 연결을 따라간 최상위 후보 ID다. `childCount`는 직접 자식 수다. `familyScore`는 가족 구성원 중 가장 높은 개별 조사 점수이며 개별 `investigationScore`와 S/L/G/B 값은 바꾸지 않는다.
+- 가족 메타데이터 마이그레이션 전에 생성된 후보는 `candidateId`를 가족 ID로, 개별 점수를 가족 점수로 사용해 단독 가족으로 반환한다.
+- 기존 후보 페이지는 호환성을 위해 유지한다. 화면은 `candidate-families` 경로를 사용해 가족 경계가 페이지 사이에서 갈라지지 않게 한다.
+- 후보 `reasons`는 코드, 근거 계정 수, 관련 performance ID, 후보 안에서의 결정적 순위(`strengthRank`)를 담는다. 순위는 근거 계정 수 내림차순, 관련 회차 수 내림차순, 코드 오름차순이다. 동점도 코드 순서로 안정화한다.
+- 신호 근거의 `count`는 해당 코드의 검증된 공유 token 그룹에 한 번 이상 참여한 서로 다른 계정 수다. 구성원 근거 `peerCount`는 해당 구성원이 한 공유 token 그룹에서 확인된 다른 계정의 최댓값이다. 실제 token 값은 근거 API 응답에 싣지 않는다.
+- 현재 구현된 코드는 환불 계좌, 연락처, 기기, 배송지, 10분 IP 시간창, 반복 회차다. 좌석 재예매 연쇄, 공연 간 연속성, 수량 근거는 해당 PR 기능이 구현되기 전에는 출력하지 않는다.
+- Backend는 내부 인증된 Data `member-reasons` 페이지를 받아 HMAC 키와 근거 JSON을 별도 테이블에 저장한다. 공개 관리자 API는 이 HMAC을 반환하지 않는다.
 
 ## 점수 버전
 
@@ -51,6 +63,7 @@
 4. `multi-event-artifact-job-migration.sql`
 5. `bulk-ledger-track1-signal-source-migration.sql` (v3 원본 수신의 신호 출처 컬럼)
 6. `multi-event-multi-performance-migration.sql` (새 점수 버전과 퇴역 버전 동시 허용, 후보 `distinct_event_count >= 1`)
+7. `multi-event-candidate-family-reasons-migration.sql` (후보 가족 및 구성원 근거, 추가형)
 
 대량 원장 쪽 v3 스테이징 migration을 포함한 전체 순서는 `docs/operations/bulk-ledger-v3-raw-intake.md`를 따른다.
 

@@ -67,11 +67,13 @@ class FastApiAdapterTest {
                    "unavailableSignals":["address_hash","device_id_hash","phone_hash"],
                    "normalSharingPossibilities":["NORMAL_SHARED_POSSIBLE"],
                    "scoreBreakdown":{"L":0.8,"G":0.68,"B":0.41666666666666663,"Q":0.5,"R":0.3333333333333333,"score":0.2267,"quantityStatus":"POLICY_NOT_CONFIRMED","quantityReason":"POLICY_NOT_CONFIRMED"},
+                   "familyId":"multi-%s","parentCandidateId":null,"childCount":0,"familyScore":0.2267,
+                   "reasons":[],"memberReasons":[],
                    "memberAccountIds":["%s","%s"],
                    "relationships":[{"signalType":"refund_account_hash","accountIds":["%s","%s"],"sourceScopes":[
                      {"eventId":"event-a","performanceId":"00000000-0000-4000-8000-000000000001","ledgerVersionId":"00000000-0000-4000-8000-000000000011","sourceBatchId":"batch-a"},
                      {"eventId":"event-b","performanceId":"00000000-0000-4000-8000-000000000002","ledgerVersionId":"00000000-0000-4000-8000-000000000012","sourceBatchId":"batch-b"}]}]}]}
-                """.formatted(request.analysisId(), request.ledgerVersionSetDigest(), "1".repeat(64),
+                """.formatted(request.analysisId(), request.ledgerVersionSetDigest(), "1".repeat(64), "1".repeat(64),
                 "a".repeat(64), "b".repeat(64), "a".repeat(64), "b".repeat(64));
 
         server.expect(requestTo("https://fastapi.test/api/v2/multi-event/analyze"))

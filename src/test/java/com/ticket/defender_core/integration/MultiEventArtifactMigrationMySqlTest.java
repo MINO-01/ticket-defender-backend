@@ -42,8 +42,9 @@ class MultiEventArtifactMigrationMySqlTest {
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "phone_hmac");
         assertNullableColumn(jdbc, "td_bulk_ledger_track1_ticket_signals", "ip_network_type");
         assertColumns(jdbc, "td_multi_event_investigation_runs", "data_job_id", "artifact_id",
-                "artifact_object_version", "artifact_sha256", "artifact_record_count");
+                "artifact_object_version", "artifact_sha256", "artifact_record_count", "artifact_cancelled_ticket_count");
         assertCheck(jdbc, "chk_mei_artifact_binding");
+        assertCheck(jdbc, "chk_mei_cancelled_artifact_count");
         assertCheck(jdbc, "chk_mei_run_state");
         assertConstraint(jdbc, "td_multi_event_investigation_scopes", "fk_mei_scope_version_identity", "FOREIGN KEY");
         assertConstraint(jdbc, "td_multi_event_investigation_scopes", "fk_mei_scope_policy_snapshot_version", "FOREIGN KEY");

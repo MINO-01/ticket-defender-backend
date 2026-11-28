@@ -51,12 +51,13 @@ class CaseOpenApiContractTest {
         Map<?, ?> schemas = (Map<?, ?>) ((Map<?, ?>) document.get("components")).get("schemas");
         Map<?, ?> create = (Map<?, ?>) schemas.get("CreateCase");
         Map<?, ?> createProperties = (Map<?, ?>) create.get("properties");
-        assertThat(createProperties).containsKey("multiEventCandidates");
+        assertThat(createProperties.keySet().stream().map(Object::toString).toList())
+                .contains("multiEventCandidates");
         Map<?, ?> source = (Map<?, ?>) schemas.get("CaseSource");
         Map<?, ?> sourceProperties = (Map<?, ?>) source.get("properties");
         assertThat(sourceProperties.get("sourceType").toString()).contains("MULTI_EVENT_CANDIDATE");
-        assertThat(sourceProperties).containsKeys("multiEventRunId", "multiEventCandidateId",
-                "multiEventCompletedAt");
+        assertThat(sourceProperties.keySet().stream().map(Object::toString).toList())
+                .contains("multiEventRunId", "multiEventCandidateId", "multiEventCompletedAt");
 
         String migrationTest = Files.readString(Path.of(
                 "src/test/java/com/ticket/defender_core/integration/MultiEventArtifactMigrationMySqlTest.java"));

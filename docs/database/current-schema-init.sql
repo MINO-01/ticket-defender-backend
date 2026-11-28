@@ -31,6 +31,7 @@
 -- case-w08b-migration.sql: approval_audit_events, approval_decisions, case_activities, review_receipts.
 -- case-w09-official-pdf-migration.sql: official_pdf_artifacts, official_pdf_audit_events, official_pdf_issuance_attempts, official_pdf_issuances.
 -- case-w10-track2-candidate-source-migration.sql: case_source_references, evidence_snapshots.
+-- case-w11-multi-event-candidate-source-migration.sql: case_source_references, evidence_snapshots, td_multi_event_investigation_runs.
 -- fan-report-intake-migration.sql: events, evidence_assets, fan_reports, public_request_quota.
 -- multi-event-artifact-job-migration.sql: td_multi_event_investigation_runs.
 -- multi-event-investigation-migration.sql: td_multi_event_investigation_candidates, td_multi_event_investigation_members, td_multi_event_investigation_relationship_members, td_multi_event_investigation_relationship_sources, td_multi_event_investigation_relationships, td_multi_event_investigation_runs, td_multi_event_investigation_scopes.

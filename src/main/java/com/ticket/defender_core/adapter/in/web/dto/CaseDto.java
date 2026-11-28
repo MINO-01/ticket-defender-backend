@@ -17,13 +17,24 @@ public final class CaseDto {
 
     public record GraphCluster(String analysisRequestId, String clusterId) { }
 
+    public record MultiEventCandidate(UUID runId, String candidateId) { }
+
     public record Create(UUID eventId, Case.Type type, List<GraphCluster> graphClusters,
-                         List<UUID> fanReportIds, List<UUID> evidenceIds, List<UUID> candidateRunIds, String reason,
+                         List<UUID> fanReportIds, List<UUID> evidenceIds, List<UUID> candidateRunIds,
+                         List<MultiEventCandidate> multiEventCandidates, String reason,
                          UUID relatedCaseId, String relationReason) {
+        public Create(UUID eventId, Case.Type type, List<GraphCluster> graphClusters,
+                List<UUID> fanReportIds, List<UUID> evidenceIds, List<UUID> candidateRunIds, String reason,
+                UUID relatedCaseId, String relationReason) {
+            this(eventId, type, graphClusters, fanReportIds, evidenceIds, candidateRunIds, null,
+                    reason, relatedCaseId, relationReason);
+        }
+
         public Create(UUID eventId, Case.Type type, List<GraphCluster> graphClusters,
                 List<UUID> fanReportIds, List<UUID> evidenceIds, String reason,
                 UUID relatedCaseId, String relationReason) {
-            this(eventId, type, graphClusters, fanReportIds, evidenceIds, null, reason, relatedCaseId, relationReason);
+            this(eventId, type, graphClusters, fanReportIds, evidenceIds, null, null,
+                    reason, relatedCaseId, relationReason);
         }
     }
 
@@ -61,7 +72,8 @@ public final class CaseDto {
                          Integer candidateVerifiedPerformanceRevision, UUID candidateReservationSourceId,
                          Integer candidateReservationSourceRevision, UUID candidateReservationBatchId,
                          String candidateReservationSourceVersion, String candidateStatus, String candidateReason,
-                         Integer candidateCount, UUID candidateId, String candidateApplicability,
+                         Integer candidateCount, UUID candidateId, UUID multiEventRunId,
+                         String multiEventCandidateId, OffsetDateTime multiEventCompletedAt, String candidateApplicability,
                          OffsetDateTime linkedAt) {
         public static Source from(CaseSourceReference value) {
             return from(value, null);
@@ -79,8 +91,9 @@ public final class CaseDto {
                     value.getCandidateVerifiedPerformanceRevision(), value.getCandidateReservationSourceId(),
                     value.getCandidateReservationSourceRevision(), value.getCandidateReservationBatchId(),
                     value.getCandidateReservationSourceVersion(), value.getCandidateStatus(),
-                    value.getCandidateReason(), value.getCandidateCount(), value.getCandidateId(), applicability,
-                    utc(value.getLinkedAt()));
+                    value.getCandidateReason(), value.getCandidateCount(), value.getCandidateId(),
+                    value.getMultiEventRunId(), value.getMultiEventCandidateId(),
+                    utc(value.getMultiEventCompletedAt()), applicability, utc(value.getLinkedAt()));
         }
     }
 
